@@ -17,8 +17,10 @@
 
 #include "resource.h"
 #include "logger.h"
+#include "parser/zip_archive_parser.h"
 
-#include <sqlite3.h>
+#include "file_scanner.h"
+#include "database.h"
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -47,13 +49,8 @@ static std::atomic_bool g_indexRunning{ false };
 static std::thread g_indexThread;
 static HWND g_mainHwnd = nullptr;
 
-static sqlite3* g_db = nullptr;
-static sqlite3_stmt* g_stmtInsert = nullptr;
-static std::mutex g_dbMutex;
-static std::condition_variable g_dbCv;
-static std::deque<ResultRow> g_dbQueue;
-static std::atomic_bool g_dbStop{ false };
-static std::thread g_dbThread;
+static Database g_database;
+static std::wstring g_dbPath;
 
 static bool EnablePrivilege(const wchar_t* privilegeName) {
     HANDLE hToken = nullptr;
@@ -141,121 +138,6 @@ static std::wstring GetExeDir() {
     if (len == 0 || len >= MAX_PATH) return L".";
     PathRemoveFileSpecW(path);
     return path;
-}
-
-static bool DbInit() {
-    const std::wstring dbPathW = GetExeDir() + L"\\everyarchive.db";
-    const std::string dbPath = WideToUtf8(dbPathW);
-
-    int rc = sqlite3_open_v2(dbPath.c_str(), &g_db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
-    if (rc != SQLITE_OK || !g_db) {
-        LOG_ERROR(L"sqlite3_open_v2 failed rc=%d", rc);
-        return false;
-    }
-
-    sqlite3_busy_timeout(g_db, 2000);
-
-    const char* sqlCreate =
-        "CREATE TABLE IF NOT EXISTS archive_files("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "name TEXT NOT NULL,"
-        "path TEXT NOT NULL UNIQUE,"
-        "size INTEGER,"
-        "mtime TEXT,"
-        "indexed_at INTEGER"
-        ");";
-
-    char* errMsg = nullptr;
-    rc = sqlite3_exec(g_db, sqlCreate, nullptr, nullptr, &errMsg);
-    if (rc != SQLITE_OK) {
-        if (errMsg) {
-            LOG_ERROR(L"sqlite3_exec create table failed rc=%d msg=%S", rc, errMsg);
-            sqlite3_free(errMsg);
-        } else {
-            LOG_ERROR(L"sqlite3_exec create table failed rc=%d", rc);
-        }
-        return false;
-    }
-
-    const char* sqlInsert =
-        "INSERT INTO archive_files(name,path,size,mtime,indexed_at) VALUES(?,?,?,?,?) "
-        "ON CONFLICT(path) DO UPDATE SET name=excluded.name,size=excluded.size,mtime=excluded.mtime,indexed_at=excluded.indexed_at;";
-    rc = sqlite3_prepare_v2(g_db, sqlInsert, -1, &g_stmtInsert, nullptr);
-    if (rc != SQLITE_OK || !g_stmtInsert) {
-        LOG_ERROR(L"sqlite3_prepare_v2 failed rc=%d", rc);
-        return false;
-    }
-
-    g_dbStop.store(false);
-    g_dbThread = std::thread([]() {
-        LOG_INFO(L"DB thread started");
-        int pendingInTxn = 0;
-        sqlite3_exec(g_db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
-
-        while (true) {
-            ResultRow row;
-            {
-                std::unique_lock<std::mutex> lk(g_dbMutex);
-                g_dbCv.wait(lk, [] { return g_dbStop.load() || !g_dbQueue.empty(); });
-                if (g_dbStop.load() && g_dbQueue.empty()) break;
-                row = std::move(g_dbQueue.front());
-                g_dbQueue.pop_front();
-            }
-
-            const std::string name = WideToUtf8(row.name);
-            const std::string path = WideToUtf8(row.path);
-            const std::string mtime = WideToUtf8(row.mtime);
-
-            sqlite3_reset(g_stmtInsert);
-            sqlite3_clear_bindings(g_stmtInsert);
-            sqlite3_bind_text(g_stmtInsert, 1, name.c_str(), (int)name.size(), SQLITE_TRANSIENT);
-            sqlite3_bind_text(g_stmtInsert, 2, path.c_str(), (int)path.size(), SQLITE_TRANSIENT);
-            sqlite3_bind_int64(g_stmtInsert, 3, _wtoi64(row.size.c_str()));
-            sqlite3_bind_text(g_stmtInsert, 4, mtime.c_str(), (int)mtime.size(), SQLITE_TRANSIENT);
-            sqlite3_bind_int64(g_stmtInsert, 5, (sqlite3_int64)time(nullptr));
-
-            const int rc = sqlite3_step(g_stmtInsert);
-            if (rc != SQLITE_DONE) {
-                LOG_WARN(L"sqlite3_step insert rc=%d", rc);
-            }
-
-            pendingInTxn++;
-            if (pendingInTxn >= 200) {
-                sqlite3_exec(g_db, "COMMIT;", nullptr, nullptr, nullptr);
-                sqlite3_exec(g_db, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr);
-                pendingInTxn = 0;
-            }
-        }
-
-        sqlite3_exec(g_db, "COMMIT;", nullptr, nullptr, nullptr);
-        LOG_INFO(L"DB thread finished");
-    });
-
-    return true;
-}
-
-static void DbEnqueue(const ResultRow& row) {
-    if (!g_db) return;
-    {
-        std::lock_guard<std::mutex> lk(g_dbMutex);
-        g_dbQueue.push_back(row);
-    }
-    g_dbCv.notify_one();
-}
-
-static void DbShutdown() {
-    if (!g_db) return;
-    g_dbStop.store(true);
-    g_dbCv.notify_all();
-    if (g_dbThread.joinable()) {
-        g_dbThread.join();
-    }
-    if (g_stmtInsert) {
-        sqlite3_finalize(g_stmtInsert);
-        g_stmtInsert = nullptr;
-    }
-    sqlite3_close(g_db);
-    g_db = nullptr;
 }
 
 static std::wstring GetSearchFilter() {
@@ -364,234 +246,49 @@ static std::wstring FormatFileTimeLocal(const FILETIME& ftUtc) {
     return buf;
 }
 
-static bool EndsWithInsensitive(const std::wstring& s, const wchar_t* suffix) {
-    const size_t sl = s.size();
-    const size_t tl = wcslen(suffix);
-    if (sl < tl) return false;
-    return _wcsicmp(s.c_str() + (sl - tl), suffix) == 0;
+static FILETIME U64ToFileTime(uint64_t v) {
+    FILETIME ft{};
+    ft.dwLowDateTime = (DWORD)(v & 0xFFFFFFFFu);
+    ft.dwHighDateTime = (DWORD)((v >> 32) & 0xFFFFFFFFu);
+    return ft;
 }
 
-static bool TryGetPathSizeTimeByFrn(HANDLE hVolume, ULONGLONG frn, std::wstring& outPath, ULONGLONG& outSize, FILETIME& outWriteTimeUtc) {
-    outPath.clear();
-    outSize = 0;
-    outWriteTimeUtc = {};
-
-    FILE_ID_DESCRIPTOR fid{};
-    fid.dwSize = sizeof(fid);
-    fid.Type = FileIdType;
-    fid.FileId.QuadPart = frn;
-
-    HANDLE hFile = OpenFileById(
-        hVolume,
-        &fid,
-        FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        0);
-
-    if (hFile == INVALID_HANDLE_VALUE) {
-        LOG_WARN(L"OpenFileById failed for FRN=%llu (err=%lu)", frn, GetLastError());
-        return false;
+static void LoadRowsFromDbAndRefresh() {
+    std::wstring err;
+    if (!g_database.Open(g_dbPath, &err)) {
+        LOG_WARN(L"Database::Open failed: %s", err.c_str());
+        return;
     }
 
-    wchar_t pathBuf[32768]{};
-    DWORD len = GetFinalPathNameByHandleW(hFile, pathBuf, (DWORD)(sizeof(pathBuf) / sizeof(pathBuf[0])), FILE_NAME_NORMALIZED);
-    if (len == 0 || len >= (DWORD)(sizeof(pathBuf) / sizeof(pathBuf[0]))) {
-        LOG_WARN(L"GetFinalPathNameByHandleW failed for FRN=%llu (err=%lu)", frn, GetLastError());
-        CloseHandle(hFile);
-        return false;
-    }
-    outPath.assign(pathBuf, len);
-
-    FILE_STANDARD_INFO st{};
-    if (GetFileInformationByHandleEx(hFile, FileStandardInfo, &st, sizeof(st))) {
-        outSize = (ULONGLONG)st.EndOfFile.QuadPart;
+    std::vector<ArchiveFile_t> files;
+    const std::wstring filter = GetSearchFilter();
+    if (!g_database.QueryArchives(filter, &files, &err)) {
+        LOG_WARN(L"QueryArchives failed: %s", err.c_str());
+        return;
     }
 
-    FILE_BASIC_INFO bi{};
-    if (GetFileInformationByHandleEx(hFile, FileBasicInfo, &bi, sizeof(bi))) {
-        outWriteTimeUtc.dwLowDateTime = bi.LastWriteTime.LowPart;
-        outWriteTimeUtc.dwHighDateTime = bi.LastWriteTime.HighPart;
+    std::vector<ResultRow> rows;
+    rows.reserve(files.size());
+    for (const auto& f : files) {
+        ResultRow r;
+        r.name = f.name;
+        r.path = f.path;
+        r.size = FormatSizeULongLong((ULONGLONG)f.size);
+        const FILETIME ft = U64ToFileTime(f.modifyTimestamp);
+        r.mtime = FormatFileTimeLocal(ft);
+        rows.push_back(std::move(r));
     }
 
-    CloseHandle(hFile);
-    return true;
-}
-
-static void IndexDriveFallbackFind(HWND hWnd, wchar_t driveLetter) {
-    wchar_t root[8]{};
-    swprintf_s(root, L"%c:\\", driveLetter);
-
-    std::deque<std::wstring> q;
-    q.emplace_back(std::wstring(L"\\\\?\\") + root);
-
-    while (!q.empty() && !g_indexCancel.load()) {
-        std::wstring dir = std::move(q.front());
-        q.pop_front();
-
-        std::wstring pattern = dir;
-        if (!pattern.empty() && pattern.back() != L'\\') pattern.push_back(L'\\');
-        pattern.push_back(L'*');
-
-        WIN32_FIND_DATAW fd{};
-        HANDLE hFind = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
-        if (hFind == INVALID_HANDLE_VALUE) {
-            continue;
-        }
-
-        do {
-            if (g_indexCancel.load()) break;
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-
-            const bool isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            const bool isReparse = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-
-            std::wstring full = dir;
-            if (!full.empty() && full.back() != L'\\') full.push_back(L'\\');
-            full.append(fd.cFileName);
-
-            if (isDir) {
-                if (!isReparse) {
-                    q.emplace_back(std::move(full));
-                }
-                continue;
-            }
-
-            std::wstring name = fd.cFileName;
-            if (!EndsWithInsensitive(name, L".apk")) {
-                continue;
-            }
-
-            auto* row = new ResultRow();
-            row->name = std::move(name);
-            row->path = full;
-            const ULONGLONG size = ((ULONGLONG)fd.nFileSizeHigh << 32) | (ULONGLONG)fd.nFileSizeLow;
-            row->size = FormatSizeULongLong(size);
-            row->mtime = FormatFileTimeLocal(fd.ftLastWriteTime);
-            PostAddResult(hWnd, row);
-        } while (FindNextFileW(hFind, &fd));
-
-        FindClose(hFind);
+    {
+        std::lock_guard<std::mutex> lk(g_rowsMutex);
+        g_rows = std::move(rows);
     }
+
+    RefreshList();
 }
 
 static void PostAddResult(HWND hWnd, ResultRow* row) {
     PostMessageW(hWnd, WM_APP_ADD_RESULT, 0, (LPARAM)row);
-}
-
-static void IndexVolumeUsn(HWND hWnd, const wchar_t driveLetter) {
-    wchar_t volPath[16]{};
-    swprintf_s(volPath, L"\\\\.\\%c:", driveLetter);
-
-    LOG_INFO(L"IndexVolumeUsn start drive=%c", driveLetter);
-
-    HANDLE hVol = CreateFileW(
-        volPath,
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-
-    if (hVol == INVALID_HANDLE_VALUE) {
-        const DWORD err = GetLastError();
-        LOG_WARN(L"CreateFileW volume failed path=%s (err=%lu)", volPath, err);
-        if (err == ERROR_ACCESS_DENIED) {
-            LOG_WARN(L"Access denied on volume %c:; fallback to directory traversal", driveLetter);
-            IndexDriveFallbackFind(hWnd, driveLetter);
-        }
-        return;
-    }
-
-    DWORD br = 0;
-    USN_JOURNAL_DATA_V0 journal{};
-    if (!DeviceIoControl(hVol, FSCTL_QUERY_USN_JOURNAL, nullptr, 0, &journal, sizeof(journal), &br, nullptr)) {
-        LOG_WARN(L"FSCTL_QUERY_USN_JOURNAL failed drive=%c (err=%lu)", driveLetter, GetLastError());
-        CloseHandle(hVol);
-        return;
-    }
-
-    MFT_ENUM_DATA_V0 med{};
-    med.StartFileReferenceNumber = 0;
-    med.LowUsn = 0;
-    med.HighUsn = journal.NextUsn;
-
-    const DWORD kBufSize = 1 << 20;
-    std::vector<BYTE> buffer;
-    buffer.resize(kBufSize);
-
-    while (!g_indexCancel.load()) {
-        br = 0;
-        if (!DeviceIoControl(hVol, FSCTL_ENUM_USN_DATA, &med, sizeof(med), buffer.data(), (DWORD)buffer.size(), &br, nullptr)) {
-            const DWORD err = GetLastError();
-            if (err == ERROR_HANDLE_EOF) {
-                LOG_INFO(L"FSCTL_ENUM_USN_DATA reached EOF drive=%c", driveLetter);
-            } else {
-                LOG_WARN(L"FSCTL_ENUM_USN_DATA failed drive=%c (err=%lu)", driveLetter, err);
-            }
-            break;
-        }
-
-        if (br < sizeof(USN)) {
-            break;
-        }
-
-        USN* pUsn = (USN*)buffer.data();
-        BYTE* p = buffer.data() + sizeof(USN);
-        BYTE* end = buffer.data() + br;
-
-        while (p + sizeof(USN_RECORD_V2) <= end) {
-            if (g_indexCancel.load()) break;
-
-            auto* rec = (USN_RECORD_V2*)p;
-            if (rec->RecordLength == 0) break;
-
-            const wchar_t* fname = (const wchar_t*)((BYTE*)rec + rec->FileNameOffset);
-            const int fnChars = (int)(rec->FileNameLength / sizeof(wchar_t));
-            std::wstring name(fname, fname + fnChars);
-
-            const bool isDir = (rec->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            if (!isDir) {
-                if (EndsWithInsensitive(name, L".apk") || EndsWithInsensitive(name, L".zip")) {
-                    std::wstring fullPath;
-                    ULONGLONG fsize = 0;
-                    FILETIME ftWriteUtc{};
-
-                    if (TryGetPathSizeTimeByFrn(hVol, (ULONGLONG)rec->FileReferenceNumber, fullPath, fsize, ftWriteUtc)) {
-                        auto* row = new ResultRow();
-                        row->name = name;
-                        row->path = fullPath;
-                        row->size = FormatSizeULongLong(fsize);
-                        row->mtime = FormatFileTimeLocal(ftWriteUtc);
-                        PostAddResult(hWnd, row);
-                    }
-                }
-            }
-
-            p += rec->RecordLength;
-        }
-
-        med.StartFileReferenceNumber = *pUsn;
-    }
-
-    CloseHandle(hVol);
-
-    LOG_INFO(L"IndexVolumeUsn done drive=%c", driveLetter);
-}
-
-static void IndexAllFixedDrives(HWND hWnd) {
-    DWORD drives = GetLogicalDrives();
-
-    LOG_INFO(L"IndexAllFixedDrives start mask=0x%08lX", (unsigned long)drives);
-    for (int i = 0; i < 26 && !g_indexCancel.load(); ++i) {
-        if ((drives & (1u << i)) == 0) continue;
-        wchar_t root[] = { (wchar_t)(L'A' + i), L':', L'\\', 0 };
-        if (GetDriveTypeW(root) != DRIVE_FIXED) continue;
-        IndexVolumeUsn(hWnd, (wchar_t)(L'A' + i));
-    }
-
-    LOG_INFO(L"IndexAllFixedDrives done");
 }
 
 static void StopIndexing() {
@@ -617,10 +314,29 @@ static void StartIndexing(HWND hWnd) {
     RefreshList();
 
     g_indexThread = std::thread([hWnd]() {
-        LOG_INFO(L"Index thread started");
-        IndexAllFixedDrives(hWnd);
+        FileScanner scanner;
+        std::vector<ArchiveFile_t> files;
+        std::wstring err;
+        if (!scanner.Scan(&files, &err)) {
+            LOG_WARN(L"FileScanner::Scan failed: %s", err.c_str());
+        }
+
+        if (!g_indexCancel.load()) {
+            if (!g_database.Open(g_dbPath, &err)) {
+                LOG_WARN(L"Database::Open failed: %s", err.c_str());
+            } else {
+                if (!g_database.CreateArchivesTable(&err)) {
+                    LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
+                } else {
+                    if (!g_database.InsertArchivesBatch(files, &err)) {
+                        LOG_WARN(L"InsertArchivesBatch failed: %s", err.c_str());
+                    }
+                }
+            }
+        }
+
+        PostMessageW(hWnd, WM_APP_DB_REFRESH, 0, 0);
         PostMessageW(hWnd, WM_APP_INDEX_DONE, 0, 0);
-        LOG_INFO(L"Index thread finished");
     });
 }
 
@@ -706,13 +422,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             DestroyWindow(hWnd);
             return 0;
         case IDM_VIEW_REFRESH:
-            StartIndexing(hWnd);
             return 0;
         case IDM_VIEW_STOP:
             StopIndexing();
             return 0;
         case IDM_SEARCH_FIND:
-            RefreshList();
+            LoadRowsFromDbAndRefresh();
             return 0;
         case IDM_HELP_ABOUT:
             MessageBoxW(hWnd, L"EveryArchive", L"About", MB_OK | MB_ICONINFORMATION);
@@ -730,8 +445,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             delete row;
             return 0;
         }
-
-        DbEnqueue(*row);
 
         int index = -1;
         {
@@ -767,6 +480,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         LOG_INFO(L"WM_APP_INDEX_DONE");
         return 0;
 
+    case WM_APP_DB_REFRESH:
+        LoadRowsFromDbAndRefresh();
+        return 0;
+
     case WM_NOTIFY: {
         LPNMHDR hdr = (LPNMHDR)lParam;
         if (hdr && hdr->hwndFrom == g_hList) {
@@ -792,9 +509,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     Logger::Init();
     LOG_INFO(L"wWinMain start");
 
-    if (!DbInit()) {
-        LOG_WARN(L"DbInit failed; continue without database");
-    }
+    g_dbPath = GetExeDir() + L"\\everyarchive.db";
 
     const bool p1 = EnablePrivilege(SE_MANAGE_VOLUME_NAME);
     const bool p2 = EnablePrivilege(SE_BACKUP_NAME);
@@ -846,7 +561,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     LOG_INFO(L"Message loop exit code=%lld", (long long)msg.wParam);
-    DbShutdown();
     Logger::Shutdown();
     return (int)msg.wParam;
 }

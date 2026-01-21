@@ -14,3 +14,4 @@
 
 #define WM_APP_ADD_RESULT (WM_APP + 1)
 #define WM_APP_INDEX_DONE (WM_APP + 2)
+#define WM_APP_DB_REFRESH (WM_APP + 3)

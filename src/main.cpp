@@ -39,6 +39,7 @@ static void PostAddResult(HWND hWnd, ResultRow* row);
 
 static HWND g_hSearch = nullptr;
 static HWND g_hList = nullptr;
+static HWND g_hStatusBar = nullptr;
 static WNDPROC g_EditOldProc = nullptr;
 
 static std::vector<ResultRow> g_rows;
@@ -48,6 +49,8 @@ static std::atomic_bool g_indexCancel{ false };
 static std::atomic_bool g_indexRunning{ false };
 static std::thread g_indexThread;
 static HWND g_mainHwnd = nullptr;
+static int g_spinnerFrame = 0;
+static const wchar_t* g_spinnerChars[] = { L"|", L"/", L"-", L"\\" };
 
 static Database g_database;
 static std::wstring g_dbPath;
@@ -216,10 +219,17 @@ static void LayoutChildren(HWND hWnd) {
     const int margin = 6;
     const int editH = 24;
 
+    RECT statusRect{};
+    if (g_hStatusBar) {
+        SendMessageW(g_hStatusBar, WM_SIZE, 0, 0);
+        GetWindowRect(g_hStatusBar, &statusRect);
+    }
+    const int statusH = statusRect.bottom - statusRect.top;
+
     int x = margin;
     int y = margin;
     int w = (rc.right - rc.left) - margin * 2;
-    int h = (rc.bottom - rc.top) - margin * 2;
+    int h = (rc.bottom - rc.top) - margin * 2 - statusH;
 
     MoveWindow(g_hSearch, x, y, w, editH, TRUE);
 
@@ -351,10 +361,31 @@ static LRESULT CALLBACK SearchEditProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     return CallWindowProcW(g_EditOldProc, hWnd, msg, wParam, lParam);
 }
 
+static void UpdateStatusBar() {
+    if (!g_hStatusBar) return;
+
+    std::wstring statusText;
+    
+    int fileCount = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_rowsMutex);
+        fileCount = (int)g_rows.size();
+    }
+
+    if (g_indexRunning.load()) {
+        const wchar_t* spinner = g_spinnerChars[g_spinnerFrame % 4];
+        statusText = std::wstring(L"正在处理 ") + spinner + L" | 文件数量: " + std::to_wstring(fileCount);
+    } else {
+        statusText = L"就绪 | 文件数量: " + std::to_wstring(fileCount);
+    }
+
+    SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)statusText.c_str());
+}
+
 static void EnsureCommonControls() {
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_LISTVIEW_CLASSES;
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
 }
 
@@ -402,10 +433,28 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             SetupListColumns(g_hList);
         }
 
+        g_hStatusBar = CreateWindowExW(
+            0,
+            STATUSCLASSNAMEW,
+            nullptr,
+            WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+            0, 0, 0, 0,
+            hWnd,
+            (HMENU)(INT_PTR)IDC_STATUSBAR,
+            (HINSTANCE)GetWindowLongPtrW(hWnd, GWLP_HINSTANCE),
+            nullptr);
+
+        if (!g_hStatusBar) {
+            LOG_ERROR(L"CreateWindowExW statusbar failed (err=%lu)", GetLastError());
+        }
+
         g_EditOldProc = (WNDPROC)SetWindowLongPtrW(g_hSearch, GWLP_WNDPROC, (LONG_PTR)SearchEditProc);
 
         RefreshList();
         LayoutChildren(hWnd);
+
+        SetTimer(hWnd, IDT_STATUSBAR_TIMER, 200, nullptr);
+        UpdateStatusBar();
 
         StartIndexing(hWnd);
         return 0;
@@ -413,6 +462,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_SIZE:
         LayoutChildren(hWnd);
         return 0;
+
+    case WM_TIMER:
+        if (wParam == IDT_STATUSBAR_TIMER) {
+            if (g_indexRunning.load()) {
+                g_spinnerFrame++;
+            }
+            UpdateStatusBar();
+            return 0;
+        }
+        break;
 
     case WM_COMMAND: {
         const int id = LOWORD(wParam);
@@ -472,16 +531,24 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             ListView_SetItemText(g_hList, idx, 3, const_cast<LPWSTR>(r.mtime.c_str()));
         }
 
+        UpdateStatusBar();
         return 0;
     }
 
     case WM_APP_INDEX_DONE:
         g_indexRunning.store(false);
+        g_spinnerFrame = 0;
+        UpdateStatusBar();
         LOG_INFO(L"WM_APP_INDEX_DONE");
         return 0;
 
     case WM_APP_DB_REFRESH:
         LoadRowsFromDbAndRefresh();
+        UpdateStatusBar();
+        return 0;
+
+    case WM_APP_UPDATE_STATUSBAR:
+        UpdateStatusBar();
         return 0;
 
     case WM_NOTIFY: {
@@ -497,6 +564,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_DESTROY:
         LOG_INFO(L"WM_DESTROY");
+        KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         StopIndexing();
         PostQuitMessage(0);
         return 0;

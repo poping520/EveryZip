@@ -271,10 +271,10 @@ static void LoadRowsFromDbAndRefresh() {
     rows.reserve(files.size());
     for (const auto& f : files) {
         ResultRow r;
-        r.name = f.name;
-        r.path = f.path;
-        r.size = FormatSizeULongLong((ULONGLONG)f.size);
-        const FILETIME ft = U64ToFileTime(f.modifyTimestamp);
+        r.name = f.fileName;
+        r.path = f.filePath;
+        r.size = FormatSizeULongLong((ULONGLONG)f.fileSize);
+        const FILETIME ft = U64ToFileTime(f.modifyTime);
         r.mtime = FormatFileTimeLocal(ft);
         rows.push_back(std::move(r));
     }

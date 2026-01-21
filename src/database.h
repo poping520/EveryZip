@@ -33,7 +33,15 @@ public:
     void Close();
 
     bool CreateArchivesTable(std::wstring* err);
+    bool InsertOrUpdateArchive(const ArchiveFile_t& archiveFile);
     bool InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std::wstring* err);
+    bool GetArchiveLastUsn(wchar_t driveLetter, USN* outUsn);
+    bool DeleteArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumber);
+    bool GetArchiveCount();
+    bool BeginTransaction();
+    bool CommitTransaction();
+    bool RollbackTransaction();
+
 
     bool QueryArchives(const std::wstring& filter, std::vector<ArchiveFile_t>* out, std::wstring* err);
 

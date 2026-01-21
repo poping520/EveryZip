@@ -1,11 +1,9 @@
 #include "file_scanner.h"
 
-#include <algorithm>
-#include <chrono>
-#include <cstdint>
-#include <unordered_map>
-
 #include <windows.h>
+#include <winioctl.h>
+
+#include <vector>
 
 static bool IsNtfsDriveRoot(const std::wstring& driveRoot) {
     wchar_t fsName[MAX_PATH] = {0};
@@ -21,59 +19,19 @@ static bool HasTargetExt(const wchar_t* name, size_t len) {
         if (len < extLen) return false;
         return _wcsicmp(std::wstring(name + (len - extLen), extLen).c_str(), ext) == 0;
     };
-    return endsWithI(L".zip") || endsWithI(L".apk");
+
+    return endsWithI(L".apk");
 }
 
-static uint64_t FileTimeToU64(const LARGE_INTEGER& li) {
-    return static_cast<uint64_t>(li.QuadPart);
-}
-
-struct DirNode {
-    DWORDLONG parent = 0;
-    std::wstring name;
-};
-
-struct MatchedFile {
-    DWORDLONG frn = 0;
-    DWORDLONG pfrn = 0;
-    USN usn = 0;
-    std::wstring name;
-    uint64_t modifyTs = 0;
-};
-
-static std::wstring BuildDirPath(const std::wstring& driveRoot,
-                                DWORDLONG pfrn,
-                                const std::unordered_map<DWORDLONG, DirNode>& dirs) {
-    std::vector<std::wstring> parts;
-    parts.reserve(64);
-
-    DWORDLONG cur = pfrn;
-    for (int i = 0; i < 1024; ++i) {
-        auto it = dirs.find(cur);
-        if (it == dirs.end()) break;
-        const DirNode& n = it->second;
-        if (!n.name.empty()) {
-            parts.push_back(n.name);
-        }
-        if (n.parent == 0 || n.parent == cur) break;
-        cur = n.parent;
-    }
-
-    std::wstring path = driveRoot;
-    for (auto rit = parts.rbegin(); rit != parts.rend(); ++rit) {
-        path.append(*rit);
-        path.push_back(L'\\');
-    }
-    return path;
-}
-
-static bool TryGetFileSizeById(HANDLE hVol, DWORDLONG frn, uint64_t* outSize) {
-    *outSize = 0;
+static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
+    if (outFileSize) *outFileSize = 0;
+    if (outModifyTime) *outModifyTime = 0;
+    if (outFullPath) outFullPath->clear();
 
     FILE_ID_DESCRIPTOR fid = {};
     fid.dwSize = sizeof(fid);
     fid.Type = FileIdType;
-    fid.FileId.QuadPart = static_cast<LONGLONG>(frn);
+    fid.FileId.QuadPart = static_cast<LONGLONG>(fileRefNumber);
 
     HANDLE hFile = OpenFileById(
         hVol,
@@ -87,18 +45,45 @@ static bool TryGetFileSizeById(HANDLE hVol, DWORDLONG frn, uint64_t* outSize) {
         return false;
     }
 
-    LARGE_INTEGER li = {};
-    const bool ok = !!GetFileSizeEx(hFile, &li);
-    if (ok && li.QuadPart >= 0) {
-        *outSize = static_cast<uint64_t>(li.QuadPart);
+    BY_HANDLE_FILE_INFORMATION fileInfo = {};
+    bool success = GetFileInformationByHandle(hFile, &fileInfo) != 0;
+    if (success) {
+        if (outFileSize) {
+            *outFileSize = ((uint64_t)fileInfo.nFileSizeHigh << 32) | fileInfo.nFileSizeLow;
+        }
+        if (outModifyTime) {
+            ULARGE_INTEGER ui{};
+            ui.LowPart = fileInfo.ftLastWriteTime.dwLowDateTime;
+            ui.HighPart = fileInfo.ftLastWriteTime.dwHighDateTime;
+            *outModifyTime = ui.QuadPart;
+        }
+
+        if (outFullPath) {
+            DWORD need = GetFinalPathNameByHandleW(hFile, nullptr, 0, FILE_NAME_NORMALIZED);
+            if (need != 0) {
+                std::wstring fullPath;
+                fullPath.resize(need);
+                DWORD got = GetFinalPathNameByHandleW(hFile, fullPath.data(), need, FILE_NAME_NORMALIZED);
+                if (got != 0) {
+                    while (!fullPath.empty() && fullPath.back() == L'\0') {
+                        fullPath.pop_back();
+                    }
+                    *outFullPath = std::move(fullPath);
+                }
+            }
+        }
     }
+
     CloseHandle(hFile);
-    return ok;
+    return success;
 }
 
-static bool ScanOneNtfsVolumeByUsn(const std::wstring& driveRoot, std::vector<ArchiveFile_t>* out, std::wstring* err) {
-    if (driveRoot.size() < 2) return true;
-    const wchar_t driveLetter = driveRoot[0];
+static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out, std::wstring* err) {
+    if (err) err->clear();
+    if (!out) {
+        if (err) *err = L"out is null";
+        return false;
+    }
 
     wchar_t volumePath[] = L"\\\\.\\X:";
     volumePath[4] = driveLetter;
@@ -111,16 +96,17 @@ static bool ScanOneNtfsVolumeByUsn(const std::wstring& driveRoot, std::vector<Ar
         OPEN_EXISTING,
         0,
         nullptr);
+
     if (hVol == INVALID_HANDLE_VALUE) {
-        if (err) *err = L"CreateFileW(volume) failed";
+        if (err) *err = L"CreateFileW volume failed";
         return false;
     }
 
     USN_JOURNAL_DATA_V0 journal = {};
     DWORD bytes = 0;
     if (!DeviceIoControl(hVol, FSCTL_QUERY_USN_JOURNAL, nullptr, 0, &journal, sizeof(journal), &bytes, nullptr)) {
-        CloseHandle(hVol);
         if (err) *err = L"FSCTL_QUERY_USN_JOURNAL failed";
+        CloseHandle(hVol);
         return false;
     }
 
@@ -131,12 +117,6 @@ static bool ScanOneNtfsVolumeByUsn(const std::wstring& driveRoot, std::vector<Ar
 
     std::vector<unsigned char> buffer;
     buffer.resize(1u << 20);
-
-    std::unordered_map<DWORDLONG, DirNode> dirs;
-    dirs.reserve(1u << 20);
-
-    std::vector<MatchedFile> matches;
-    matches.reserve(1u << 16);
 
     for (;;) {
         bytes = 0;
@@ -153,8 +133,8 @@ static bool ScanOneNtfsVolumeByUsn(const std::wstring& driveRoot, std::vector<Ar
             if (e == ERROR_HANDLE_EOF) {
                 break;
             }
-            CloseHandle(hVol);
             if (err) *err = L"FSCTL_ENUM_USN_DATA failed";
+            CloseHandle(hVol);
             return false;
         }
 
@@ -174,23 +154,25 @@ static bool ScanOneNtfsVolumeByUsn(const std::wstring& driveRoot, std::vector<Ar
             const wchar_t* fileName = reinterpret_cast<const wchar_t*>(
                 reinterpret_cast<const unsigned char*>(rec) + rec->FileNameOffset);
             const size_t fileNameLen = static_cast<size_t>(rec->FileNameLength / sizeof(wchar_t));
-            const bool isDir = (rec->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
-            if (isDir) {
-                DirNode node;
-                node.parent = static_cast<DWORDLONG>(rec->ParentFileReferenceNumber);
-                node.name.assign(fileName, fileName + fileNameLen);
-                dirs[static_cast<DWORDLONG>(rec->FileReferenceNumber)] = std::move(node);
-            } else {
-                if (HasTargetExt(fileName, fileNameLen)) {
-                    MatchedFile mf;
-                    mf.frn = static_cast<DWORDLONG>(rec->FileReferenceNumber);
-                    mf.pfrn = static_cast<DWORDLONG>(rec->ParentFileReferenceNumber);
-                    mf.usn = rec->Usn;
-                    mf.name.assign(fileName, fileName + fileNameLen);
-                    mf.modifyTs = FileTimeToU64(rec->TimeStamp);
-                    matches.push_back(std::move(mf));
+            if (HasTargetExt(fileName, fileNameLen)) {
+                ArchiveFile_t af;
+                af.driveLetter = std::wstring(1, driveLetter);
+                af.fileName.assign(fileName, fileNameLen);
+                af.fileRefNumber = rec->FileReferenceNumber;
+                af.parentFileRefNumber = rec->ParentFileReferenceNumber;
+                af.usn = rec->Usn;
+
+                uint64_t fileSize = 0;
+                uint64_t modifyTime = 0;
+                std::wstring fullPath;
+                if (GetFileInfoByRefNumber(hVol, rec->FileReferenceNumber, &fileSize, &modifyTime, &fullPath)) {
+                    af.fileSize = fileSize;
+                    af.modifyTime = modifyTime;
+                    af.filePath = std::move(fullPath);
                 }
+
+                out->push_back(std::move(af));
             }
 
             offset += rec->RecordLength;
@@ -199,38 +181,18 @@ static bool ScanOneNtfsVolumeByUsn(const std::wstring& driveRoot, std::vector<Ar
         med.StartFileReferenceNumber = *pUsn;
     }
 
-    for (const auto& m : matches) {
-        ArchiveFile_t af;
-        af.name = m.name;
-        af.frn = m.frn;
-        af.pfrn = m.pfrn;
-        af.usn = m.usn;
-        af.modifyTimestamp = m.modifyTs;
-
-        const std::wstring dirPath = BuildDirPath(driveRoot, m.pfrn, dirs);
-        af.path = dirPath + m.name;
-
-        uint64_t sz = 0;
-        if (TryGetFileSizeById(hVol, m.frn, &sz)) {
-            af.size = sz;
-        } else {
-            af.size = 0;
-        }
-
-        out->push_back(std::move(af));
-    }
-
     CloseHandle(hVol);
     return true;
 }
 
 bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err) {
+    if (err) err->clear();
     if (!out) {
         if (err) *err = L"out is null";
         return false;
     }
+
     out->clear();
-    if (err) err->clear();
 
     DWORD needed = GetLogicalDriveStringsW(0, nullptr);
     if (needed == 0) {
@@ -250,20 +212,24 @@ bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err) {
         std::wstring root = p;
         p += root.size() + 1;
 
+        if (root.size() < 2) continue;
+
         const UINT dtype = GetDriveTypeW(root.c_str());
         if (dtype == DRIVE_NO_ROOT_DIR || dtype == DRIVE_UNKNOWN) {
             continue;
         }
+
         if (!IsNtfsDriveRoot(root)) {
             continue;
         }
 
-        std::wstring perr;
-        if (!ScanOneNtfsVolumeByUsn(root, out, &perr)) {
-            if (err && err->empty()) {
-                *err = perr;
+        const wchar_t driveLetter = root[0];
+        std::wstring scanErr;
+        if (!ScanDriveByUsn(driveLetter, out, &scanErr)) {
+            if (err) {
+                *err = scanErr.empty() ? L"ScanDriveByUsn failed" : scanErr;
             }
-            continue;
+            return false;
         }
     }
 

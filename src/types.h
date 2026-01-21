@@ -5,20 +5,31 @@
 
 #include <Windows.h>
 
-typedef struct ArchiveFile {
+// 归档文件
+typedef struct ArchiveFile
+{
+    // 盘符
+    std::wstring driveLetter;
+    // 文件名称
+    std::wstring fileName;
+    // 文件路径
+    std::wstring filePath;
+    // 文件大小
+    uint64_t fileSize;
+    // 文件修改时间
+    uint64_t modifyTime;
     // FileReferenceNumber
-    DWORDLONG frn;
+    DWORDLONG fileRefNumber;
+    // ParentFileReferenceNumber
+    DWORDLONG parentFileRefNumber;
     //
     USN usn;
-    // ParentFileReferenceNumber
-    DWORDLONG pfrn;
-    // 文件名称
-    std::wstring name;
-    // 文件路径
-    std::wstring path;
-    // 文件大小
-    uint64_t size;
-    // 文件修改时间
-    uint64_t modifyTimestamp;
-
 } ArchiveFile_t;
+
+// 归档文件内容
+typedef struct ArchiveEntry
+{
+    std::wstring entryName;
+    std::uint64_t compressed_size = 0;
+    std::uint64_t uncompressed_size = 0;
+} ArchiveEntry_t;

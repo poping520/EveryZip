@@ -63,7 +63,7 @@ static std::string FileTimeToString(const FILETIME& ft) {
     SYSTEMTIME st;
     FileTimeToSystemTime(&ft, &st);
     std::ostringstream oss;
-    oss << st.wYear << "-" 
+    oss << st.wYear << "-"
         << std::setfill('0') << std::setw(2) << st.wMonth << "-"
         << std::setfill('0') << std::setw(2) << st.wDay << " "
         << std::setfill('0') << std::setw(2) << st.wHour << ":"
@@ -75,7 +75,7 @@ static std::string FileTimeToString(const FILETIME& ft) {
 class FileDatabase {
 public:
     FileDatabase() : db_(nullptr) {}
-    
+
     ~FileDatabase() {
         Close();
     }
@@ -125,12 +125,12 @@ public:
         return true;
     }
 
-    bool InsertOrUpdateFile(wchar_t driveLetter, uint64_t fileRefNumber, const std::wstring& fileName,
-                           uint64_t fileSize, const FILETIME& createTime, const FILETIME& modifyTime,
-                           DWORD attributes, USN usn) {
+    bool InsertOrUpdateFile(wchar_t driveLetter, uint64_t fileRefNumber, uint64_t parentFileRefNumber,
+                           USN usn, const std::wstring& fileName, const std::wstring& filePath,
+                           uint64_t fileSize, const FILETIME& modifyTime) {
         const char* sql = R"(
-            INSERT OR REPLACE INTO files 
-            (drive_letter, file_ref_number, file_name, file_size, create_time, modify_time, attributes, usn)
+            INSERT OR REPLACE INTO files
+            (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modify_time)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         )";
 
@@ -143,17 +143,17 @@ public:
 
         std::string driveStr(1, (char)driveLetter);
         std::string fileNameUtf8 = WideToUtf8(fileName);
-        std::string createTimeStr = FileTimeToString(createTime);
+        std::string filePathUtf8 = WideToUtf8(filePath);
         std::string modifyTimeStr = FileTimeToString(modifyTime);
 
         sqlite3_bind_text(stmt, 1, driveStr.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 2, fileRefNumber);
-        sqlite3_bind_text(stmt, 3, fileNameUtf8.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 4, fileSize);
-        sqlite3_bind_text(stmt, 5, createTimeStr.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 6, modifyTimeStr.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 7, attributes);
-        sqlite3_bind_int64(stmt, 8, usn);
+        sqlite3_bind_int64(stmt, 3, parentFileRefNumber);
+        sqlite3_bind_int64(stmt, 4, usn);
+        sqlite3_bind_text(stmt, 5, fileNameUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 6, filePathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 7, fileSize);
+        sqlite3_bind_text(stmt, 8, modifyTimeStr.c_str(), -1, SQLITE_TRANSIENT);
 
         rc = sqlite3_step(stmt);
         sqlite3_finalize(stmt);
@@ -224,12 +224,12 @@ private:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 drive_letter TEXT NOT NULL,
                 file_ref_number INTEGER NOT NULL,
-                file_name TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                create_time TEXT NOT NULL,
-                modify_time TEXT NOT NULL,
-                attributes INTEGER NOT NULL,
+                parent_file_ref_number INTEGER NOT NULL,
                 usn INTEGER NOT NULL,
+                file_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                modify_time TEXT NOT NULL,
                 UNIQUE(drive_letter, file_ref_number)
             );
             CREATE INDEX IF NOT EXISTS idx_drive_letter ON files(drive_letter);
@@ -252,12 +252,12 @@ private:
 
 struct FileInfo {
     uint64_t fileRefNumber;
-    std::wstring fileName;
-    uint64_t fileSize;
-    FILETIME createTime;
-    FILETIME modifyTime;
-    DWORD attributes;
+    uint64_t parentFileRefNumber;
     USN usn;
+    std::wstring fileName;
+    std::wstring filePath;
+    uint64_t fileSize;
+    FILETIME modifyTime;
 };
 
 static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, FileInfo* outInfo) {
@@ -280,19 +280,42 @@ static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, FileInfo
 
     BY_HANDLE_FILE_INFORMATION fileInfo = {};
     bool success = GetFileInformationByHandle(hFile, &fileInfo) != 0;
-    
+
     if (success) {
         outInfo->fileSize = ((uint64_t)fileInfo.nFileSizeHigh << 32) | fileInfo.nFileSizeLow;
-        outInfo->createTime = fileInfo.ftCreationTime;
         outInfo->modifyTime = fileInfo.ftLastWriteTime;
-        outInfo->attributes = fileInfo.dwFileAttributes;
+
+        std::wstring fullPath;
+        DWORD need = GetFinalPathNameByHandleW(hFile, nullptr, 0, FILE_NAME_NORMALIZED);
+        if (need != 0) {
+            fullPath.resize(need);
+            DWORD got = GetFinalPathNameByHandleW(hFile, fullPath.data(), need, FILE_NAME_NORMALIZED);
+            if (got != 0) {
+                while (!fullPath.empty() && fullPath.back() == L'\0') {
+                    fullPath.pop_back();
+                }
+            } else {
+                fullPath.clear();
+            }
+        }
+        outInfo->filePath = std::move(fullPath);
     }
 
     CloseHandle(hFile);
     return success;
 }
 
-static bool ScanDriveByUsn(wchar_t driveLetter, FileDatabase& db, bool isInitialScan, 
+static bool HasTargetExt(const wchar_t* name, size_t len) {
+    auto endsWithI = [&](const wchar_t* ext) -> bool {
+        const size_t extLen = wcslen(ext);
+        if (len < extLen) return false;
+        return _wcsicmp(std::wstring(name + (len - extLen), extLen).c_str(), ext) == 0;
+    };
+
+    return endsWithI(L".apk");
+}
+
+static bool ScanDriveByUsn(wchar_t driveLetter, FileDatabase& db, bool isInitialScan,
                           uint64_t* outProcessed, uint64_t* outInserted, uint64_t* outDeleted) {
     *outProcessed = 0;
     *outInserted = 0;
@@ -376,20 +399,23 @@ static bool ScanDriveByUsn(wchar_t driveLetter, FileDatabase& db, bool isInitial
             const size_t fileNameLen = static_cast<size_t>(rec->FileNameLength / sizeof(wchar_t));
             std::wstring fileNameStr(fileName, fileNameLen);
 
-            if (rec->Reason & USN_REASON_FILE_DELETE) {
-                db.DeleteFileByRefNumber(driveLetter, rec->FileReferenceNumber);
-                (*outDeleted)++;
-            } else {
-                FileInfo info = {};
-                info.fileRefNumber = rec->FileReferenceNumber;
-                info.fileName = fileNameStr;
-                info.usn = rec->Usn;
+            if (HasTargetExt(fileName, fileNameLen)) {
+                if (rec->Reason & USN_REASON_FILE_DELETE) {
+                    db.DeleteFileByRefNumber(driveLetter, rec->FileReferenceNumber);
+                    (*outDeleted)++;
+                } else {
+                    FileInfo info = {};
+                    info.fileRefNumber = rec->FileReferenceNumber;
+                    info.parentFileRefNumber = rec->ParentFileReferenceNumber;
+                    info.usn = rec->Usn;
+                    info.fileName = fileNameStr;
 
-                if (GetFileInfoByRefNumber(hVol, rec->FileReferenceNumber, &info)) {
-                    if (db.InsertOrUpdateFile(driveLetter, info.fileRefNumber, info.fileName,
-                                             info.fileSize, info.createTime, info.modifyTime,
-                                             info.attributes, info.usn)) {
-                        (*outInserted)++;
+                    if (GetFileInfoByRefNumber(hVol, rec->FileReferenceNumber, &info)) {
+                        if (db.InsertOrUpdateFile(driveLetter, info.fileRefNumber, info.parentFileRefNumber,
+                                                 info.usn, info.fileName, info.filePath, info.fileSize,
+                                                 info.modifyTime)) {
+                            (*outInserted)++;
+                                                 }
                     }
                 }
             }
@@ -483,8 +509,8 @@ int wmain(int argc, wchar_t* argv[]) {
         totalInserted += inserted;
         totalDeleted += deleted;
 
-        std::wcout << L" OK (processed=" << processed 
-                  << L", inserted/updated=" << inserted 
+        std::wcout << L" OK (processed=" << processed
+                  << L", inserted/updated=" << inserted
                   << L", deleted=" << deleted << L")" << std::endl;
     }
 

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "types.h"
-
 #include <string>
-#include <vector>
+ #include <vector>
+
+#include "database.h"
 
 class FileScanner {
 public:

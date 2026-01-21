@@ -51,6 +51,224 @@ bool Database::Open(const std::wstring& dbPath, std::wstring* err)
     return true;
 }
 
+bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
+{
+    if (!db_)
+    {
+        return false;
+    }
+
+    const std::wstring sql =
+        L"INSERT OR REPLACE INTO entries (archive_path, entry_name, entry_path, compressed_size, uncompressed_size) "
+        L"VALUES (?, ?, ?, ?, ?)";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare16_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK || !stmt)
+    {
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_bind_text16(stmt, 1, e.archivePath.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text16(stmt, 2, e.entryName.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text16(stmt, 3, e.entryPath.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressed_size);
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.uncompressed_size);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+bool Database::InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_)
+    {
+        if (err) *err = L"db not open";
+        return false;
+    }
+
+    if (!BeginTransaction())
+    {
+        if (err) *err = L"BeginTransaction failed";
+        return false;
+    }
+
+    for (const auto& e : entries)
+    {
+        if (!InsertOrUpdateEntry(e))
+        {
+            RollbackTransaction();
+            if (err)
+            {
+                const char* em = sqlite3_errmsg(db_);
+                *err = em ? Utf8ToWString(em) : L"InsertOrUpdateEntry failed";
+            }
+            return false;
+        }
+    }
+
+    if (!CommitTransaction())
+    {
+        RollbackTransaction();
+        if (err) *err = L"CommitTransaction failed";
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry_t>* out, std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_)
+    {
+        if (err) *err = L"db not open";
+        return false;
+    }
+    if (!out)
+    {
+        if (err) *err = L"out is null";
+        return false;
+    }
+
+    out->clear();
+
+    sqlite3_stmt* stmt = nullptr;
+    const bool hasFilter = !filter.empty();
+
+    const std::wstring sql = hasFilter
+                                 ? L"SELECT archive_path, entry_name, entry_path, compressed_size, uncompressed_size FROM entries "
+                                   L"WHERE archive_path LIKE '%' || ? || '%' OR entry_name LIKE '%' || ? || '%' OR entry_path LIKE '%' || ? || '%' "
+                                   L"ORDER BY id DESC;"
+                                 : L"SELECT archive_path, entry_name, entry_path, compressed_size, uncompressed_size FROM entries ORDER BY id DESC;";
+
+    int rc = sqlite3_prepare16_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK || !stmt)
+    {
+        if (err)
+        {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"sqlite3_prepare16_v2 failed";
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+
+    if (hasFilter)
+    {
+        sqlite3_bind_text16(stmt, 1, filter.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text16(stmt, 2, filter.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text16(stmt, 3, filter.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+    {
+        ArchiveEntry_t e;
+
+        const void* ap16 = sqlite3_column_text16(stmt, 0);
+        const void* en16 = sqlite3_column_text16(stmt, 1);
+        const void* ep16 = sqlite3_column_text16(stmt, 2);
+        if (ap16) e.archivePath = reinterpret_cast<const wchar_t*>(ap16);
+        if (en16) e.entryName = reinterpret_cast<const wchar_t*>(en16);
+        if (ep16) e.entryPath = reinterpret_cast<const wchar_t*>(ep16);
+
+        e.compressed_size = (std::uint64_t)sqlite3_column_int64(stmt, 3);
+        e.uncompressed_size = (std::uint64_t)sqlite3_column_int64(stmt, 4);
+
+        out->push_back(std::move(e));
+    }
+
+    if (rc != SQLITE_DONE)
+    {
+        if (err)
+        {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"sqlite3_step failed";
+        }
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool Database::CreateEntriesTable(std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_)
+    {
+        if (err) *err = L"db not open";
+        return false;
+    }
+
+    const char* sql = R"(
+            CREATE TABLE IF NOT EXISTS entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                archive_path TEXT NOT NULL,
+                entry_name TEXT NOT NULL,
+                entry_path TEXT NOT NULL,
+                compressed_size INTEGER NOT NULL,
+                uncompressed_size INTEGER NOT NULL,
+                UNIQUE(archive_path, entry_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_entries_archive_path ON entries(archive_path);
+            CREATE INDEX IF NOT EXISTS idx_entries_entry_name ON entries(entry_name);
+            CREATE INDEX IF NOT EXISTS idx_entries_entry_path ON entries(entry_path);
+        )";
+
+    char* errMsg = nullptr;
+    const int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK)
+    {
+        LOG_ERROR(L"Create entries table failed: %s", errMsg);
+        sqlite3_free(errMsg);
+        return false;
+    }
+    return true;
+}
+
+bool Database::DeleteEntriesByArchivePath(const std::wstring& archivePath, std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_)
+    {
+        if (err) *err = L"db not open";
+        return false;
+    }
+
+    const std::wstring sql = L"DELETE FROM entries WHERE archive_path = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare16_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK || !stmt)
+    {
+        if (err)
+        {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"sqlite3_prepare16_v2 failed";
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_bind_text16(stmt, 1, archivePath.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+    {
+        if (err)
+        {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"sqlite3_step failed";
+        }
+        return false;
+    }
+    return true;
+}
+
 bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile_t>* out, std::wstring* err)
 {
     if (err) err->clear();

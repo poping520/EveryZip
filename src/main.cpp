@@ -135,6 +135,16 @@ static std::string WideToUtf8(const std::wstring& w) {
     return out;
 }
 
+static std::wstring Utf8ToWString(const char* s) {
+    if (!s) return L"";
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (needed <= 0) return L"";
+    std::wstring w;
+    w.resize((size_t)(needed - 1));
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), needed);
+    return w;
+}
+
 static std::wstring GetExeDir() {
     wchar_t path[MAX_PATH]{};
     DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -181,15 +191,76 @@ static void SetupListColumns(HWND hList) {
     col.iSubItem = 1;
     ListView_InsertColumn(hList, 1, &col);
 
-    col.pszText = const_cast<LPWSTR>(L"\u5927\u5c0f");
+    col.pszText = const_cast<LPWSTR>(L"\u538b\u7f29\u5927\u5c0f");
     col.cx = 100;
     col.iSubItem = 2;
     ListView_InsertColumn(hList, 2, &col);
 
-    col.pszText = const_cast<LPWSTR>(L"\u4fee\u6539\u65f6\u95f4");
+    col.pszText = const_cast<LPWSTR>(L"\u539f\u59cb\u5927\u5c0f");
     col.cx = 150;
     col.iSubItem = 3;
     ListView_InsertColumn(hList, 3, &col);
+}
+
+static std::wstring GetEntryNameFromPath(const std::wstring& path) {
+    if (path.empty()) return path;
+    size_t pos = path.find_last_of(L"/\\");
+    if (pos == std::wstring::npos) return path;
+    if (pos + 1 >= path.size()) return L"";
+    return path.substr(pos + 1);
+}
+
+static void ParseArchivesToEntries(const std::vector<ArchiveFile_t>& archives) {
+    std::wstring err;
+    if (!g_database.Open(g_dbPath, &err)) {
+        LOG_WARN(L"Database::Open failed: %s", err.c_str());
+        return;
+    }
+
+    if (!g_database.CreateEntriesTable(&err)) {
+        LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
+        return;
+    }
+
+    for (const auto& a : archives) {
+        if (g_indexCancel.load()) return;
+
+        EveryArchive::ZipArchiveParser parser;
+        std::string perr;
+        if (!parser.Open(a.filePath, &perr)) {
+            LOG_WARN(L"ZipArchiveParser::Open failed: %s", Utf8ToWString(perr.c_str()).c_str());
+            continue;
+        }
+
+        std::vector<EveryArchive::ArchiveEntry> parsed;
+        if (!parser.ListEntries(&parsed, &perr)) {
+            LOG_WARN(L"ZipArchiveParser::ListEntries failed: %s", Utf8ToWString(perr.c_str()).c_str());
+            parser.Close();
+            continue;
+        }
+        parser.Close();
+
+        std::vector<ArchiveEntry_t> entries;
+        entries.reserve(parsed.size());
+        for (const auto& e : parsed) {
+            if (e.is_directory) continue;
+
+            ArchiveEntry_t out;
+            out.archivePath = a.filePath;
+            out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
+            out.entryName = GetEntryNameFromPath(out.entryPath);
+            out.compressed_size = e.compressed_size;
+            out.uncompressed_size = e.uncompressed_size;
+            entries.push_back(std::move(out));
+        }
+
+        if (!g_database.DeleteEntriesByArchivePath(a.filePath, &err)) {
+            LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", err.c_str());
+        }
+        if (!g_database.InsertEntriesBatch(entries, &err)) {
+            LOG_WARN(L"InsertEntriesBatch failed: %s", err.c_str());
+        }
+    }
 }
 
 static void RefreshList() {
@@ -277,15 +348,27 @@ static void LoadRowsFromDbAndRefresh() {
         return;
     }
 
+    ParseArchivesToEntries(files);
+
+    if (!g_database.Open(g_dbPath, &err)) {
+        LOG_WARN(L"Database::Open failed: %s", err.c_str());
+        return;
+    }
+
+    std::vector<ArchiveEntry_t> entries;
+    if (!g_database.QueryEntries(filter, &entries, &err)) {
+        LOG_WARN(L"QueryEntries failed: %s", err.c_str());
+        return;
+    }
+
     std::vector<ResultRow> rows;
-    rows.reserve(files.size());
-    for (const auto& f : files) {
+    rows.reserve(entries.size());
+    for (const auto& e : entries) {
         ResultRow r;
-        r.name = f.fileName;
-        r.path = f.filePath;
-        r.size = FormatSizeULongLong((ULONGLONG)f.fileSize);
-        const FILETIME ft = U64ToFileTime(f.modifyTime);
-        r.mtime = FormatFileTimeLocal(ft);
+        r.name = e.entryName;
+        r.path = e.archivePath + L":" + e.entryPath;
+        r.size = FormatSizeULongLong((ULONGLONG)e.compressed_size);
+        r.mtime = FormatSizeULongLong((ULONGLONG)e.uncompressed_size);
         rows.push_back(std::move(r));
     }
 
@@ -374,9 +457,9 @@ static void UpdateStatusBar() {
 
     if (g_indexRunning.load()) {
         const wchar_t* spinner = g_spinnerChars[g_spinnerFrame % 4];
-        statusText = std::wstring(L"正在处理 ") + spinner + L" | 文件数量: " + std::to_wstring(fileCount);
+        statusText = std::wstring(L"\u6B63\u5728\u5904\u7406 ") + spinner + L" | \u6587\u4EF6\u6570\u91CF: " + std::to_wstring(fileCount);
     } else {
-        statusText = L"就绪 | 文件数量: " + std::to_wstring(fileCount);
+        statusText = L"\u5C31\u7EEA | \u6587\u4EF6\u6570\u91CF: " + std::to_wstring(fileCount);
     }
 
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)statusText.c_str());

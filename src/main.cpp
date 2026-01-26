@@ -13,6 +13,7 @@
 #include <cwctype>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "resource.h"
@@ -54,6 +55,32 @@ static const wchar_t* g_spinnerChars[] = { L"|", L"/", L"-", L"\\" };
 
 static Database g_database;
 static std::wstring g_dbPath;
+
+static bool EnsureDatabaseReady() {
+    const DWORD attr = GetFileAttributesW(g_dbPath.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        HANDLE h = CreateFileW(g_dbPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+        }
+    }
+
+    std::wstring err;
+    Database db;
+    if (!db.Open(g_dbPath, &err)) {
+        LOG_WARN(L"Database::Open failed: %s", err.c_str());
+        return false;
+    }
+    if (!db.CreateArchivesTable(&err)) {
+        LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
+        return false;
+    }
+    if (!db.CreateEntriesTable(&err)) {
+        LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
+        return false;
+    }
+    return true;
+}
 
 static bool EnablePrivilege(const wchar_t* privilegeName) {
     HANDLE hToken = nullptr;
@@ -336,27 +363,20 @@ static FILETIME U64ToFileTime(uint64_t v) {
 
 static void LoadRowsFromDbAndRefresh() {
     std::wstring err;
-    if (!g_database.Open(g_dbPath, &err)) {
-        LOG_WARN(L"Database::Open failed: %s", err.c_str());
-        return;
-    }
-
-    std::vector<ArchiveFile_t> files;
     const std::wstring filter = GetSearchFilter();
-    if (!g_database.QueryArchives(filter, &files, &err)) {
-        LOG_WARN(L"QueryArchives failed: %s", err.c_str());
+    Database db;
+    if (!db.Open(g_dbPath, &err)) {
+        LOG_WARN(L"Database::Open failed: %s", err.c_str());
         return;
     }
 
-    ParseArchivesToEntries(files);
-
-    if (!g_database.Open(g_dbPath, &err)) {
-        LOG_WARN(L"Database::Open failed: %s", err.c_str());
+    if (!db.CreateEntriesTable(&err)) {
+        LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
         return;
     }
 
     std::vector<ArchiveEntry_t> entries;
-    if (!g_database.QueryEntries(filter, &entries, &err)) {
+    if (!db.QueryEntries(filter, &entries, &err)) {
         LOG_WARN(L"QueryEntries failed: %s", err.c_str());
         return;
     }
@@ -400,29 +420,133 @@ static void StartIndexing(HWND hWnd) {
     g_indexCancel.store(false);
     g_indexRunning.store(true);
 
-    {
-        std::lock_guard<std::mutex> lk(g_rowsMutex);
-        g_rows.clear();
-    }
-    RefreshList();
-
     g_indexThread = std::thread([hWnd]() {
         FileScanner scanner;
-        std::vector<ArchiveFile_t> files;
+        std::vector<ArchiveFile_t> scanned;
         std::wstring err;
-        if (!scanner.Scan(&files, &err)) {
+        const bool scanOk = scanner.Scan(&scanned, &err);
+        if (!scanOk) {
             LOG_WARN(L"FileScanner::Scan failed: %s", err.c_str());
         }
 
-        if (!g_indexCancel.load()) {
-            if (!g_database.Open(g_dbPath, &err)) {
+        if (!g_indexCancel.load() && scanOk) {
+            Database db;
+            if (!db.Open(g_dbPath, &err)) {
                 LOG_WARN(L"Database::Open failed: %s", err.c_str());
+            } else if (!db.CreateArchivesTable(&err)) {
+                LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
+            } else if (!db.CreateEntriesTable(&err)) {
+                LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
             } else {
-                if (!g_database.CreateArchivesTable(&err)) {
-                    LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
+                std::vector<ArchiveFile_t> old;
+                if (!db.QueryArchives(L"", &old, &err)) {
+                    LOG_WARN(L"QueryArchives failed: %s", err.c_str());
                 } else {
-                    if (!g_database.InsertArchivesBatch(files, &err)) {
-                        LOG_WARN(L"InsertArchivesBatch failed: %s", err.c_str());
+                    struct OldInfo {
+                        ArchiveFile_t file;
+                        bool seen = false;
+                    };
+                    std::unordered_map<std::wstring, OldInfo> oldMap;
+                    oldMap.reserve(old.size());
+
+                    auto makeKey = [](const ArchiveFile_t& af) -> std::wstring {
+                        return af.driveLetter + L":" + std::to_wstring((unsigned long long)af.fileRefNumber);
+                    };
+
+                    for (const auto& o : old) {
+                        oldMap.emplace(makeKey(o), OldInfo{ o, false });
+                    }
+
+                    std::vector<ArchiveFile_t> upserts;
+                    std::vector<ArchiveFile_t> toParse;
+
+                    for (const auto& cur : scanned) {
+                        if (g_indexCancel.load()) break;
+
+                        const std::wstring key = makeKey(cur);
+                        auto it = oldMap.find(key);
+                        if (it == oldMap.end()) {
+                            upserts.push_back(cur);
+                            toParse.push_back(cur);
+                            continue;
+                        }
+
+                        it->second.seen = true;
+                        const auto& prev = it->second.file;
+                        const bool changed = (cur.usn != prev.usn) || (cur.modifyTime != prev.modifyTime) || (cur.fileSize != prev.fileSize) || (cur.filePath != prev.filePath);
+                        if (changed) {
+                            if (!prev.filePath.empty()) {
+                                std::wstring delErr;
+                                if (!db.DeleteEntriesByArchivePath(prev.filePath, &delErr)) {
+                                    LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", delErr.c_str());
+                                }
+                            }
+                            upserts.push_back(cur);
+                            toParse.push_back(cur);
+                        }
+                    }
+
+                    for (const auto& kv : oldMap) {
+                        if (g_indexCancel.load()) break;
+                        const auto& prev = kv.second.file;
+                        if (kv.second.seen) continue;
+
+                        if (!prev.driveLetter.empty()) {
+                            db.DeleteArchiveByRefNumber(prev.driveLetter[0], (uint64_t)prev.fileRefNumber);
+                        }
+                        if (!prev.filePath.empty()) {
+                            std::wstring delErr;
+                            if (!db.DeleteEntriesByArchivePath(prev.filePath, &delErr)) {
+                                LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", delErr.c_str());
+                            }
+                        }
+                    }
+
+                    if (!g_indexCancel.load() && !upserts.empty()) {
+                        if (!db.InsertArchivesBatch(upserts, &err)) {
+                            LOG_WARN(L"InsertArchivesBatch failed: %s", err.c_str());
+                        }
+                    }
+
+                    for (const auto& a : toParse) {
+                        if (g_indexCancel.load()) break;
+
+                        EveryArchive::ZipArchiveParser parser;
+                        std::string perr;
+                        if (!parser.Open(a.filePath, &perr)) {
+                            LOG_WARN(L"ZipArchiveParser::Open failed: %s", Utf8ToWString(perr.c_str()).c_str());
+                            continue;
+                        }
+
+                        std::vector<EveryArchive::ArchiveEntry> parsed;
+                        if (!parser.ListEntries(&parsed, &perr)) {
+                            LOG_WARN(L"ZipArchiveParser::ListEntries failed: %s", Utf8ToWString(perr.c_str()).c_str());
+                            parser.Close();
+                            continue;
+                        }
+                        parser.Close();
+
+                        std::vector<ArchiveEntry_t> entries;
+                        entries.reserve(parsed.size());
+                        for (const auto& e : parsed) {
+                            if (e.is_directory) continue;
+
+                            ArchiveEntry_t out;
+                            out.archivePath = a.filePath;
+                            out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
+                            out.entryName = GetEntryNameFromPath(out.entryPath);
+                            out.compressed_size = e.compressed_size;
+                            out.uncompressed_size = e.uncompressed_size;
+                            entries.push_back(std::move(out));
+                        }
+
+                        std::wstring entryErr;
+                        if (!db.DeleteEntriesByArchivePath(a.filePath, &entryErr)) {
+                            LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", entryErr.c_str());
+                        }
+                        if (!db.InsertEntriesBatch(entries, &entryErr)) {
+                            LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
+                        }
                     }
                 }
             }
@@ -538,6 +662,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         SetTimer(hWnd, IDT_STATUSBAR_TIMER, 200, nullptr);
         UpdateStatusBar();
+
+        EnsureDatabaseReady();
+        LoadRowsFromDbAndRefresh();
 
         StartIndexing(hWnd);
         return 0;

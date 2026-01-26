@@ -20,7 +20,7 @@ static bool HasTargetExt(const wchar_t* name, size_t len) {
         return _wcsicmp(std::wstring(name + (len - extLen), extLen).c_str(), ext) == 0;
     };
 
-    return endsWithI(L".apk");
+    return endsWithI(L".zip");
 }
 
 static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
@@ -224,6 +224,12 @@ bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err) {
         }
 
         const wchar_t driveLetter = root[0];
+
+        // test
+        if (driveLetter != L'E') {
+            continue;
+        }
+
         std::wstring scanErr;
         if (!ScanDriveByUsn(driveLetter, out, &scanErr)) {
             if (err) {

@@ -141,8 +141,8 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
 
     const std::wstring sql = hasFilter
                                  ? L"SELECT archive_path, entry_name, entry_path, compressed_size, uncompressed_size FROM entries "
-                                   L"WHERE archive_path LIKE '%' || ? || '%' OR entry_name LIKE '%' || ? || '%' OR entry_path LIKE '%' || ? || '%' "
-                                   L"ORDER BY id DESC;"
+                                  L"WHERE entry_name LIKE '%' || ? || '%' OR entry_path LIKE '%' || ? || '%' "
+                                  L"ORDER BY id DESC;"
                                  : L"SELECT archive_path, entry_name, entry_path, compressed_size, uncompressed_size FROM entries ORDER BY id DESC;";
 
     int rc = sqlite3_prepare16_v2(db_, sql.c_str(), -1, &stmt, nullptr);
@@ -161,7 +161,6 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
     {
         sqlite3_bind_text16(stmt, 1, filter.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text16(stmt, 2, filter.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text16(stmt, 3, filter.c_str(), -1, SQLITE_TRANSIENT);
     }
 
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)

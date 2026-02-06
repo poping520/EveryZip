@@ -1,5 +1,6 @@
 #include "file_scanner.h"
 
+#include <atomic>
 #include <windows.h>
 #include <winioctl.h>
 
@@ -78,7 +79,7 @@ static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t
     return success;
 }
 
-static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out, std::wstring* err) {
+static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel) {
     if (err) err->clear();
     if (!out) {
         if (err) *err = L"out is null";
@@ -119,6 +120,10 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
     buffer.resize(1u << 20);
 
     for (;;) {
+        if (cancel && cancel->load()) {
+            CloseHandle(hVol);
+            return true;
+        }
         bytes = 0;
         if (!DeviceIoControl(
                 hVol,
@@ -185,7 +190,7 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
     return true;
 }
 
-bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err) {
+bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel) {
     if (err) err->clear();
     if (!out) {
         if (err) *err = L"out is null";
@@ -230,8 +235,10 @@ bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err) {
             continue;
         }
 
+        if (cancel && cancel->load()) return true;
+
         std::wstring scanErr;
-        if (!ScanDriveByUsn(driveLetter, out, &scanErr)) {
+        if (!ScanDriveByUsn(driveLetter, out, &scanErr, cancel)) {
             if (err) {
                 *err = scanErr.empty() ? L"ScanDriveByUsn failed" : scanErr;
             }

@@ -200,7 +200,12 @@ void Init() {
 }
 
 void Shutdown() {
+    std::lock_guard<std::mutex> lk(g_mutex);
     g_initialized.store(false);
+    if (g_consoleReady) {
+        FreeConsole();
+        g_consoleReady = false;
+    }
 }
 
 void SetLevel(Level level) {

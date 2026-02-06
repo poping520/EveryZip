@@ -1,7 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <string>
- #include <vector>
+#include <vector>
 
 #include "database.h"
 
@@ -10,5 +11,5 @@ public:
     FileScanner() = default;
     ~FileScanner() = default;
 
-    bool Scan(std::vector<ArchiveFile_t>* out, std::wstring* err);
+    bool Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel = nullptr);
 };

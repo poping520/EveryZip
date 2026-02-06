@@ -339,7 +339,15 @@ static void LayoutChildren(HWND hWnd) {
 
 static std::wstring FormatSizeULongLong(ULONGLONG v) {
     wchar_t buf[64]{};
-    swprintf_s(buf, L"%llu", v);
+    if (v < 1024ULL) {
+        swprintf_s(buf, L"%llu B", v);
+    } else if (v < 1024ULL * 1024) {
+        swprintf_s(buf, L"%.2f KB", (double)v / 1024.0);
+    } else if (v < 1024ULL * 1024 * 1024) {
+        swprintf_s(buf, L"%.2f MB", (double)v / (1024.0 * 1024.0));
+    } else {
+        swprintf_s(buf, L"%.2f GB", (double)v / (1024.0 * 1024.0 * 1024.0));
+    }
     return buf;
 }
 
@@ -424,7 +432,7 @@ static void StartIndexing(HWND hWnd) {
         FileScanner scanner;
         std::vector<ArchiveFile_t> scanned;
         std::wstring err;
-        const bool scanOk = scanner.Scan(&scanned, &err);
+        const bool scanOk = scanner.Scan(&scanned, &err, &g_indexCancel);
         if (!scanOk) {
             LOG_WARN(L"FileScanner::Scan failed: %s", err.c_str());
         }
@@ -565,7 +573,15 @@ static LRESULT CALLBACK SearchEditProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         }
         return 0;
     }
-    return CallWindowProcW(g_EditOldProc, hWnd, msg, wParam, lParam);
+    LRESULT result = CallWindowProcW(g_EditOldProc, hWnd, msg, wParam, lParam);
+    if (msg == WM_CHAR || msg == WM_CLEAR || msg == WM_CUT || msg == WM_PASTE || msg == WM_UNDO ||
+        (msg == WM_KEYUP && (wParam == VK_DELETE || wParam == VK_BACK))) {
+        HWND hParent = GetParent(hWnd);
+        if (hParent) {
+            PostMessageW(hParent, WM_COMMAND, MAKEWPARAM(IDM_SEARCH_FIND, 0), 0);
+        }
+    }
+    return result;
 }
 
 static void UpdateStatusBar() {
@@ -609,7 +625,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_hSearch = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             L"EDIT",
-            L"*apk",
+            L"",
             WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL,
             0, 0, 0, 0,
             hWnd,
@@ -776,6 +792,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         LOG_INFO(L"WM_DESTROY");
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         StopIndexing();
+        g_database.Close();
         PostQuitMessage(0);
         return 0;
     }

@@ -348,7 +348,7 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
 void Database::Close()
 {
     if (!db_) return;
-    sqlite3_close(db_);
+    sqlite3_close_v2(db_);
     db_ = nullptr;
 }
 

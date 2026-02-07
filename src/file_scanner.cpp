@@ -60,14 +60,16 @@ static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t
         }
 
         if (outFullPath) {
-            DWORD need = GetFinalPathNameByHandleW(hFile, nullptr, 0, FILE_NAME_NORMALIZED);
+            const DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+            DWORD need = GetFinalPathNameByHandleW(hFile, nullptr, 0, flags);
             if (need != 0) {
                 std::wstring fullPath;
                 fullPath.resize(need);
-                DWORD got = GetFinalPathNameByHandleW(hFile, fullPath.data(), need, FILE_NAME_NORMALIZED);
-                if (got != 0) {
-                    while (!fullPath.empty() && fullPath.back() == L'\0') {
-                        fullPath.pop_back();
+                DWORD got = GetFinalPathNameByHandleW(hFile, fullPath.data(), need, flags);
+                if (got != 0 && got < need) {
+                    fullPath.resize(got);
+                    if (fullPath.size() >= 4 && fullPath[0] == L'\\' && fullPath[1] == L'\\' && fullPath[2] == L'?' && fullPath[3] == L'\\') {
+                        fullPath.erase(0, 4);
                     }
                     *outFullPath = std::move(fullPath);
                 }

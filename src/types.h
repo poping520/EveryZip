@@ -26,6 +26,17 @@ typedef struct ArchiveFile
     USN usn;
 } ArchiveFile_t;
 
+// USN Journal 增量变化记录
+typedef struct UsnChangeRecord
+{
+    wchar_t driveLetter;
+    DWORDLONG fileRefNumber;
+    DWORDLONG parentFileRefNumber;
+    DWORD reason;           // USN_REASON_* 标志
+    std::wstring fileName;
+    USN usn;
+} UsnChangeRecord_t;
+
 // 归档文件内容
 typedef struct ArchiveEntry
 {

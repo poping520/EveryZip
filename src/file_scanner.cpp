@@ -192,6 +192,146 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
     return true;
 }
 
+bool FileScanner::QueryJournalInfo(wchar_t driveLetter, JournalInfo* out, std::wstring* err) {
+    if (err) err->clear();
+    if (!out) { if (err) *err = L"out is null"; return false; }
+
+    wchar_t volumePath[] = L"\\\\.\\X:";
+    volumePath[4] = driveLetter;
+
+    HANDLE hVol = CreateFileW(volumePath, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hVol == INVALID_HANDLE_VALUE) {
+        if (err) *err = L"CreateFileW volume failed";
+        return false;
+    }
+
+    USN_JOURNAL_DATA_V0 journal{};
+    DWORD bytes = 0;
+    if (!DeviceIoControl(hVol, FSCTL_QUERY_USN_JOURNAL, nullptr, 0,
+                         &journal, sizeof(journal), &bytes, nullptr)) {
+        if (err) *err = L"FSCTL_QUERY_USN_JOURNAL failed";
+        CloseHandle(hVol);
+        return false;
+    }
+
+    out->journalId = (int64_t)journal.UsnJournalID;
+    out->nextUsn = journal.NextUsn;
+    CloseHandle(hVol);
+    return true;
+}
+
+bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN startUsn,
+                                  std::vector<UsnChangeRecord_t>* out, USN* outNextUsn,
+                                  std::wstring* err, std::atomic_bool* cancel) {
+    if (err) err->clear();
+    if (!out) { if (err) *err = L"out is null"; return false; }
+
+    wchar_t volumePath[] = L"\\\\.\\X:";
+    volumePath[4] = driveLetter;
+
+    HANDLE hVol = CreateFileW(volumePath, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hVol == INVALID_HANDLE_VALUE) {
+        if (err) *err = L"CreateFileW volume failed";
+        return false;
+    }
+
+    // 查询当前 Journal 状态获取 NextUsn
+    USN_JOURNAL_DATA_V0 journal{};
+    DWORD bytes = 0;
+    if (!DeviceIoControl(hVol, FSCTL_QUERY_USN_JOURNAL, nullptr, 0,
+                         &journal, sizeof(journal), &bytes, nullptr)) {
+        if (err) *err = L"FSCTL_QUERY_USN_JOURNAL failed";
+        CloseHandle(hVol);
+        return false;
+    }
+
+    if (outNextUsn) *outNextUsn = journal.NextUsn;
+
+    // 如果 Journal ID 变了，说明 Journal 被重建，需要全量重扫
+    if ((int64_t)journal.UsnJournalID != journalId) {
+        if (err) *err = L"Journal ID changed, need full rescan";
+        CloseHandle(hVol);
+        return false;
+    }
+
+    // 没有新的变化
+    if (startUsn >= journal.NextUsn) {
+        CloseHandle(hVol);
+        return true;
+    }
+
+    // 使用 FSCTL_READ_USN_JOURNAL 读取增量变化
+    READ_USN_JOURNAL_DATA_V0 readData{};
+    readData.StartUsn = startUsn;
+    readData.ReasonMask = USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND |
+                          USN_REASON_DATA_TRUNCATION | USN_REASON_NAMED_DATA_OVERWRITE |
+                          USN_REASON_NAMED_DATA_EXTEND | USN_REASON_NAMED_DATA_TRUNCATION |
+                          USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE |
+                          USN_REASON_RENAME_NEW_NAME | USN_REASON_RENAME_OLD_NAME |
+                          USN_REASON_CLOSE;
+    readData.ReturnOnlyOnClose = TRUE;  // 只返回 CLOSE 记录，减少噪音
+    readData.UsnJournalID = (DWORDLONG)journalId;
+
+    std::vector<unsigned char> buffer(1u << 16);  // 64KB 缓冲区
+
+    for (;;) {
+        if (cancel && cancel->load()) break;
+
+        bytes = 0;
+        BOOL ok = DeviceIoControl(hVol, FSCTL_READ_USN_JOURNAL,
+            &readData, sizeof(readData),
+            buffer.data(), (DWORD)buffer.size(),
+            &bytes, nullptr);
+
+        if (!ok) {
+            DWORD e = GetLastError();
+            if (e == ERROR_HANDLE_EOF || e == ERROR_JOURNAL_ENTRY_DELETED) {
+                break;
+            }
+            if (err) *err = L"FSCTL_READ_USN_JOURNAL failed (err=" + std::to_wstring(e) + L")";
+            CloseHandle(hVol);
+            return false;
+        }
+
+        if (bytes <= sizeof(USN)) break;
+
+        // 第一个 USN 是下次读取的起始位置
+        USN nextStartUsn = *(USN*)buffer.data();
+        DWORD offset = sizeof(USN);
+
+        while (offset + sizeof(USN_RECORD) <= bytes) {
+            const USN_RECORD* rec = (const USN_RECORD*)(buffer.data() + offset);
+            if (rec->RecordLength == 0 || offset + rec->RecordLength > bytes) break;
+
+            const wchar_t* fileName = (const wchar_t*)((const unsigned char*)rec + rec->FileNameOffset);
+            const size_t fileNameLen = rec->FileNameLength / sizeof(wchar_t);
+
+            // 只关注归档文件（.zip 等）
+            if (HasTargetExt(fileName, fileNameLen)) {
+                UsnChangeRecord_t cr;
+                cr.driveLetter = driveLetter;
+                cr.fileRefNumber = rec->FileReferenceNumber;
+                cr.parentFileRefNumber = rec->ParentFileReferenceNumber;
+                cr.reason = rec->Reason;
+                cr.fileName.assign(fileName, fileNameLen);
+                cr.usn = rec->Usn;
+                out->push_back(std::move(cr));
+            }
+
+            offset += rec->RecordLength;
+        }
+
+        readData.StartUsn = nextStartUsn;
+    }
+
+    CloseHandle(hVol);
+    return true;
+}
+
 bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel) {
     if (err) err->clear();
     if (!out) {
@@ -231,11 +371,6 @@ bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::
         }
 
         const wchar_t driveLetter = root[0];
-
-        // test
-        if (driveLetter != L'E') {
-            continue;
-        }
 
         if (cancel && cancel->load()) return true;
 

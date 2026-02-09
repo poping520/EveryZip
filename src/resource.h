@@ -12,6 +12,7 @@
 #define IDC_SEARCH_EDIT 1000
 #define IDC_RESULTS_LIST 1001
 #define IDC_STATUSBAR 1002
+#define IDC_PROGRESS  1003
 
 #define IDT_STATUSBAR_TIMER 2000
 
@@ -19,3 +20,4 @@
 #define WM_APP_INDEX_DONE (WM_APP + 2)
 #define WM_APP_DB_REFRESH (WM_APP + 3)
 #define WM_APP_UPDATE_STATUSBAR (WM_APP + 4)
+#define WM_APP_ROWS_READY (WM_APP + 5)  // 异步加载完成，wParam=0, lParam=AsyncLoadResult*

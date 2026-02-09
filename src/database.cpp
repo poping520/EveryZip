@@ -399,6 +399,145 @@ bool Database::ExecSql16(const std::wstring& sql, std::wstring* err)
     return true;
 }
 
+bool Database::CreateConfigsTable(std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_)
+    {
+        if (err) *err = L"db not open";
+        return false;
+    }
+
+    const char* sql = R"(
+            CREATE TABLE IF NOT EXISTS configs (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+        )";
+
+    char* errMsg = nullptr;
+    int rc = sqlite3_exec(db_, sql, nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK)
+    {
+        LOG_ERROR(L"Create configs table failed: %s", errMsg);
+        sqlite3_free(errMsg);
+        return false;
+    }
+    return true;
+}
+
+bool Database::SaveJournalUsn(wchar_t driveLetter, int64_t journalId, USN nextUsn, std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_)
+    {
+        if (err) *err = L"db not open";
+        return false;
+    }
+
+    // 保存 journal_id 和 next_usn，key 格式: "usn_E" (盘符)
+    std::string driveStr(1, (char)driveLetter);
+    std::string keyJournal = "journal_id_" + driveStr;
+    std::string keyUsn = "next_usn_" + driveStr;
+
+    const char* sql = "INSERT OR REPLACE INTO configs (key, value) VALUES (?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+
+    // 保存 journal_id
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) { if (err) *err = L"prepare failed"; return false; }
+    sqlite3_bind_text(stmt, 1, keyJournal.c_str(), -1, SQLITE_TRANSIENT);
+    std::string valJournal = std::to_string(journalId);
+    sqlite3_bind_text(stmt, 2, valJournal.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) { if (err) *err = L"step failed"; return false; }
+
+    // 保存 next_usn
+    rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) { if (err) *err = L"prepare failed"; return false; }
+    sqlite3_bind_text(stmt, 1, keyUsn.c_str(), -1, SQLITE_TRANSIENT);
+    std::string valUsn = std::to_string((long long)nextUsn);
+    sqlite3_bind_text(stmt, 2, valUsn.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) { if (err) *err = L"step failed"; return false; }
+
+    return true;
+}
+
+bool Database::GetJournalUsn(wchar_t driveLetter, int64_t* outJournalId, USN* outNextUsn)
+{
+    if (!db_) return false;
+    if (outJournalId) *outJournalId = 0;
+    if (outNextUsn) *outNextUsn = 0;
+
+    std::string driveStr(1, (char)driveLetter);
+
+    const char* sql = "SELECT value FROM configs WHERE key = ?";
+    sqlite3_stmt* stmt = nullptr;
+
+    // 读取 journal_id
+    std::string keyJournal = "journal_id_" + driveStr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, keyJournal.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const char* val = (const char*)sqlite3_column_text(stmt, 0);
+        if (val && outJournalId) *outJournalId = _atoi64(val);
+    }
+    sqlite3_finalize(stmt);
+
+    // 读取 next_usn
+    std::string keyUsn = "next_usn_" + driveStr;
+    rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return false;
+    sqlite3_bind_text(stmt, 1, keyUsn.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const char* val = (const char*)sqlite3_column_text(stmt, 0);
+        if (val && outNextUsn) *outNextUsn = (USN)_atoi64(val);
+    }
+    sqlite3_finalize(stmt);
+
+    return true;
+}
+
+bool Database::QueryArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumber, ArchiveFile_t* out)
+{
+    if (!db_ || !out) return false;
+
+    const char* sql = "SELECT drive_letter, file_name, file_path, file_size, modify_time, usn, file_ref_number, parent_file_ref_number "
+                      "FROM archives WHERE drive_letter = ? AND file_ref_number = ?";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return false;
+
+    std::string driveStr(1, (char)driveLetter);
+    sqlite3_bind_text(stmt, 1, driveStr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)fileRefNumber);
+
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const void* drive16 = sqlite3_column_text16(stmt, 0);
+        const void* name16 = sqlite3_column_text16(stmt, 1);
+        const void* path16 = sqlite3_column_text16(stmt, 2);
+        if (drive16) out->driveLetter = reinterpret_cast<const wchar_t*>(drive16);
+        if (name16) out->fileName = reinterpret_cast<const wchar_t*>(name16);
+        if (path16) out->filePath = reinterpret_cast<const wchar_t*>(path16);
+        out->fileSize = (uint64_t)sqlite3_column_int64(stmt, 3);
+        out->modifyTime = (uint64_t)sqlite3_column_int64(stmt, 4);
+        out->usn = (USN)sqlite3_column_int64(stmt, 5);
+        out->fileRefNumber = (DWORDLONG)sqlite3_column_int64(stmt, 6);
+        out->parentFileRefNumber = (DWORDLONG)sqlite3_column_int64(stmt, 7);
+        found = true;
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
 bool Database::CreateArchivesTable(std::wstring* err)
 {
     if (err) err->clear();
@@ -567,7 +706,7 @@ bool Database::DeleteArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNum
     return rc == SQLITE_DONE;
 }
 
-bool Database::GetArchiveCount()
+int64_t Database::GetArchiveCount()
 {
     const char* sql = "SELECT COUNT(*) FROM archives";
     sqlite3_stmt* stmt = nullptr;
@@ -580,6 +719,120 @@ bool Database::GetArchiveCount()
     int64_t count = 0;
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
+        count = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool sortAsc,
+                             std::vector<int64_t>* outIds, std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_) { if (err) *err = L"db not open"; return false; }
+    if (!outIds) { if (err) *err = L"outIds is null"; return false; }
+    outIds->clear();
+
+    // 构建 ORDER BY 子句
+    const char* orderCol = "id";
+    switch (sortColumn) {
+    case 0: orderCol = "entry_name"; break;
+    case 1: orderCol = "archive_path"; break;
+    case 2: orderCol = "entry_path"; break;
+    case 3: orderCol = "compressed_size"; break;
+    case 4: orderCol = "uncompressed_size"; break;
+    default: orderCol = "id"; break;
+    }
+    const char* orderDir = sortAsc ? "ASC" : "DESC";
+
+    std::string sql;
+    const bool hasFilter = !filter.empty();
+    if (hasFilter) {
+        sql = std::string("SELECT id FROM entries WHERE entry_name LIKE '%' || ?1 || '%' OR entry_path LIKE '%' || ?1 || '%' ORDER BY ")
+              + orderCol + " " + orderDir;
+    } else {
+        sql = std::string("SELECT id FROM entries ORDER BY ") + orderCol + " " + orderDir;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK || !stmt) {
+        if (err) {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"prepare failed";
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+
+    if (hasFilter) {
+        // 将 wstring filter 转为 UTF-8 绑定
+        int needed = WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string filterUtf8(needed > 0 ? needed - 1 : 0, '\0');
+        if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, filterUtf8.data(), needed, nullptr, nullptr);
+        sqlite3_bind_text(stmt, 1, filterUtf8.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        outIds->push_back(sqlite3_column_int64(stmt, 0));
+    }
+
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+bool Database::QueryEntryById(int64_t rowId, ArchiveEntry_t* out)
+{
+    if (!db_ || !out) return false;
+
+    const char* sql = "SELECT archive_path, entry_name, entry_path, compressed_size, uncompressed_size FROM entries WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return false;
+
+    sqlite3_bind_int64(stmt, 1, rowId);
+
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void* ap16 = sqlite3_column_text16(stmt, 0);
+        const void* en16 = sqlite3_column_text16(stmt, 1);
+        const void* ep16 = sqlite3_column_text16(stmt, 2);
+        if (ap16) out->archivePath = reinterpret_cast<const wchar_t*>(ap16);
+        if (en16) out->entryName = reinterpret_cast<const wchar_t*>(en16);
+        if (ep16) out->entryPath = reinterpret_cast<const wchar_t*>(ep16);
+        out->compressed_size = (uint64_t)sqlite3_column_int64(stmt, 3);
+        out->uncompressed_size = (uint64_t)sqlite3_column_int64(stmt, 4);
+        found = true;
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+int64_t Database::GetEntryCount(const std::wstring& filter)
+{
+    if (!db_) return 0;
+
+    std::string sql;
+    const bool hasFilter = !filter.empty();
+    if (hasFilter) {
+        sql = "SELECT COUNT(*) FROM entries WHERE entry_name LIKE '%' || ?1 || '%' OR entry_path LIKE '%' || ?1 || '%'";
+    } else {
+        sql = "SELECT COUNT(*) FROM entries";
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) return 0;
+
+    if (hasFilter) {
+        int needed = WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string filterUtf8(needed > 0 ? needed - 1 : 0, '\0');
+        if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, filterUtf8.data(), needed, nullptr, nullptr);
+        sqlite3_bind_text(stmt, 1, filterUtf8.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    int64_t count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
         count = sqlite3_column_int64(stmt, 0);
     }
     sqlite3_finalize(stmt);

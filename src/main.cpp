@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <shlwapi.h>
 
 #include <winioctl.h>
@@ -26,47 +27,97 @@
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
 
+// 启用 ComCtl32 v6 视觉样式（PBS_MARQUEE 进度条需要）
+#pragma comment(linker, "\"/manifestdependency:type='win32' \
+name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
+
 static constexpr wchar_t kAppClassName[] = L"EveryArchiveMainWindow";
 static constexpr wchar_t kAppTitle[] = L"EveryArchive";
 
-// ListView 每一行的显示数据
-struct ResultRow {
+// ListView 行缓存项（按需从数据库加载，缓存可见行数据）
+struct CachedRow {
     std::wstring name;
-    std::wstring archivePath;  // 归档文件路径
-    std::wstring entryPath;    // 归档内部文件路径
-    std::wstring size;
-    std::wstring mtime;
-    // 排序用原始数值（压缩大小、原始大小）
-    int64_t compressed_size_raw = 0;
-    int64_t uncompressed_size_raw = 0;
+    std::wstring archivePath;
+    std::wstring entryPath;
+    std::wstring sizeStr;       // 格式化后的压缩大小
+    std::wstring origSizeStr;   // 格式化后的原始大小
+    int iconIndex = 0;
 };
-
-static void PostAddResult(HWND hWnd, ResultRow* row);
 
 // ── 全局 UI 控件句柄 ──
 static HWND g_hSearch = nullptr;      // 搜索输入框
 static HWND g_hList = nullptr;        // 结果 ListView
 static HWND g_hStatusBar = nullptr;   // 底部状态栏
+static HWND g_hProgress = nullptr;    // 状态栏内的 Marquee 进度条
 static WNDPROC g_EditOldProc = nullptr; // 搜索框原始窗口过程（子类化用）
 static HFONT g_hSearchFont = nullptr; // 搜索框字体（非粗体）
 static HFONT g_hNormalFont = nullptr; // ListView 普通字体
 static HFONT g_hBoldFont = nullptr;   // ListView 加粗字体（高亮匹配文本）
 
-// ── ListView 数据源（需加锁访问）──
-static std::vector<ResultRow> g_rows;
+// ── ListView 数据源（纯虚拟列表：只存 rowid 列表，按需查询行数据）──
+static std::vector<int64_t> g_rowIds;       // entries 表的 rowid 列表（~3MB for 360K rows）
 static std::mutex g_rowsMutex;
+static int64_t g_totalEntryCount = 0;       // 当前 filter 下的条目总数
+
+// ── 行数据 LRU 缓存（避免每次 LVN_GETDISPINFO 都查询数据库）──
+static std::unordered_map<int64_t, CachedRow> g_rowCache;  // rowid → CachedRow
+static std::deque<int64_t> g_rowCacheLru;                  // LRU 队列（最近使用的在前）
+static constexpr size_t kRowCacheMaxSize = 2000;           // 缓存最多 2000 行
+static Database g_cacheDb;                                 // 缓存专用数据库连接（UI 线程使用）
+static bool g_cacheDbOpen = false;
 
 // ── 列头排序状态 ──
 static int g_sortColumn = -1;       // 当前排序列索引，-1 表示未排序
 static bool g_sortAscending = true; // true=正序，false=倒序
+
+// ── 文件图标缓存：按扩展名缓存系统图标索引 ──
+static HIMAGELIST g_hSysSmallIcons = nullptr;
+static std::unordered_map<std::wstring, int> g_iconCache;
+
+// 根据文件名获取系统图标索引（按扩展名缓存，避免重复查询）
+static int GetFileIconIndex(const std::wstring& fileName) {
+    // 提取扩展名（包含点，如 ".xml"）并转小写
+    std::wstring ext;
+    size_t dotPos = fileName.rfind(L'.');
+    if (dotPos != std::wstring::npos) {
+        ext = fileName.substr(dotPos);
+        for (auto& ch : ext) ch = (wchar_t)towlower(ch);
+    }
+
+    // 查找缓存
+    auto it = g_iconCache.find(ext);
+    if (it != g_iconCache.end()) {
+        return it->second;
+    }
+
+    // 使用 SHGetFileInfo 按扩展名获取系统图标索引（SHGFI_USEFILEATTRIBUTES 无需文件实际存在）
+    SHFILEINFOW sfi{};
+    std::wstring fakeName = L"file" + ext;
+    DWORD_PTR ret = SHGetFileInfoW(
+        fakeName.c_str(), FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
+        SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+
+    int idx = (ret != 0) ? sfi.iIcon : 0;
+    g_iconCache[ext] = idx;
+    return idx;
+}
 
 // ── 后台索引线程相关 ──
 static std::atomic_bool g_indexCancel{ false };  // 取消标志
 static std::atomic_bool g_indexRunning{ false }; // 运行状态
 static std::thread g_indexThread;                // 索引工作线程
 static HWND g_mainHwnd = nullptr;
-static int g_spinnerFrame = 0;
-static const wchar_t* g_spinnerChars[] = { L"|", L"/", L"-", L"\\" };
+
+// ── 异步加载结果（后台线程只查询 rowid 列表，传递到 UI 线程）──
+struct AsyncLoadResult {
+    std::vector<int64_t> rowIds;
+    int64_t archiveCount = 0;
+    int64_t entryCount = 0;
+};
+// 缓存的归档文件数量（避免 UpdateStatusBar 每次都查询数据库）
+static std::atomic<int64_t> g_cachedArchiveCount{ 0 };
 
 // ── 数据库 ──
 static Database g_database;   // 全局数据库连接（用于解析归档条目）
@@ -233,6 +284,14 @@ static void SetupListColumns(HWND hList) {
         SetWindowLongW(hHeader, GWL_STYLE, style | HDS_FLAT);
     }
 
+    // 获取系统小图标 ImageList 并关联到 ListView（用于显示文件类型图标）
+    SHFILEINFOW sfi{};
+    g_hSysSmallIcons = (HIMAGELIST)SHGetFileInfoW(
+        L"", 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
+    if (g_hSysSmallIcons) {
+        ListView_SetImageList(hList, g_hSysSmallIcons, LVSIL_SMALL);
+    }
+
     LVCOLUMNW col{};
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 
@@ -330,34 +389,61 @@ static void ParseArchivesToEntries(const std::vector<ArchiveFile_t>& archives) {
     }
 }
 
-// 对 g_rows 按当前排序列和方向进行排序（调用前需持有 g_rowsMutex）
-static void SortRows() {
-    if (g_sortColumn < 0 || g_sortColumn > 4) return;
+// 前向声明（GetCachedRow 需要调用）
+static std::wstring FormatSizeULongLong(ULONGLONG v);
 
-    std::sort(g_rows.begin(), g_rows.end(),
-        [](const ResultRow& a, const ResultRow& b) -> bool {
-            int cmp = 0;
-            switch (g_sortColumn) {
-            case 0: // 名称：按字符串字典序比较（不区分大小写）
-                cmp = _wcsicmp(a.name.c_str(), b.name.c_str());
-                break;
-            case 1: // 归档文件路径：按字符串字典序比较（不区分大小写）
-                cmp = _wcsicmp(a.archivePath.c_str(), b.archivePath.c_str());
-                break;
-            case 2: // 内部路径：按字符串字典序比较（不区分大小写）
-                cmp = _wcsicmp(a.entryPath.c_str(), b.entryPath.c_str());
-                break;
-            case 3: // 压缩大小：按数值大小比较
-                cmp = (a.compressed_size_raw < b.compressed_size_raw) ? -1
-                    : (a.compressed_size_raw > b.compressed_size_raw) ? 1 : 0;
-                break;
-            case 4: // 原始大小：按数值大小比较
-                cmp = (a.uncompressed_size_raw < b.uncompressed_size_raw) ? -1
-                    : (a.uncompressed_size_raw > b.uncompressed_size_raw) ? 1 : 0;
-                break;
-            }
-            return g_sortAscending ? (cmp < 0) : (cmp > 0);
-        });
+// 清空行数据缓存（排序或搜索条件变化时调用）
+static void ClearRowCache() {
+    g_rowCache.clear();
+    g_rowCacheLru.clear();
+}
+
+// 确保缓存数据库连接已打开
+static void EnsureCacheDbOpen() {
+    if (!g_cacheDbOpen) {
+        std::wstring err;
+        g_cacheDbOpen = g_cacheDb.Open(g_dbPath, &err);
+    }
+}
+
+// 按 rowid 从 LRU 缓存中获取行数据，缓存未命中时从数据库查询
+static const CachedRow* GetCachedRow(int64_t rowId) {
+    // 缓存命中
+    auto it = g_rowCache.find(rowId);
+    if (it != g_rowCache.end()) {
+        return &it->second;
+    }
+
+    // 缓存未命中：从数据库查询
+    EnsureCacheDbOpen();
+    if (!g_cacheDbOpen) return nullptr;
+
+    ArchiveEntry_t entry;
+    if (!g_cacheDb.QueryEntryById(rowId, &entry)) {
+        return nullptr;
+    }
+
+    // 构建缓存项
+    CachedRow cr;
+    cr.name = entry.entryName;
+    cr.archivePath = entry.archivePath;
+    cr.entryPath = entry.entryPath;
+    cr.sizeStr = FormatSizeULongLong((ULONGLONG)entry.compressed_size);
+    cr.origSizeStr = FormatSizeULongLong((ULONGLONG)entry.uncompressed_size);
+    cr.iconIndex = GetFileIconIndex(cr.name);
+
+    // 插入缓存并维护 LRU
+    auto [inserted, _] = g_rowCache.emplace(rowId, std::move(cr));
+    g_rowCacheLru.push_front(rowId);
+
+    // 超出容量时淘汰最旧的
+    while (g_rowCache.size() > kRowCacheMaxSize && !g_rowCacheLru.empty()) {
+        int64_t oldest = g_rowCacheLru.back();
+        g_rowCacheLru.pop_back();
+        g_rowCache.erase(oldest);
+    }
+
+    return &inserted->second;
 }
 
 // 更新 ListView 列头文本，在当前排序列后附加箭头指示符（▲/▼）
@@ -385,16 +471,15 @@ static void UpdateColumnHeaders() {
     }
 }
 
-// 根据 g_rows 刷新 ListView 显示内容（虚拟列表模式：只需设置条目数量，数据由 LVN_GETDISPINFO 提供）
+// 刷新 ListView 显示内容（虚拟列表模式：只需设置条目数量，数据由 LVN_GETDISPINFO 按需提供）
 static void RefreshList() {
     int count = 0;
     {
         std::lock_guard<std::mutex> lk(g_rowsMutex);
-        count = (int)g_rows.size();
+        count = (int)g_rowIds.size();
     }
-    // LVSICF_NOINVALIDATEALL: 避免全量重绘闪烁，仅更新可见区域
-    ListView_SetItemCountEx(g_hList, count, LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
-    InvalidateRect(g_hList, nullptr, FALSE);
+    ListView_SetItemCountEx(g_hList, count, LVSICF_NOSCROLL);
+    InvalidateRect(g_hList, nullptr, TRUE);
 }
 
 // 根据主窗口大小重新布局子控件（搜索框、ListView、状态栏）
@@ -474,56 +559,41 @@ static FILETIME U64ToFileTime(uint64_t v) {
     return ft;
 }
 
-// 根据当前搜索条件从数据库查询条目，更新 g_rows 并刷新 ListView
-static void LoadRowsFromDbAndRefresh() {
-    std::wstring err;
-    const std::wstring filter = GetSearchFilter();
-    Database db;
-    if (!db.Open(g_dbPath, &err)) {
-        LOG_WARN(L"Database::Open failed: %s", err.c_str());
-        return;
-    }
+// 异步加载：在后台线程中只查询 rowid 列表（内存极低），完成后通知 UI 线程
+static void LoadRowsFromDbAndRefreshAsync(HWND hWnd) {
+    // 捕获当前搜索条件和排序状态（在 UI 线程中获取）
+    std::wstring filter = GetSearchFilter();
+    std::wstring dbPath = g_dbPath;
+    int sortCol = g_sortColumn;
+    bool sortAsc = g_sortAscending;
 
-    if (!db.CreateEntriesTable(&err)) {
-        LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
-        return;
-    }
+    std::thread([hWnd, filter = std::move(filter), dbPath = std::move(dbPath), sortCol, sortAsc]() {
+        auto* result = new AsyncLoadResult();
 
-    std::vector<ArchiveEntry_t> entries;
-    if (!db.QueryEntries(filter, &entries, &err)) {
-        LOG_WARN(L"QueryEntries failed: %s", err.c_str());
-        return;
-    }
+        std::wstring err;
+        Database db;
+        if (!db.Open(dbPath, &err)) {
+            LOG_WARN(L"Database::Open failed: %s", err.c_str());
+            PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result);
+            return;
+        }
 
-    std::vector<ResultRow> rows;
-    rows.reserve(entries.size());
-    for (const auto& e : entries) {
-        ResultRow r;
-        r.name = e.entryName;
-        r.archivePath = e.archivePath;
-        r.entryPath = e.entryPath;
-        r.size = FormatSizeULongLong((ULONGLONG)e.compressed_size);
-        r.mtime = FormatSizeULongLong((ULONGLONG)e.uncompressed_size);
-        // 保存原始数值用于排序
-        r.compressed_size_raw = e.compressed_size;
-        r.uncompressed_size_raw = e.uncompressed_size;
-        rows.push_back(std::move(r));
-    }
+        db.CreateEntriesTable(&err);
 
-    {
-        std::lock_guard<std::mutex> lk(g_rowsMutex);
-        g_rows = std::move(rows);
-        // 如果当前有排序状态，对新数据应用排序
-        SortRows();
-    }
+        // 只查询 rowid 列表（36万条 ≈ 3MB，而非 1.4GB 的完整数据）
+        if (!db.QueryEntryIds(filter, sortCol, sortAsc, &result->rowIds, &err)) {
+            LOG_WARN(L"QueryEntryIds failed: %s", err.c_str());
+            PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result);
+            return;
+        }
 
-    RefreshList();
-    UpdateColumnHeaders();
+        result->entryCount = (int64_t)result->rowIds.size();
+        result->archiveCount = db.GetArchiveCount();
+
+        PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result);
+    }).detach();
 }
 
-static void PostAddResult(HWND hWnd, ResultRow* row) {
-    PostMessageW(hWnd, WM_APP_ADD_RESULT, 0, (LPARAM)row);
-}
 
 // 停止后台索引线程（设置取消标志并等待线程结束）
 static void StopIndexing() {
@@ -536,7 +606,83 @@ static void StopIndexing() {
     LOG_INFO(L"StopIndexing done");
 }
 
-// 启动后台索引线程：扫描磁盘 → 增量更新数据库 → 解析归档条目
+// 解析单个归档文件并将条目写入数据库（先删除旧条目再插入新条目）
+static void ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
+    EveryArchive::ZipArchiveParser parser;
+    std::string perr;
+    if (!parser.Open(a.filePath, &perr)) {
+        LOG_WARN(L"ZipArchiveParser::Open failed: %s", Utf8ToWString(perr.c_str()).c_str());
+        return;
+    }
+
+    std::vector<EveryArchive::ArchiveEntry> parsed;
+    if (!parser.ListEntries(&parsed, &perr)) {
+        LOG_WARN(L"ZipArchiveParser::ListEntries failed: %s", Utf8ToWString(perr.c_str()).c_str());
+        parser.Close();
+        return;
+    }
+    parser.Close();
+
+    std::vector<ArchiveEntry_t> entries;
+    entries.reserve(parsed.size());
+    for (const auto& e : parsed) {
+        if (e.is_directory) continue;
+
+        ArchiveEntry_t out;
+        out.archivePath = a.filePath;
+        out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
+        out.entryName = GetEntryNameFromPath(out.entryPath);
+        out.compressed_size = e.compressed_size;
+        out.uncompressed_size = e.uncompressed_size;
+        entries.push_back(std::move(out));
+    }
+
+    std::wstring entryErr;
+    if (!db.DeleteEntriesByArchivePath(a.filePath, &entryErr)) {
+        LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", entryErr.c_str());
+    }
+    if (!entries.empty()) {
+        if (!db.InsertEntriesBatch(entries, &entryErr)) {
+            LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
+        }
+    }
+}
+
+// 获取所有需要监控的 NTFS 盘符列表
+static std::vector<wchar_t> GetMonitoredDrives() {
+    std::vector<wchar_t> drives;
+    DWORD needed = GetLogicalDriveStringsW(0, nullptr);
+    if (needed == 0) return drives;
+
+    std::wstring buf;
+    buf.resize(needed);
+    if (GetLogicalDriveStringsW(needed, buf.data()) == 0) return drives;
+
+    const wchar_t* p = buf.c_str();
+    while (*p) {
+        std::wstring root = p;
+        p += root.size() + 1;
+        if (root.size() < 2) continue;
+
+        UINT dtype = GetDriveTypeW(root.c_str());
+        if (dtype == DRIVE_NO_ROOT_DIR || dtype == DRIVE_UNKNOWN) continue;
+
+        // 检查是否为 NTFS
+        wchar_t fsName[MAX_PATH] = {};
+        if (!GetVolumeInformationW(root.c_str(), nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH)) continue;
+        if (_wcsicmp(fsName, L"NTFS") != 0) continue;
+
+        wchar_t driveLetter = root[0];
+
+        // test: 仅监控 E 盘（与 FileScanner::Scan 保持一致）
+        if (driveLetter != L'E') continue;
+
+        drives.push_back(driveLetter);
+    }
+    return drives;
+}
+
+// 启动后台索引线程：扫描磁盘 → 增量更新数据库 → 解析归档条目 → 进入监控循环
 static void StartIndexing(HWND hWnd) {
     LOG_INFO(L"StartIndexing requested");
     StopIndexing();
@@ -560,6 +706,8 @@ static void StartIndexing(HWND hWnd) {
                 LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
             } else if (!db.CreateEntriesTable(&err)) {
                 LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
+            } else if (!db.CreateConfigsTable(&err)) {
+                LOG_WARN(L"CreateConfigsTable failed: %s", err.c_str());
             } else {
                 std::vector<ArchiveFile_t> old;
                 if (!db.QueryArchives(L"", &old, &err)) {
@@ -633,50 +781,211 @@ static void StartIndexing(HWND hWnd) {
 
                     for (const auto& a : toParse) {
                         if (g_indexCancel.load()) break;
+                        ParseAndStoreArchive(db, a);
+                    }
+                }
 
-                        EveryArchive::ZipArchiveParser parser;
-                        std::string perr;
-                        if (!parser.Open(a.filePath, &perr)) {
-                            LOG_WARN(L"ZipArchiveParser::Open failed: %s", Utf8ToWString(perr.c_str()).c_str());
-                            continue;
-                        }
-
-                        std::vector<EveryArchive::ArchiveEntry> parsed;
-                        if (!parser.ListEntries(&parsed, &perr)) {
-                            LOG_WARN(L"ZipArchiveParser::ListEntries failed: %s", Utf8ToWString(perr.c_str()).c_str());
-                            parser.Close();
-                            continue;
-                        }
-                        parser.Close();
-
-                        std::vector<ArchiveEntry_t> entries;
-                        entries.reserve(parsed.size());
-                        for (const auto& e : parsed) {
-                            if (e.is_directory) continue;
-
-                            ArchiveEntry_t out;
-                            out.archivePath = a.filePath;
-                            out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
-                            out.entryName = GetEntryNameFromPath(out.entryPath);
-                            out.compressed_size = e.compressed_size;
-                            out.uncompressed_size = e.uncompressed_size;
-                            entries.push_back(std::move(out));
-                        }
-
-                        std::wstring entryErr;
-                        if (!db.DeleteEntriesByArchivePath(a.filePath, &entryErr)) {
-                            LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", entryErr.c_str());
-                        }
-                        if (!db.InsertEntriesBatch(entries, &entryErr)) {
-                            LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
+                // 初始扫描完成后，记录每个盘符的 Journal NextUsn 作为监控起点
+                if (!g_indexCancel.load()) {
+                    auto drives = GetMonitoredDrives();
+                    for (wchar_t dl : drives) {
+                        JournalInfo ji;
+                        if (FileScanner::QueryJournalInfo(dl, &ji, &err)) {
+                            db.SaveJournalUsn(dl, ji.journalId, ji.nextUsn, &err);
+                            LOG_INFO(L"Saved Journal USN for drive %c: journalId=%lld, nextUsn=%lld",
+                                     dl, (long long)ji.journalId, (long long)ji.nextUsn);
                         }
                     }
                 }
             }
         }
 
+        // 通知 UI 刷新并标记初始索引完成
         PostMessageW(hWnd, WM_APP_DB_REFRESH, 0, 0);
         PostMessageW(hWnd, WM_APP_INDEX_DONE, 0, 0);
+
+        // ═══════════════════════════════════════════════════════════
+        //  监控循环：定期读取 USN Journal 增量变化，实时同步数据库
+        // ═══════════════════════════════════════════════════════════
+        LOG_INFO(L"Entering USN Journal monitoring loop");
+
+        while (!g_indexCancel.load()) {
+            // 每 2 秒检查一次变化
+            for (int i = 0; i < 20 && !g_indexCancel.load(); ++i) {
+                Sleep(100);
+            }
+            if (g_indexCancel.load()) break;
+
+            Database db;
+            std::wstring err;
+            if (!db.Open(g_dbPath, &err)) {
+                LOG_WARN(L"Monitor: Database::Open failed: %s", err.c_str());
+                continue;
+            }
+
+            auto drives = GetMonitoredDrives();
+            bool anyChanged = false;
+
+            for (wchar_t dl : drives) {
+                if (g_indexCancel.load()) break;
+
+                // 读取上次保存的 Journal 位置
+                int64_t savedJournalId = 0;
+                USN savedNextUsn = 0;
+                db.GetJournalUsn(dl, &savedJournalId, &savedNextUsn);
+
+                if (savedJournalId == 0 && savedNextUsn == 0) {
+                    // 没有保存过，跳过（等待下次全量扫描）
+                    continue;
+                }
+
+                // 增量读取 USN Journal 变化
+                std::vector<UsnChangeRecord_t> changes;
+                USN newNextUsn = 0;
+                std::wstring scanErr;
+                if (!FileScanner::ScanUsnJournal(dl, savedJournalId, savedNextUsn,
+                                                  &changes, &newNextUsn, &scanErr, &g_indexCancel)) {
+                    LOG_WARN(L"Monitor: ScanUsnJournal failed for %c: %s", dl, scanErr.c_str());
+                    continue;
+                }
+
+                if (changes.empty()) {
+                    // 即使没有归档文件变化，也更新 USN 位置避免重复扫描
+                    if (newNextUsn > savedNextUsn) {
+                        db.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
+                    }
+                    continue;
+                }
+
+                LOG_INFO(L"Monitor: %zu USN changes detected on drive %c", changes.size(), dl);
+
+                // 按 fileRefNumber 去重，只保留每个文件的最后一条记录
+                std::unordered_map<uint64_t, UsnChangeRecord_t> deduped;
+                for (auto& cr : changes) {
+                    deduped[(uint64_t)cr.fileRefNumber] = std::move(cr);
+                }
+
+                for (const auto& kv : deduped) {
+                    if (g_indexCancel.load()) break;
+                    const auto& cr = kv.second;
+
+                    bool isDelete = (cr.reason & USN_REASON_FILE_DELETE) != 0;
+                    bool isRenameOld = (cr.reason & USN_REASON_RENAME_OLD_NAME) != 0;
+
+                    if (isDelete || isRenameOld) {
+                        // 文件被删除或重命名（旧名）：从数据库中移除
+                        ArchiveFile_t oldAf;
+                        if (db.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                            LOG_INFO(L"Monitor: Archive deleted/renamed: %s", oldAf.filePath.c_str());
+                            if (!oldAf.filePath.empty()) {
+                                std::wstring delErr;
+                                db.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                            }
+                            db.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
+                            anyChanged = true;
+                        }
+                    } else {
+                        // 文件新增或修改：获取最新文件信息，重新解析入库
+                        // 通过 OpenFileById 获取文件的完整路径和元数据
+                        wchar_t volPath[] = L"\\\\.\\X:";
+                        volPath[4] = dl;
+                        HANDLE hVol = CreateFileW(volPath, GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, OPEN_EXISTING, 0, nullptr);
+                        if (hVol == INVALID_HANDLE_VALUE) continue;
+
+                        FILE_ID_DESCRIPTOR fid{};
+                        fid.dwSize = sizeof(fid);
+                        fid.Type = FileIdType;
+                        fid.FileId.QuadPart = (LONGLONG)cr.fileRefNumber;
+
+                        HANDLE hFile = OpenFileById(hVol, &fid, FILE_READ_ATTRIBUTES,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, 0);
+
+                        if (hFile == INVALID_HANDLE_VALUE) {
+                            CloseHandle(hVol);
+                            // 文件可能已被删除，清理数据库
+                            ArchiveFile_t oldAf;
+                            if (db.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                                if (!oldAf.filePath.empty()) {
+                                    std::wstring delErr;
+                                    db.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                }
+                                db.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
+                                anyChanged = true;
+                            }
+                            continue;
+                        }
+
+                        BY_HANDLE_FILE_INFORMATION fileInfo{};
+                        GetFileInformationByHandle(hFile, &fileInfo);
+
+                        uint64_t fileSize = ((uint64_t)fileInfo.nFileSizeHigh << 32) | fileInfo.nFileSizeLow;
+                        ULARGE_INTEGER ui{};
+                        ui.LowPart = fileInfo.ftLastWriteTime.dwLowDateTime;
+                        ui.HighPart = fileInfo.ftLastWriteTime.dwHighDateTime;
+                        uint64_t modifyTime = ui.QuadPart;
+
+                        // 获取完整路径
+                        std::wstring fullPath;
+                        DWORD need = GetFinalPathNameByHandleW(hFile, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                        if (need > 0) {
+                            fullPath.resize(need);
+                            DWORD got = GetFinalPathNameByHandleW(hFile, fullPath.data(), need, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                            if (got > 0 && got < need) {
+                                fullPath.resize(got);
+                                if (fullPath.size() >= 4 && fullPath[0] == L'\\' && fullPath[1] == L'\\' && fullPath[2] == L'?' && fullPath[3] == L'\\') {
+                                    fullPath.erase(0, 4);
+                                }
+                            }
+                        }
+                        CloseHandle(hFile);
+                        CloseHandle(hVol);
+
+                        if (fullPath.empty()) continue;
+
+                        // 先删除旧的条目（如果路径变了）
+                        ArchiveFile_t oldAf;
+                        if (db.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                            if (!oldAf.filePath.empty() && oldAf.filePath != fullPath) {
+                                std::wstring delErr;
+                                db.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                            }
+                        }
+
+                        // 更新 archives 表
+                        ArchiveFile_t af;
+                        af.driveLetter = std::wstring(1, dl);
+                        af.fileName = cr.fileName;
+                        af.filePath = fullPath;
+                        af.fileSize = fileSize;
+                        af.modifyTime = modifyTime;
+                        af.fileRefNumber = cr.fileRefNumber;
+                        af.parentFileRefNumber = cr.parentFileRefNumber;
+                        af.usn = cr.usn;
+                        db.InsertOrUpdateArchive(af);
+
+                        // 重新解析归档文件内容
+                        LOG_INFO(L"Monitor: Re-parsing archive: %s", fullPath.c_str());
+                        ParseAndStoreArchive(db, af);
+                        anyChanged = true;
+                    }
+                }
+
+                // 更新 Journal USN 位置
+                if (newNextUsn > savedNextUsn) {
+                    db.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
+                }
+            }
+
+            // 如果有变化，通知 UI 刷新
+            if (anyChanged && !g_indexCancel.load()) {
+                PostMessageW(hWnd, WM_APP_DB_REFRESH, 0, 0);
+            }
+        }
+
+        LOG_INFO(L"USN Journal monitoring loop exited");
     });
 }
 
@@ -700,23 +1009,55 @@ static LRESULT CALLBACK SearchEditProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     return result;
 }
 
-// 更新底部状态栏（显示索引状态和文件数量）
+// 更新底部状态栏（显示索引状态、文件数量和归档文件数量）
 static void UpdateStatusBar() {
     if (!g_hStatusBar) return;
 
-    std::wstring statusText;
-    
     int fileCount = 0;
     {
         std::lock_guard<std::mutex> lk(g_rowsMutex);
-        fileCount = (int)g_rows.size();
+        fileCount = (int)g_rowIds.size();
     }
 
-    if (g_indexRunning.load()) {
-        const wchar_t* spinner = g_spinnerChars[g_spinnerFrame % 4];
-        statusText = std::wstring(L"\u6B63\u5728\u5904\u7406 ") + spinner + L" | \u6587\u4EF6\u6570\u91CF: " + std::to_wstring(fileCount);
+    // 使用缓存的归档文件数量（由异步加载结果更新，避免频繁查询数据库）
+    int64_t archiveCount = g_cachedArchiveCount.load();
+
+    // 格式化数字（添加千位分隔符）
+    std::wstring fileCountStr = AddThousandsSeparator(std::to_wstring(fileCount));
+    std::wstring archiveCountStr = AddThousandsSeparator(std::to_wstring((long long)archiveCount));
+
+    bool running = g_indexRunning.load();
+
+    // 控制 Marquee 进度条的显示/隐藏，并定位到状态栏右侧
+    if (g_hProgress) {
+        bool isVisible = (GetWindowLongW(g_hProgress, GWL_STYLE) & WS_VISIBLE) != 0;
+        if (running && !isVisible) {
+            SendMessageW(g_hProgress, PBM_SETMARQUEE, TRUE, 30);
+            ShowWindow(g_hProgress, SW_SHOW);
+        } else if (!running && isVisible) {
+            SendMessageW(g_hProgress, PBM_SETMARQUEE, FALSE, 0);
+            ShowWindow(g_hProgress, SW_HIDE);
+        }
+        // 将进度条定位到状态栏右侧
+        if (running) {
+            RECT sbRect{};
+            GetClientRect(g_hStatusBar, &sbRect);
+            const int pbWidth = 120;
+            const int pbHeight = sbRect.bottom - sbRect.top - 4;
+            const int pbX = sbRect.right - pbWidth - 20; // 留出 sizegrip 空间
+            const int pbY = 2;
+            MoveWindow(g_hProgress, pbX, pbY, pbWidth, pbHeight, TRUE);
+        }
+    }
+
+    std::wstring statusText;
+    if (running) {
+        // 进度条已经在视觉上指示"正在处理"，文字只显示统计信息
+        statusText = L"\u6B63\u5728\u5904\u7406 | \u6587\u4EF6\u6570\u91CF: " + fileCountStr +
+                     L" | \u5F52\u6863\u6587\u4EF6: " + archiveCountStr;
     } else {
-        statusText = L"\u5C31\u7EEA | \u6587\u4EF6\u6570\u91CF: " + std::to_wstring(fileCount);
+        statusText = L"\u5C31\u7EEA | \u6587\u4EF6\u6570\u91CF: " + fileCountStr +
+                     L" | \u5F52\u6863\u6587\u4EF6: " + archiveCountStr;
     }
 
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)statusText.c_str());
@@ -725,7 +1066,7 @@ static void UpdateStatusBar() {
 static void EnsureCommonControls() {
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES;
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS;
     InitCommonControlsEx(&icc);
 }
 
@@ -837,6 +1178,20 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             LOG_ERROR(L"CreateWindowExW statusbar failed (err=%lu)", GetLastError());
         }
 
+        // 在状态栏内创建 Marquee 进度条（转圈样式，初始隐藏）
+        if (g_hStatusBar) {
+            g_hProgress = CreateWindowExW(
+                0,
+                PROGRESS_CLASSW,
+                nullptr,
+                WS_CHILD | PBS_MARQUEE,  // 不含 WS_VISIBLE，初始隐藏
+                0, 0, 0, 0,
+                g_hStatusBar,
+                (HMENU)(INT_PTR)IDC_PROGRESS,
+                (HINSTANCE)GetWindowLongPtrW(hWnd, GWLP_HINSTANCE),
+                nullptr);
+        }
+
         g_EditOldProc = (WNDPROC)SetWindowLongPtrW(g_hSearch, GWLP_WNDPROC, (LONG_PTR)SearchEditProc);
 
         {
@@ -863,7 +1218,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         UpdateStatusBar();
 
         EnsureDatabaseReady();
-        LoadRowsFromDbAndRefresh();
+        // 异步加载数据库数据，避免阻塞 UI 线程
+        LoadRowsFromDbAndRefreshAsync(hWnd);
 
         StartIndexing(hWnd);
         return 0;
@@ -874,9 +1230,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_TIMER:
         if (wParam == IDT_STATUSBAR_TIMER) {
-            if (g_indexRunning.load()) {
-                g_spinnerFrame++;
-            }
             UpdateStatusBar();
             return 0;
         }
@@ -895,7 +1248,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             StopIndexing();
             return 0;
         case IDM_SEARCH_FIND:
-            LoadRowsFromDbAndRefresh();
+            LoadRowsFromDbAndRefreshAsync(hWnd);
             return 0;
         case IDM_HELP_ABOUT:
             MessageBoxW(hWnd, L"EveryArchive", L"About", MB_OK | MB_ICONINFORMATION);
@@ -905,39 +1258,36 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
     }
 
-    case WM_APP_ADD_RESULT: {
-        auto* row = (ResultRow*)lParam;
-        if (!row) return 0;
-
-        if (!PassesFilter(row->name)) {
-            delete row;
-            return 0;
-        }
-
-        {
-            std::lock_guard<std::mutex> lk(g_rowsMutex);
-            g_rows.push_back(*row);
-        }
-
-        delete row;
-
-        // 虚拟列表模式：只需更新条目数量，无需逐行插入
-        RefreshList();
-        UpdateStatusBar();
-        return 0;
-    }
-
     case WM_APP_INDEX_DONE:
         g_indexRunning.store(false);
-        g_spinnerFrame = 0;
         UpdateStatusBar();
         LOG_INFO(L"WM_APP_INDEX_DONE");
         return 0;
 
     case WM_APP_DB_REFRESH:
-        LoadRowsFromDbAndRefresh();
-        UpdateStatusBar();
+        LoadRowsFromDbAndRefreshAsync(hWnd);
         return 0;
+
+    case WM_APP_ROWS_READY: {
+        // 后台线程查询完成，交换 rowid 列表到 UI 线程
+        auto* result = (AsyncLoadResult*)lParam;
+        if (result) {
+            {
+                std::lock_guard<std::mutex> lk(g_rowsMutex);
+                g_rowIds = std::move(result->rowIds);
+                g_totalEntryCount = result->entryCount;
+            }
+            // 清空行缓存（数据可能已变化）
+            ClearRowCache();
+            g_cachedArchiveCount.store(result->archiveCount);
+            delete result;
+
+            RefreshList();
+            UpdateColumnHeaders();
+            UpdateStatusBar();
+        }
+        return 0;
+    }
 
     case WM_APP_UPDATE_STATUSBAR:
         UpdateStatusBar();
@@ -946,54 +1296,58 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_NOTIFY: { // ListView 通知：双击事件 + NM_CUSTOMDRAW 自绘（关键词加粗）
         LPNMHDR hdr = (LPNMHDR)lParam;
         if (hdr && hdr->hwndFrom == g_hList) {
-            // LVN_GETDISPINFO: 虚拟列表回调，ListView 需要显示某行数据时触发
+            // LVN_GETDISPINFO: 虚拟列表回调，按需从缓存/数据库获取行数据
             if (hdr->code == LVN_GETDISPINFOW) {
                 NMLVDISPINFOW* pdi = (NMLVDISPINFOW*)lParam;
+                int iItem = pdi->item.iItem;
+                int iSub = pdi->item.iSubItem;
+
+                // 获取 rowid
+                int64_t rowId = 0;
+                {
+                    std::lock_guard<std::mutex> lk(g_rowsMutex);
+                    if (iItem < 0 || iItem >= (int)g_rowIds.size()) return 0;
+                    rowId = g_rowIds[iItem];
+                }
+
+                // 从 LRU 缓存获取行数据（缓存未命中时自动查询数据库）
+                const CachedRow* cr = GetCachedRow(rowId);
+                if (!cr) return 0;
+
+                if ((pdi->item.mask & LVIF_IMAGE) && iSub == 0) {
+                    pdi->item.iImage = cr->iconIndex;
+                }
+
                 if (pdi->item.mask & LVIF_TEXT) {
-                    int iItem = pdi->item.iItem;
-                    int iSub = pdi->item.iSubItem;
-                    // 线程局部静态缓冲区，避免临时 wstring 被释放后指针悬挂
                     static thread_local wchar_t buf[1024];
                     buf[0] = L'\0';
-                    {
-                        std::lock_guard<std::mutex> lk(g_rowsMutex);
-                        if (iItem >= 0 && iItem < (int)g_rows.size()) {
-                            const auto& r = g_rows[iItem];
-                            const std::wstring* src = nullptr;
-                            switch (iSub) {
-                            case 0: src = &r.name; break;
-                            case 1: src = &r.archivePath; break;
-                            case 2: src = &r.entryPath; break;
-                            case 3: src = &r.size; break;
-                            case 4: src = &r.mtime; break;
-                            }
-                            if (src) {
-                                wcsncpy_s(buf, src->c_str(), _TRUNCATE);
-                            }
-                        }
+                    const std::wstring* src = nullptr;
+                    switch (iSub) {
+                    case 0: src = &cr->name; break;
+                    case 1: src = &cr->archivePath; break;
+                    case 2: src = &cr->entryPath; break;
+                    case 3: src = &cr->sizeStr; break;
+                    case 4: src = &cr->origSizeStr; break;
+                    }
+                    if (src) {
+                        wcsncpy_s(buf, src->c_str(), _TRUNCATE);
                     }
                     pdi->item.pszText = buf;
                 }
                 return 0;
             }
-            // 列头点击排序：点击同一列切换正序/倒序，点击不同列默认正序
+            // 列头点击排序：通过数据库 ORDER BY 重新查询 rowid 列表
             if (hdr->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW nmlv = (LPNMLISTVIEW)lParam;
                 int clickedCol = nmlv->iSubItem;
                 if (clickedCol == g_sortColumn) {
-                    // 再次点击同一列：切换排序方向
                     g_sortAscending = !g_sortAscending;
                 } else {
-                    // 点击新列：设为正序
                     g_sortColumn = clickedCol;
                     g_sortAscending = true;
                 }
-                {
-                    std::lock_guard<std::mutex> lk(g_rowsMutex);
-                    SortRows();
-                }
-                RefreshList();
-                UpdateColumnHeaders();
+                // 异步重新查询（带新排序条件）
+                LoadRowsFromDbAndRefreshAsync(hWnd);
                 return 0;
             }
             if (hdr->code == NM_DBLCLK) {
@@ -1014,42 +1368,65 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     // 列 0/1/2（名称、归档文件、内部路径）使用自绘加粗匹配
                     if (iSubItem == 0 || iSubItem == 1 || iSubItem == 2) {
                         std::wstring text;
+                        int iconIdx = 0;
                         {
-                            std::lock_guard<std::mutex> lk(g_rowsMutex);
-                            if (iItem >= 0 && iItem < (int)g_rows.size()) {
-                                const auto& row = g_rows[iItem];
-                                switch (iSubItem) {
-                                case 0: text = row.name; break;
-                                case 1: text = row.archivePath; break;
-                                case 2: text = row.entryPath; break;
+                            int64_t rowId = 0;
+                            {
+                                std::lock_guard<std::mutex> lk(g_rowsMutex);
+                                if (iItem >= 0 && iItem < (int)g_rowIds.size()) {
+                                    rowId = g_rowIds[iItem];
+                                }
+                            }
+                            if (rowId > 0) {
+                                const CachedRow* cr = GetCachedRow(rowId);
+                                if (cr) {
+                                    switch (iSubItem) {
+                                    case 0: text = cr->name; iconIdx = cr->iconIndex; break;
+                                    case 1: text = cr->archivePath; break;
+                                    case 2: text = cr->entryPath; break;
+                                    }
                                 }
                             }
                         }
 
                         std::wstring filter = GetSearchFilter();
 
-                        RECT rcSubItem{};
+                        // 列0：获取图标区域和文本区域分别绘制
+                        RECT rcIcon{}, rcText{};
                         if (iSubItem == 0) {
-                            ListView_GetItemRect(g_hList, iItem, &rcSubItem, LVIR_LABEL);
+                            ListView_GetItemRect(g_hList, iItem, &rcIcon, LVIR_ICON);
+                            ListView_GetItemRect(g_hList, iItem, &rcText, LVIR_LABEL);
                         } else {
-                            ListView_GetSubItemRect(g_hList, iItem, iSubItem, LVIR_BOUNDS, &rcSubItem);
+                            ListView_GetSubItemRect(g_hList, iItem, iSubItem, LVIR_BOUNDS, &rcText);
                         }
 
+                        // 绘制整行背景（列0需要覆盖图标+文本区域）
+                        RECT rcFill = (iSubItem == 0) ? RECT{ rcIcon.left, rcIcon.top, rcText.right, rcText.bottom } : rcText;
                         bool selected = (ListView_GetItemState(g_hList, iItem, LVIS_SELECTED) & LVIS_SELECTED) != 0;
                         COLORREF textColor = selected ? GetSysColor(COLOR_HIGHLIGHTTEXT) : GetSysColor(COLOR_WINDOWTEXT);
 
                         if (selected) {
-                            HBRUSH hBrush = GetSysColorBrush(COLOR_HIGHLIGHT);
-                            FillRect(lvcd->nmcd.hdc, &rcSubItem, hBrush);
+                            FillRect(lvcd->nmcd.hdc, &rcFill, GetSysColorBrush(COLOR_HIGHLIGHT));
                         } else {
-                            HBRUSH hBrush = GetSysColorBrush(COLOR_WINDOW);
-                            FillRect(lvcd->nmcd.hdc, &rcSubItem, hBrush);
+                            FillRect(lvcd->nmcd.hdc, &rcFill, GetSysColorBrush(COLOR_WINDOW));
                         }
 
-                        DrawTextWithBoldMatch(lvcd->nmcd.hdc, rcSubItem, text, filter, textColor);
+                        // 列0：在图标区域绘制文件类型图标
+                        if (iSubItem == 0 && g_hSysSmallIcons) {
+                            int iconX = rcIcon.left;
+                            int iconY = rcIcon.top + ((rcIcon.bottom - rcIcon.top) - 16) / 2;
+                            ImageList_Draw(g_hSysSmallIcons, iconIdx, lvcd->nmcd.hdc,
+                                iconX, iconY, ILD_TRANSPARENT);
+                        }
+
+                        DrawTextWithBoldMatch(lvcd->nmcd.hdc, rcText, text, filter, textColor);
                         return CDRF_SKIPDEFAULT;
                     }
-                    return CDRF_DODEFAULT;
+                    // 列3/4（压缩大小、原始大小）：强制使用普通字体，防止继承自绘时的粗体
+                    if (g_hNormalFont) {
+                        SelectObject(lvcd->nmcd.hdc, g_hNormalFont);
+                    }
+                    return CDRF_NEWFONT;
                 }
                 }
             }
@@ -1061,6 +1438,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         LOG_INFO(L"WM_DESTROY");
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         StopIndexing();
+        g_cacheDb.Close();
+        g_cacheDbOpen = false;
         g_database.Close();
         if (g_hSearchFont) { DeleteObject(g_hSearchFont); g_hSearchFont = nullptr; }
         if (g_hNormalFont) { DeleteObject(g_hNormalFont); g_hNormalFont = nullptr; }

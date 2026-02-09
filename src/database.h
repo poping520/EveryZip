@@ -36,6 +36,7 @@ public:
     bool SaveJournalUsn(wchar_t driveLetter, int64_t journalId, USN nextUsn, std::wstring* err);
     bool GetJournalUsn(wchar_t driveLetter, int64_t* outJournalId, USN* outNextUsn);
 
+
     bool CreateArchivesTable(std::wstring* err);
     bool InsertOrUpdateArchive(const ArchiveFile_t& archiveFile);
     bool InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std::wstring* err);
@@ -43,14 +44,17 @@ public:
 
     bool CreateEntriesTable(std::wstring* err);
     bool DeleteEntriesByArchivePath(const std::wstring& archivePath, std::wstring* err);
+    bool DeleteEntriesByArchiveId(int64_t archiveId, std::wstring* err);
     bool InsertOrUpdateEntry(const ArchiveEntry_t& entry);
     bool InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, std::wstring* err);
     bool GetArchiveLastUsn(wchar_t driveLetter, USN* outUsn);
     bool DeleteArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumber);
     int64_t GetArchiveCount();
+    int64_t GetArchiveIdByPath(const std::wstring& filePath);
     bool BeginTransaction();
     bool CommitTransaction();
     bool RollbackTransaction();
+    bool Vacuum();
 
 
     bool QueryArchives(const std::wstring& filter, std::vector<ArchiveFile_t>* out, std::wstring* err);

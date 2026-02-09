@@ -420,22 +420,27 @@ static void ParseArchivesToEntries(const std::vector<ArchiveFile_t>& archives) {
         }
         parser.Close();
 
+        int64_t archiveId = g_database.GetArchiveIdByPath(a.filePath);
+        if (archiveId < 0) {
+            LOG_WARN(L"GetArchiveIdByPath failed for: %s", a.filePath.c_str());
+            continue;
+        }
+
         std::vector<ArchiveEntry_t> entries;
         entries.reserve(parsed.size());
         for (const auto& e : parsed) {
             if (e.is_directory) continue;
 
             ArchiveEntry_t out;
-            out.archivePath = a.filePath;
+            out.archiveId = archiveId;
             out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
-            out.entryName = GetEntryNameFromPath(out.entryPath);
             out.compressed_size = e.compressed_size;
             out.uncompressed_size = e.uncompressed_size;
             entries.push_back(std::move(out));
         }
 
-        if (!g_database.DeleteEntriesByArchivePath(a.filePath, &err)) {
-            LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", err.c_str());
+        if (!g_database.DeleteEntriesByArchiveId(archiveId, &err)) {
+            LOG_WARN(L"DeleteEntriesByArchiveId failed: %s", err.c_str());
         }
         if (!g_database.InsertEntriesBatch(entries, &err)) {
             LOG_WARN(L"InsertEntriesBatch failed: %s", err.c_str());
@@ -479,7 +484,7 @@ static const CachedRow* GetCachedRow(int64_t rowId) {
 
     // 构建缓存项
     CachedRow cr;
-    cr.name = entry.entryName;
+    cr.name = GetEntryNameFromPath(entry.entryPath);
     cr.archivePath = entry.archivePath;
     cr.entryPath = entry.entryPath;
     cr.sizeStr = FormatSizeULongLong((ULONGLONG)entry.compressed_size);
@@ -672,23 +677,29 @@ static void ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
     }
     parser.Close();
 
+    int64_t archiveId = db.GetArchiveIdByPath(a.filePath);
+    if (archiveId < 0) {
+        LOG_WARN(L"GetArchiveIdByPath failed for: %s", a.filePath.c_str());
+        return;
+    }
+
+
     std::vector<ArchiveEntry_t> entries;
     entries.reserve(parsed.size());
     for (const auto& e : parsed) {
         if (e.is_directory) continue;
 
         ArchiveEntry_t out;
-        out.archivePath = a.filePath;
+        out.archiveId = archiveId;
         out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
-        out.entryName = GetEntryNameFromPath(out.entryPath);
         out.compressed_size = e.compressed_size;
         out.uncompressed_size = e.uncompressed_size;
         entries.push_back(std::move(out));
     }
 
     std::wstring entryErr;
-    if (!db.DeleteEntriesByArchivePath(a.filePath, &entryErr)) {
-        LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", entryErr.c_str());
+    if (!db.DeleteEntriesByArchiveId(archiveId, &entryErr)) {
+        LOG_WARN(L"DeleteEntriesByArchiveId failed: %s", entryErr.c_str());
     }
     if (!entries.empty()) {
         if (!db.InsertEntriesBatch(entries, &entryErr)) {
@@ -846,6 +857,7 @@ static void StartIndexing(HWND hWnd) {
                         }
                     }
                 }
+
             }
         }
 

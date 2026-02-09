@@ -40,8 +40,8 @@ typedef struct UsnChangeRecord
 // 归档文件内容
 typedef struct ArchiveEntry
 {
-    std::wstring archivePath;
-    std::wstring entryName;
+    int64_t archiveId = 0;          // archives 表的 id（插入时使用）
+    std::wstring archivePath;       // archives.file_path（查询时由 JOIN 填充）
     std::wstring entryPath;
     std::uint64_t compressed_size = 0;
     std::uint64_t uncompressed_size = 0;

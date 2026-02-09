@@ -1,0 +1,98 @@
+#include <windows.h>
+#include "resource.h"
+
+// ══════════════════════════════════════════════════════════════
+//  简体中文
+// ══════════════════════════════════════════════════════════════
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+STRINGTABLE
+{
+    // 菜单栏
+    IDS_MENU_FILE,          "文件(&F)"
+    IDS_MENU_EDIT,          "编辑(&E)"
+    IDS_MENU_VIEW,          "视图(&V)"
+    IDS_MENU_SEARCH,        "搜索(&S)"
+    IDS_MENU_BOOKMARK,      "书签(&B)"
+    IDS_MENU_TOOLS,         "工具(&T)"
+    IDS_MENU_HELP,          "帮助(&H)"
+    // 菜单项
+    IDS_MENU_FILE_EXIT,     "退出(&X)\tAlt+F4"
+    IDS_MENU_EDIT_COPY,     "复制(&C)"
+    IDS_MENU_VIEW_REFRESH,  "刷新索引(&R)\tF5"
+    IDS_MENU_VIEW_STOP,     "停止索引(&S)"
+    IDS_MENU_SEARCH_FIND,   "搜索(&F)"
+    IDS_MENU_BOOKMARK_ADD,  "添加书签(&A)"
+    IDS_MENU_TOOLS_OPTIONS, "选项(&O)"
+    IDS_MENU_HELP_ABOUT,    "关于(&A)"
+    // 托盘菜单
+    IDS_TRAY_SHOW,          "显示窗口"
+    IDS_TRAY_EXIT,          "退出"
+    // ListView 列头
+    IDS_COL_NAME,           "名称"
+    IDS_COL_ARCHIVE,        "归档文件"
+    IDS_COL_PATH,           "内部路径"
+    IDS_COL_COMPRESSED_SIZE,"压缩大小"
+    IDS_COL_ORIGINAL_SIZE,  "原始大小"
+    // 排序箭头
+    IDS_SORT_ASC,           " ▲"
+    IDS_SORT_DESC,          " ▼"
+    // 状态栏
+    IDS_STATUS_PROCESSING,  "正在处理"
+    IDS_STATUS_READY,       "就绪"
+    IDS_STATUS_FILE_COUNT,  "文件数量"
+    IDS_STATUS_ARCHIVE_COUNT,"归档文件"
+    // 对话框
+    IDS_ABOUT_TITLE,        "关于"
+    IDS_ABOUT_TEXT,         "EveryArchive"
+    IDS_ERROR,              "错误"
+    IDS_DBLCLICK_PLACEHOLDER,"双击（占位功能）"
+}
+
+// ══════════════════════════════════════════════════════════════
+//  English
+// ══════════════════════════════════════════════════════════════
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+STRINGTABLE
+{
+    // Menu bar
+    IDS_MENU_FILE,          "&File"
+    IDS_MENU_EDIT,          "&Edit"
+    IDS_MENU_VIEW,          "&View"
+    IDS_MENU_SEARCH,        "&Search"
+    IDS_MENU_BOOKMARK,      "&Bookmark"
+    IDS_MENU_TOOLS,         "&Tools"
+    IDS_MENU_HELP,          "&Help"
+    // Menu items
+    IDS_MENU_FILE_EXIT,     "E&xit\tAlt+F4"
+    IDS_MENU_EDIT_COPY,     "&Copy"
+    IDS_MENU_VIEW_REFRESH,  "&Refresh Index\tF5"
+    IDS_MENU_VIEW_STOP,     "&Stop Indexing"
+    IDS_MENU_SEARCH_FIND,   "&Find"
+    IDS_MENU_BOOKMARK_ADD,  "&Add Bookmark"
+    IDS_MENU_TOOLS_OPTIONS, "&Options"
+    IDS_MENU_HELP_ABOUT,    "&About"
+    // Tray menu
+    IDS_TRAY_SHOW,          "Show Window"
+    IDS_TRAY_EXIT,          "Exit"
+    // ListView columns
+    IDS_COL_NAME,           "Name"
+    IDS_COL_ARCHIVE,        "Archive File"
+    IDS_COL_PATH,           "Internal Path"
+    IDS_COL_COMPRESSED_SIZE,"Compressed Size"
+    IDS_COL_ORIGINAL_SIZE,  "Original Size"
+    // Sort arrows
+    IDS_SORT_ASC,           " \x25B2"
+    IDS_SORT_DESC,          " \x25BC"
+    // Status bar
+    IDS_STATUS_PROCESSING,  "Processing"
+    IDS_STATUS_READY,       "Ready"
+    IDS_STATUS_FILE_COUNT,  "Files"
+    IDS_STATUS_ARCHIVE_COUNT,"Archives"
+    // Dialogs
+    IDS_ABOUT_TITLE,        "About"
+    IDS_ABOUT_TEXT,         "EveryArchive"
+    IDS_ERROR,              "Error"
+    IDS_DBLCLICK_PLACEHOLDER,"Double click (placeholder)"
+}

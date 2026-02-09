@@ -16,8 +16,54 @@
 
 #define IDT_STATUSBAR_TIMER 2000
 
+#define IDI_TRAY_ICON     1         // 托盘图标 ID
+#define IDM_TRAY_SHOW     170       // 托盘菜单：显示窗口
+#define IDM_TRAY_EXIT     171       // 托盘菜单：退出程序
+
+// ── 多语言字符串 ID ──
+// 菜单栏
+#define IDS_MENU_FILE           2001
+#define IDS_MENU_EDIT           2002
+#define IDS_MENU_VIEW           2003
+#define IDS_MENU_SEARCH         2004
+#define IDS_MENU_BOOKMARK       2005
+#define IDS_MENU_TOOLS          2006
+#define IDS_MENU_HELP           2007
+// 菜单项
+#define IDS_MENU_FILE_EXIT      2010
+#define IDS_MENU_EDIT_COPY      2011
+#define IDS_MENU_VIEW_REFRESH   2012
+#define IDS_MENU_VIEW_STOP      2013
+#define IDS_MENU_SEARCH_FIND    2014
+#define IDS_MENU_BOOKMARK_ADD   2015
+#define IDS_MENU_TOOLS_OPTIONS  2016
+#define IDS_MENU_HELP_ABOUT     2017
+// 托盘菜单
+#define IDS_TRAY_SHOW           2020
+#define IDS_TRAY_EXIT           2021
+// ListView 列头
+#define IDS_COL_NAME            2030
+#define IDS_COL_ARCHIVE         2031
+#define IDS_COL_PATH            2032
+#define IDS_COL_COMPRESSED_SIZE 2033
+#define IDS_COL_ORIGINAL_SIZE   2034
+// 排序箭头
+#define IDS_SORT_ASC            2040
+#define IDS_SORT_DESC           2041
+// 状态栏
+#define IDS_STATUS_PROCESSING   2050
+#define IDS_STATUS_READY        2051
+#define IDS_STATUS_FILE_COUNT   2052
+#define IDS_STATUS_ARCHIVE_COUNT 2053
+// 对话框
+#define IDS_ABOUT_TITLE         2060
+#define IDS_ABOUT_TEXT          2061
+#define IDS_ERROR               2062
+#define IDS_DBLCLICK_PLACEHOLDER 2063
+
 #define WM_APP_ADD_RESULT (WM_APP + 1)
 #define WM_APP_INDEX_DONE (WM_APP + 2)
 #define WM_APP_DB_REFRESH (WM_APP + 3)
 #define WM_APP_UPDATE_STATUSBAR (WM_APP + 4)
 #define WM_APP_ROWS_READY (WM_APP + 5)  // 异步加载完成，wParam=0, lParam=AsyncLoadResult*
+#define WM_APP_TRAY       (WM_APP + 6)  // 托盘图标回调消息

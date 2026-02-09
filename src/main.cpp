@@ -35,6 +35,22 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 static constexpr wchar_t kAppClassName[] = L"EveryArchiveMainWindow";
 static constexpr wchar_t kAppTitle[] = L"EveryArchive";
+static HINSTANCE g_hInstance = nullptr;
+
+// 从 STRINGTABLE 资源加载本地化字符串
+static const wchar_t* S(UINT id) {
+    // LoadStringW with nBufferMax=0 returns a pointer to the resource string (read-only)
+    const wchar_t* p = nullptr;
+    int len = LoadStringW(g_hInstance, id, (LPWSTR)&p, 0);
+    return (len > 0 && p) ? p : L"";
+}
+
+// S() 返回的指针指向只读资源段，不以 '\0' 结尾，需要拷贝到 std::wstring 使用
+static std::wstring LS(UINT id) {
+    const wchar_t* p = nullptr;
+    int len = LoadStringW(g_hInstance, id, (LPWSTR)&p, 0);
+    return (len > 0 && p) ? std::wstring(p, len) : std::wstring();
+}
 
 // ListView 行缓存项（按需从数据库加载，缓存可见行数据）
 struct CachedRow {
@@ -109,6 +125,39 @@ static std::atomic_bool g_indexCancel{ false };  // 取消标志
 static std::atomic_bool g_indexRunning{ false }; // 运行状态
 static std::thread g_indexThread;                // 索引工作线程
 static HWND g_mainHwnd = nullptr;
+static bool g_forceQuit = false;                 // true=真正退出程序，false=关闭窗口仅隐藏到托盘
+
+// ── 系统托盘图标 ──
+static NOTIFYICONDATAW g_nid{};
+
+static void AddTrayIcon(HWND hWnd) {
+    ZeroMemory(&g_nid, sizeof(g_nid));
+    g_nid.cbSize = sizeof(g_nid);
+    g_nid.hWnd = hWnd;
+    g_nid.uID = IDI_TRAY_ICON;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_APP_TRAY;
+    g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcscpy_s(g_nid.szTip, L"EveryArchive");
+    Shell_NotifyIconW(NIM_ADD, &g_nid);
+}
+
+static void RemoveTrayIcon() {
+    Shell_NotifyIconW(NIM_DELETE, &g_nid);
+}
+
+static void ShowTrayMenu(HWND hWnd) {
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW, LS(IDS_TRAY_SHOW).c_str());
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, LS(IDS_TRAY_EXIT).c_str());
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hWnd);
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
+    DestroyMenu(hMenu);
+}
 
 // ── 异步加载结果（后台线程只查询 rowid 列表，传递到 UI 线程）──
 struct AsyncLoadResult {
@@ -183,34 +232,34 @@ static HMENU CreateMainMenu() {
     HMENU hMenuBar = CreateMenu();
 
     HMENU hFile = CreatePopupMenu();
-    AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT, L"\u6587\u4ef6(&F)\tAlt+F");
+    AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT, LS(IDS_MENU_FILE_EXIT).c_str());
 
     HMENU hEdit = CreatePopupMenu();
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_COPY, L"\u7f16\u8f91(&E)");
+    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_COPY, LS(IDS_MENU_EDIT_COPY).c_str());
 
     HMENU hView = CreatePopupMenu();
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_REFRESH, L"\u5237\u65b0\u7d22\u5f15(&R)\tF5");
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_STOP, L"\u505c\u6b62\u7d22\u5f15(&S)");
+    AppendMenuW(hView, MF_STRING, IDM_VIEW_REFRESH, LS(IDS_MENU_VIEW_REFRESH).c_str());
+    AppendMenuW(hView, MF_STRING, IDM_VIEW_STOP, LS(IDS_MENU_VIEW_STOP).c_str());
 
     HMENU hSearch = CreatePopupMenu();
-    AppendMenuW(hSearch, MF_STRING, IDM_SEARCH_FIND, L"\u641c\u7d22(&S)");
+    AppendMenuW(hSearch, MF_STRING, IDM_SEARCH_FIND, LS(IDS_MENU_SEARCH_FIND).c_str());
 
     HMENU hBookmark = CreatePopupMenu();
-    AppendMenuW(hBookmark, MF_STRING, IDM_BOOKMARK_ADD, L"\u4e66\u7b7e(&B)");
+    AppendMenuW(hBookmark, MF_STRING, IDM_BOOKMARK_ADD, LS(IDS_MENU_BOOKMARK_ADD).c_str());
 
     HMENU hTools = CreatePopupMenu();
-    AppendMenuW(hTools, MF_STRING, IDM_TOOLS_OPTIONS, L"\u5de5\u5177(&T)");
+    AppendMenuW(hTools, MF_STRING, IDM_TOOLS_OPTIONS, LS(IDS_MENU_TOOLS_OPTIONS).c_str());
 
     HMENU hHelp = CreatePopupMenu();
-    AppendMenuW(hHelp, MF_STRING, IDM_HELP_ABOUT, L"\u5e2e\u52a9(&H)");
+    AppendMenuW(hHelp, MF_STRING, IDM_HELP_ABOUT, LS(IDS_MENU_HELP_ABOUT).c_str());
 
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFile, L"\u6587\u4ef6(&F)");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hEdit, L"\u7f16\u8f91(&E)");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hView, L"\u89c6\u56fe(&V)");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSearch, L"\u641c\u7d22(&S)");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hBookmark, L"\u4e66\u7b7e(&B)");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hTools, L"\u5de5\u5177(&T)");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hHelp, L"\u5e2e\u52a9(&H)");
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFile, LS(IDS_MENU_FILE).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hEdit, LS(IDS_MENU_EDIT).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hView, LS(IDS_MENU_VIEW).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSearch, LS(IDS_MENU_SEARCH).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hBookmark, LS(IDS_MENU_BOOKMARK).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hTools, LS(IDS_MENU_TOOLS).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hHelp, LS(IDS_MENU_HELP).c_str());
 
     return hMenuBar;
 }
@@ -295,19 +344,22 @@ static void SetupListColumns(HWND hList) {
     LVCOLUMNW col{};
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 
-    col.pszText = const_cast<LPWSTR>(L"\u540d\u79f0");
+    std::wstring colName = LS(IDS_COL_NAME);
+    col.pszText = const_cast<LPWSTR>(colName.c_str());
     col.cx = 200;
     col.iSubItem = 0;
     ListView_InsertColumn(hList, 0, &col);
 
     // 归档文件路径列
-    col.pszText = const_cast<LPWSTR>(L"\u5f52\u6863\u6587\u4ef6");
+    std::wstring colArchive = LS(IDS_COL_ARCHIVE);
+    col.pszText = const_cast<LPWSTR>(colArchive.c_str());
     col.cx = 280;
     col.iSubItem = 1;
     ListView_InsertColumn(hList, 1, &col);
 
     // 归档内部文件路径列
-    col.pszText = const_cast<LPWSTR>(L"\u5185\u90e8\u8def\u5f84");
+    std::wstring colPath = LS(IDS_COL_PATH);
+    col.pszText = const_cast<LPWSTR>(colPath.c_str());
     col.cx = 280;
     col.iSubItem = 2;
     ListView_InsertColumn(hList, 2, &col);
@@ -315,13 +367,15 @@ static void SetupListColumns(HWND hList) {
     // 压缩大小列（右对齐）
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
     col.fmt = LVCFMT_RIGHT;
-    col.pszText = const_cast<LPWSTR>(L"\u538b\u7f29\u5927\u5c0f");
+    std::wstring colCompSize = LS(IDS_COL_COMPRESSED_SIZE);
+    col.pszText = const_cast<LPWSTR>(colCompSize.c_str());
     col.cx = 100;
     col.iSubItem = 3;
     ListView_InsertColumn(hList, 3, &col);
 
     // 原始大小列（右对齐）
-    col.pszText = const_cast<LPWSTR>(L"\u539f\u59cb\u5927\u5c0f");
+    std::wstring colOrigSize = LS(IDS_COL_ORIGINAL_SIZE);
+    col.pszText = const_cast<LPWSTR>(colOrigSize.c_str());
     col.cx = 100;
     col.iSubItem = 4;
     ListView_InsertColumn(hList, 4, &col);
@@ -448,20 +502,15 @@ static const CachedRow* GetCachedRow(int64_t rowId) {
 
 // 更新 ListView 列头文本，在当前排序列后附加箭头指示符（▲/▼）
 static void UpdateColumnHeaders() {
-    // 列头原始文本（5列：名称、归档文件、内部路径、压缩大小、原始大小）
-    static const wchar_t* colNames[] = {
-        L"\u540d\u79f0",       // 名称
-        L"\u5f52\u6863\u6587\u4ef6",   // 归档文件
-        L"\u5185\u90e8\u8def\u5f84",   // 内部路径
-        L"\u538b\u7f29\u5927\u5c0f",   // 压缩大小
-        L"\u539f\u59cb\u5927\u5c0f"    // 原始大小
+    static const UINT colIds[] = {
+        IDS_COL_NAME, IDS_COL_ARCHIVE, IDS_COL_PATH,
+        IDS_COL_COMPRESSED_SIZE, IDS_COL_ORIGINAL_SIZE
     };
 
     for (int i = 0; i < 5; ++i) {
-        std::wstring text = colNames[i];
-        // 在当前排序列后添加箭头指示符
+        std::wstring text = LS(colIds[i]);
         if (i == g_sortColumn) {
-            text += g_sortAscending ? L" \u25B2" : L" \u25BC"; // ▲=正序 ▼=倒序
+            text += g_sortAscending ? LS(IDS_SORT_ASC) : LS(IDS_SORT_DESC);
         }
 
         LVCOLUMNW col{};
@@ -1052,12 +1101,11 @@ static void UpdateStatusBar() {
 
     std::wstring statusText;
     if (running) {
-        // 进度条已经在视觉上指示"正在处理"，文字只显示统计信息
-        statusText = L"\u6B63\u5728\u5904\u7406 | \u6587\u4EF6\u6570\u91CF: " + fileCountStr +
-                     L" | \u5F52\u6863\u6587\u4EF6: " + archiveCountStr;
+        statusText = LS(IDS_STATUS_PROCESSING) + L" | " + LS(IDS_STATUS_FILE_COUNT) + L": " + fileCountStr +
+                     L" | " + LS(IDS_STATUS_ARCHIVE_COUNT) + L": " + archiveCountStr;
     } else {
-        statusText = L"\u5C31\u7EEA | \u6587\u4EF6\u6570\u91CF: " + fileCountStr +
-                     L" | \u5F52\u6863\u6587\u4EF6: " + archiveCountStr;
+        statusText = LS(IDS_STATUS_READY) + L" | " + LS(IDS_STATUS_FILE_COUNT) + L": " + fileCountStr +
+                     L" | " + LS(IDS_STATUS_ARCHIVE_COUNT) + L": " + archiveCountStr;
     }
 
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)statusText.c_str());
@@ -1222,8 +1270,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         LoadRowsFromDbAndRefreshAsync(hWnd);
 
         StartIndexing(hWnd);
+
+        // 创建系统托盘图标
+        AddTrayIcon(hWnd);
         return 0;
     }
+
+    case WM_CLOSE:
+        // 关闭窗口只是隐藏到托盘，不退出程序
+        if (!g_forceQuit) {
+            ShowWindow(hWnd, SW_HIDE);
+            return 0;
+        }
+        // g_forceQuit=true 时落入 DefWindowProc 触发 WM_DESTROY
+        break;
+
     case WM_SIZE:
         LayoutChildren(hWnd);
         return 0;
@@ -1240,6 +1301,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         LOG_INFO(L"WM_COMMAND id=%d", id);
         switch (id) {
         case IDM_FILE_EXIT:
+            g_forceQuit = true;
+            DestroyWindow(hWnd);
+            return 0;
+        case IDM_TRAY_SHOW:
+            ShowWindow(hWnd, SW_SHOW);
+            SetForegroundWindow(hWnd);
+            return 0;
+        case IDM_TRAY_EXIT:
+            g_forceQuit = true;
             DestroyWindow(hWnd);
             return 0;
         case IDM_VIEW_REFRESH:
@@ -1251,7 +1321,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             LoadRowsFromDbAndRefreshAsync(hWnd);
             return 0;
         case IDM_HELP_ABOUT:
-            MessageBoxW(hWnd, L"EveryArchive", L"About", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hWnd, LS(IDS_ABOUT_TEXT).c_str(), LS(IDS_ABOUT_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
             return 0;
         default:
             return 0;
@@ -1351,7 +1421,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             if (hdr->code == NM_DBLCLK) {
-                MessageBoxW(hWnd, L"Double click (placeholder).", L"Info", MB_OK);
+                MessageBoxW(hWnd, LS(IDS_DBLCLICK_PLACEHOLDER).c_str(), L"Info", MB_OK);
                 return 0;
             }
             if (hdr->code == NM_CUSTOMDRAW) {
@@ -1434,8 +1504,25 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
     }
 
-    case WM_DESTROY: // 窗口销毁：停止索引、关闭数据库、释放字体资源
+    case WM_APP_TRAY:
+        // 托盘图标回调消息
+        switch (lParam) {
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+            // 左键点击/双击：显示窗口
+            ShowWindow(hWnd, SW_SHOW);
+            SetForegroundWindow(hWnd);
+            break;
+        case WM_RBUTTONUP:
+            // 右键点击：显示托盘菜单
+            ShowTrayMenu(hWnd);
+            break;
+        }
+        return 0;
+
+    case WM_DESTROY: // 窗口销毁：移除托盘图标、停止索引、关闭数据库、释放字体资源
         LOG_INFO(L"WM_DESTROY");
+        RemoveTrayIcon();
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         StopIndexing();
         g_cacheDb.Close();
@@ -1455,6 +1542,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 //  程序入口
 // ══════════════════════════════════════════════════════════════
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
+    g_hInstance = hInstance;
     Logger::Init();
     LOG_INFO(L"wWinMain start");
 

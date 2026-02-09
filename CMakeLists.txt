@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(EveryArchive WIN32
         src/resource.h
+        src/strings.rc
         src/main.cpp
         src/types.h
         src/file_scanner.h
@@ -45,6 +46,11 @@ target_include_directories(EveryArchive PRIVATE
 )
 
 target_compile_definitions(EveryArchive PRIVATE UNICODE _UNICODE)
+
+# 嵌入自定义 manifest（请求管理员权限 + ComCtl32 v6 视觉样式）
+set_target_properties(EveryArchive PROPERTIES
+    LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\""
+)
 
 target_link_libraries(EveryArchive PRIVATE
         comctl32

@@ -22,6 +22,9 @@ public:
     // 设置数据库路径
     void SetDbPath(const std::wstring& dbPath);
 
+    // 设置归档文件扩展名（从 UserConfig 加载后传入）
+    void SetArchiveExtensions(const std::vector<std::wstring>& exts);
+
     // 确保数据库文件存在并创建所需的表
     bool EnsureDatabaseReady();
 
@@ -45,6 +48,7 @@ private:
     static std::vector<wchar_t> GetMonitoredDrives();
 
     std::wstring dbPath_;
+    std::vector<std::wstring> archiveExtensions_ = { L".zip" };
     std::atomic_bool cancel_{ false };
     std::atomic_bool running_{ false };
     std::thread thread_;

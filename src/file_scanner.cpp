@@ -14,15 +14,24 @@ static bool IsNtfsDriveRoot(const std::wstring& driveRoot) {
     return _wcsicmp(fsName, L"NTFS") == 0;
 }
 
-static bool HasTargetExt(const wchar_t* name, size_t len) {
-    auto endsWithI = [&](const wchar_t* ext) -> bool {
-        const size_t extLen = wcslen(ext);
+static bool HasTargetExt(const wchar_t* name, size_t len, const std::vector<std::wstring>& extensions) {
+    auto endsWithI = [&](const std::wstring& ext) -> bool {
+        const size_t extLen = ext.size();
         if (len < extLen) return false;
-        return _wcsicmp(std::wstring(name + (len - extLen), extLen).c_str(), ext) == 0;
+        return _wcsicmp(std::wstring(name + (len - extLen), extLen).c_str(), ext.c_str()) == 0;
     };
 
-    return endsWithI(L".zip");
+    for (const auto& ext : extensions) {
+        if (endsWithI(ext)) return true;
+    }
+    return false;
 }
+
+void FileScanner::SetArchiveExtensions(const std::vector<std::wstring>& exts) {
+    archiveExtensions_ = exts;
+}
+
+static const std::vector<std::wstring> kDefaultExtensions = { L".zip" };
 
 bool FileScanner::GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
     if (outFileSize) *outFileSize = 0;
@@ -81,7 +90,7 @@ bool FileScanner::GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, ui
     return success;
 }
 
-static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel) {
+static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel, const std::vector<std::wstring>& extensions) {
     if (err) err->clear();
     if (!out) {
         if (err) *err = L"out is null";
@@ -162,7 +171,7 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
                 reinterpret_cast<const unsigned char*>(rec) + rec->FileNameOffset);
             const size_t fileNameLen = static_cast<size_t>(rec->FileNameLength / sizeof(wchar_t));
 
-            if (HasTargetExt(fileName, fileNameLen)) {
+            if (HasTargetExt(fileName, fileNameLen, extensions)) {
                 ArchiveFile_t af;
                 af.driveLetter = std::wstring(1, driveLetter);
                 af.fileName.assign(fileName, fileNameLen);
@@ -224,7 +233,9 @@ bool FileScanner::QueryJournalInfo(wchar_t driveLetter, JournalInfo* out, std::w
 
 bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN startUsn,
                                   std::vector<UsnChangeRecord_t>* out, USN* outNextUsn,
-                                  std::wstring* err, std::atomic_bool* cancel) {
+                                  std::wstring* err, std::atomic_bool* cancel,
+                                  const std::vector<std::wstring>* extensions) {
+    const std::vector<std::wstring>& exts = extensions ? *extensions : kDefaultExtensions;
     if (err) err->clear();
     if (!out) { if (err) *err = L"out is null"; return false; }
 
@@ -311,7 +322,7 @@ bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN sta
             const size_t fileNameLen = rec->FileNameLength / sizeof(wchar_t);
 
             // 只关注归档文件（.zip 等）
-            if (HasTargetExt(fileName, fileNameLen)) {
+            if (HasTargetExt(fileName, fileNameLen, exts)) {
                 UsnChangeRecord_t cr;
                 cr.driveLetter = driveLetter;
                 cr.fileRefNumber = rec->FileReferenceNumber;
@@ -375,7 +386,7 @@ bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::
         if (cancel && cancel->load()) return true;
 
         std::wstring scanErr;
-        if (!ScanDriveByUsn(driveLetter, out, &scanErr, cancel)) {
+        if (!ScanDriveByUsn(driveLetter, out, &scanErr, cancel, archiveExtensions_)) {
             if (err) {
                 *err = scanErr.empty() ? L"ScanDriveByUsn failed" : scanErr;
             }

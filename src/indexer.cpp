@@ -17,6 +17,10 @@ void Indexer::SetDbPath(const std::wstring& dbPath) {
     dbPath_ = dbPath;
 }
 
+void Indexer::SetArchiveExtensions(const std::vector<std::wstring>& exts) {
+    archiveExtensions_ = exts;
+}
+
 bool Indexer::EnsureDatabaseReady() {
     const DWORD attr = GetFileAttributesW(dbPath_.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) {
@@ -166,6 +170,7 @@ void Indexer::Start(HWND hWnd) {
 
     thread_ = std::thread([this, hWnd]() {
         FileScanner scanner;
+        scanner.SetArchiveExtensions(archiveExtensions_);
         std::vector<ArchiveFile_t> scanned;
         std::wstring err;
         const bool scanOk = scanner.Scan(&scanned, &err, &cancel_);
@@ -323,7 +328,8 @@ void Indexer::Start(HWND hWnd) {
                 USN newNextUsn = 0;
                 std::wstring scanErr;
                 if (!FileScanner::ScanUsnJournal(dl, savedJournalId, savedNextUsn,
-                                                  &changes, &newNextUsn, &scanErr, &cancel_)) {
+                                                  &changes, &newNextUsn, &scanErr, &cancel_,
+                                                  &archiveExtensions_)) {
                     LOG_WARN(L"Monitor: ScanUsnJournal failed for %c: %s", dl, scanErr.c_str());
                     continue;
                 }

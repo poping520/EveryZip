@@ -24,6 +24,8 @@ add_executable(EveryArchive WIN32
         src/types.h
         src/file_scanner.h
         src/file_scanner.cpp
+        src/user_config.h
+        src/user_config.cpp
         src/database.h
         src/database.cpp
         src/logger.cpp

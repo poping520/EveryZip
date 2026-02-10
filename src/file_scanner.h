@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "database.h"
+#include "user_config.h"
 
 // USN Journal 元数据
 struct JournalInfo {
@@ -16,6 +17,9 @@ class FileScanner {
 public:
     FileScanner() = default;
     ~FileScanner() = default;
+
+    // 设置需要扫描的归档文件扩展名
+    void SetArchiveExtensions(const std::vector<std::wstring>& exts);
 
     // 全量 MFT 扫描
     bool Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel = nullptr);
@@ -31,5 +35,9 @@ public:
     // 增量读取 USN Journal：从 startUsn 开始读取归档文件的变化记录
     static bool ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN startUsn,
                                std::vector<UsnChangeRecord_t>* out, USN* outNextUsn,
-                               std::wstring* err, std::atomic_bool* cancel = nullptr);
+                               std::wstring* err, std::atomic_bool* cancel = nullptr,
+                               const std::vector<std::wstring>* extensions = nullptr);
+
+private:
+    std::vector<std::wstring> archiveExtensions_ = { L".zip" };
 };

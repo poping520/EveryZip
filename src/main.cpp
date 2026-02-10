@@ -5,6 +5,7 @@
 #include "main_window.h"
 #include "string_utils.h"
 #include "indexer.h"
+#include "user_config.h"
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -32,7 +33,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     Logger::Init();
     LOG_INFO(L"wWinMain start");
 
-    std::wstring dbPath = GetExeDir() + L"\\everyarchive.db";
+    std::wstring exeDir = GetExeDir();
+    std::wstring dbPath = exeDir + L"\\everyarchive.db";
+    std::wstring configPath = exeDir + L"\\everyarchive.cfg";
+
+    // 加载用户配置文件（独立于数据库，不随数据库删除而丢失）
+    UserConfig config;
+    {
+        std::wstring cfgErr;
+        if (!config.Load(configPath, &cfgErr)) {
+            LOG_WARN(L"UserConfig::Load failed: %s", cfgErr.c_str());
+        }
+    }
 
     const bool p1 = Indexer::EnablePrivilege(SE_MANAGE_VOLUME_NAME);
     const bool p2 = Indexer::EnablePrivilege(SE_BACKUP_NAME);
@@ -45,6 +57,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     state.hInstance = hInstance;
     state.dbPath = dbPath;
     state.indexer.SetDbPath(dbPath);
+    state.indexer.SetArchiveExtensions(config.GetArchiveExtensions());
     state.rowCache.SetDbPath(dbPath);
     state.rowCache.SetIconCache(&state.iconCache);
 

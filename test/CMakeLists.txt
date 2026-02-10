@@ -49,4 +49,21 @@ target_include_directories(QueryDB PRIVATE
         ../external/sqlite
 )
 
+add_executable(TestConfig
+        test_config.cpp
+        ../src/user_config.cpp
+        ../src/string_utils.cpp
+        ../src/logger.cpp
+)
+
+target_include_directories(TestConfig PRIVATE
+        ../src
+)
+
+target_link_libraries(TestConfig PRIVATE
+        shlwapi
+)
+
+target_compile_definitions(TestConfig PRIVATE UNICODE _UNICODE)
+
 target_compile_definitions(TestFileTracker PRIVATE UNICODE _UNICODE)

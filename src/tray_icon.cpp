@@ -2,14 +2,8 @@
 
 #include <string>
 
+#include "main_window.h"
 #include "resource.h"
-
-// 从 STRINGTABLE 资源加载本地化字符串
-static std::wstring LS(HINSTANCE hInstance, UINT id) {
-    const wchar_t* p = nullptr;
-    int len = LoadStringW(hInstance, id, (LPWSTR)&p, 0);
-    return (len > 0 && p) ? std::wstring(p, len) : std::wstring();
-}
 
 static NOTIFYICONDATAW g_nid{};
 

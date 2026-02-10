@@ -142,9 +142,6 @@ std::vector<wchar_t> Indexer::GetMonitoredDrives() {
 
         wchar_t driveLetter = root[0];
 
-        // test: 仅监控 E 盘（与 FileScanner::Scan 保持一致）
-        if (driveLetter != L'E') continue;
-
         drives.push_back(driveLetter);
     }
     return drives;
@@ -289,20 +286,22 @@ void Indexer::Start(HWND hWnd) {
         // ═══════════════════════════════════════════════════════════
         LOG_INFO(L"Entering USN Journal monitoring loop");
 
-        while (!cancel_.load()) {
+        Database monDb;
+        {
+            std::wstring monErr;
+            if (!monDb.Open(dbPath_, &monErr)) {
+                LOG_WARN(L"Monitor: Database::Open failed: %s", monErr.c_str());
+            }
+        }
+
+        while (!cancel_.load() && monDb.IsOpen()) {
             // 每 2 秒检查一次变化
             for (int i = 0; i < 20 && !cancel_.load(); ++i) {
                 Sleep(100);
             }
             if (cancel_.load()) break;
 
-            Database db;
             std::wstring err;
-            if (!db.Open(dbPath_, &err)) {
-                LOG_WARN(L"Monitor: Database::Open failed: %s", err.c_str());
-                continue;
-            }
-
             auto drives = GetMonitoredDrives();
             bool anyChanged = false;
 
@@ -312,7 +311,7 @@ void Indexer::Start(HWND hWnd) {
                 // 读取上次保存的 Journal 位置
                 int64_t savedJournalId = 0;
                 USN savedNextUsn = 0;
-                db.GetJournalUsn(dl, &savedJournalId, &savedNextUsn);
+                monDb.GetJournalUsn(dl, &savedJournalId, &savedNextUsn);
 
                 if (savedJournalId == 0 && savedNextUsn == 0) {
                     // 没有保存过，跳过（等待下次全量扫描）
@@ -332,7 +331,7 @@ void Indexer::Start(HWND hWnd) {
                 if (changes.empty()) {
                     // 即使没有归档文件变化，也更新 USN 位置避免重复扫描
                     if (newNextUsn > savedNextUsn) {
-                        db.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
+                        monDb.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
                     }
                     continue;
                 }
@@ -345,6 +344,13 @@ void Indexer::Start(HWND hWnd) {
                     deduped[(uint64_t)cr.fileRefNumber] = std::move(cr);
                 }
 
+                // 打开卷句柄，在同一盘符的所有变化记录中复用
+                wchar_t volPath[] = L"\\\\.\\X:";
+                volPath[4] = dl;
+                HANDLE hVol = CreateFileW(volPath, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, 0, nullptr);
+
                 for (const auto& kv : deduped) {
                     if (cancel_.load()) break;
                     const auto& cr = kv.second;
@@ -355,82 +361,45 @@ void Indexer::Start(HWND hWnd) {
                     if (isDelete || isRenameOld) {
                         // 文件被删除或重命名（旧名）：从数据库中移除
                         ArchiveFile_t oldAf;
-                        if (db.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                        if (monDb.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
                             LOG_INFO(L"Monitor: Archive deleted/renamed: %s", oldAf.filePath.c_str());
                             if (!oldAf.filePath.empty()) {
                                 std::wstring delErr;
-                                db.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                monDb.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
                             }
-                            db.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
+                            monDb.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
                             anyChanged = true;
                         }
                     } else {
-                        // 文件新增或修改：获取最新文件信息，重新解析入库
-                        // 通过 OpenFileById 获取文件的完整路径和元数据
-                        wchar_t volPath[] = L"\\\\.\\X:";
-                        volPath[4] = dl;
-                        HANDLE hVol = CreateFileW(volPath, GENERIC_READ,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            nullptr, OPEN_EXISTING, 0, nullptr);
+                        // 文件新增或修改：复用 FileScanner::GetFileInfoByRefNumber 获取元数据
                         if (hVol == INVALID_HANDLE_VALUE) continue;
 
-                        FILE_ID_DESCRIPTOR fid{};
-                        fid.dwSize = sizeof(fid);
-                        fid.Type = FileIdType;
-                        fid.FileId.QuadPart = (LONGLONG)cr.fileRefNumber;
-
-                        HANDLE hFile = OpenFileById(hVol, &fid, FILE_READ_ATTRIBUTES,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            nullptr, 0);
-
-                        if (hFile == INVALID_HANDLE_VALUE) {
-                            CloseHandle(hVol);
+                        uint64_t fileSize = 0;
+                        uint64_t modifyTime = 0;
+                        std::wstring fullPath;
+                        if (!FileScanner::GetFileInfoByRefNumber(hVol, (uint64_t)cr.fileRefNumber,
+                                                                  &fileSize, &modifyTime, &fullPath)) {
                             // 文件可能已被删除，清理数据库
                             ArchiveFile_t oldAf;
-                            if (db.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                            if (monDb.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
                                 if (!oldAf.filePath.empty()) {
                                     std::wstring delErr;
-                                    db.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                    monDb.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
                                 }
-                                db.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
+                                monDb.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
                                 anyChanged = true;
                             }
                             continue;
                         }
 
-                        BY_HANDLE_FILE_INFORMATION fileInfo{};
-                        GetFileInformationByHandle(hFile, &fileInfo);
-
-                        uint64_t fileSize = ((uint64_t)fileInfo.nFileSizeHigh << 32) | fileInfo.nFileSizeLow;
-                        ULARGE_INTEGER ui{};
-                        ui.LowPart = fileInfo.ftLastWriteTime.dwLowDateTime;
-                        ui.HighPart = fileInfo.ftLastWriteTime.dwHighDateTime;
-                        uint64_t modifyTime = ui.QuadPart;
-
-                        // 获取完整路径
-                        std::wstring fullPath;
-                        DWORD need = GetFinalPathNameByHandleW(hFile, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-                        if (need > 0) {
-                            fullPath.resize(need);
-                            DWORD got = GetFinalPathNameByHandleW(hFile, fullPath.data(), need, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-                            if (got > 0 && got < need) {
-                                fullPath.resize(got);
-                                if (fullPath.size() >= 4 && fullPath[0] == L'\\' && fullPath[1] == L'\\' && fullPath[2] == L'?' && fullPath[3] == L'\\') {
-                                    fullPath.erase(0, 4);
-                                }
-                            }
-                        }
-                        CloseHandle(hFile);
-                        CloseHandle(hVol);
-
                         if (fullPath.empty()) continue;
 
                         // 先删除旧的条目（如果路径变了）
                         ArchiveFile_t oldAf;
-                        if (db.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                        if (monDb.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
                             if (!oldAf.filePath.empty() && oldAf.filePath != fullPath) {
                                 std::wstring delErr;
-                                db.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                monDb.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
                             }
                         }
 
@@ -444,18 +413,22 @@ void Indexer::Start(HWND hWnd) {
                         af.fileRefNumber = cr.fileRefNumber;
                         af.parentFileRefNumber = cr.parentFileRefNumber;
                         af.usn = cr.usn;
-                        db.InsertOrUpdateArchive(af);
+                        monDb.InsertOrUpdateArchive(af);
 
                         // 重新解析归档文件内容
                         LOG_INFO(L"Monitor: Re-parsing archive: %s", fullPath.c_str());
-                        ParseAndStoreArchive(db, af);
+                        ParseAndStoreArchive(monDb, af);
                         anyChanged = true;
                     }
                 }
 
+                if (hVol != INVALID_HANDLE_VALUE) {
+                    CloseHandle(hVol);
+                }
+
                 // 更新 Journal USN 位置
                 if (newNextUsn > savedNextUsn) {
-                    db.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
+                    monDb.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
                 }
             }
 

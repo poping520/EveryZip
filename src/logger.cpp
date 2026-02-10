@@ -8,6 +8,8 @@
 #include <mutex>
 #include <string>
 
+#include "string_utils.h"
+
 #pragma comment(lib, "Shlwapi.lib")
 
 namespace Logger {
@@ -16,6 +18,7 @@ static std::mutex g_mutex;
 static std::wstring g_logFilePath;
 static std::atomic<Level> g_level{ Level::Info };
 static std::atomic<bool> g_initialized{ false };
+static HANDLE g_logFileHandle = INVALID_HANDLE_VALUE;
 
 static bool g_consoleReady = false;
 static bool g_consoleExplicit = false;
@@ -35,13 +38,6 @@ static const wchar_t* LevelToString(Level level) {
     default:
         return L"?";
     }
-}
-
-static std::wstring ToLower(std::wstring s) {
-    for (auto& ch : s) {
-        if (ch >= L'A' && ch <= L'Z') ch = (wchar_t)(ch - L'A' + L'a');
-    }
-    return s;
 }
 
 static std::wstring GetEnvVar(const wchar_t* name) {
@@ -161,20 +157,23 @@ static void WriteLine(Level level, const wchar_t* message) {
     OutputDebugStringW(line);
     WriteToConsole(line);
 
-    EnsureLogFilePathInitialized();
-    HANDLE h = CreateFileW(
-        g_logFilePath.c_str(),
-        FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-    if (h != INVALID_HANDLE_VALUE) {
-        DWORD cb = (DWORD)(wcslen(line) * sizeof(wchar_t));
+    // 使用持久化文件句柄，避免每条日志都 CreateFileW/CloseHandle
+    if (g_logFileHandle == INVALID_HANDLE_VALUE) {
+        EnsureLogFilePathInitialized();
+        g_logFileHandle = CreateFileW(
+            g_logFilePath.c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+    }
+    if (g_logFileHandle != INVALID_HANDLE_VALUE) {
+        // 写入 UTF-8 编码，使日志文件可被标准文本编辑器正常读取
+        std::string utf8Line = WideToUtf8(line);
         DWORD written = 0;
-        WriteFile(h, line, cb, &written, nullptr);
-        CloseHandle(h);
+        WriteFile(g_logFileHandle, utf8Line.data(), (DWORD)utf8Line.size(), &written, nullptr);
     }
 }
 
@@ -202,6 +201,10 @@ void Init() {
 void Shutdown() {
     std::lock_guard<std::mutex> lk(g_mutex);
     g_initialized.store(false);
+    if (g_logFileHandle != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_logFileHandle);
+        g_logFileHandle = INVALID_HANDLE_VALUE;
+    }
     if (g_consoleReady) {
         FreeConsole();
         g_consoleReady = false;

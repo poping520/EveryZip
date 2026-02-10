@@ -1,5 +1,7 @@
 #include "row_cache.h"
 
+#include <algorithm>
+
 #include "string_utils.h"
 
 RowCache::RowCache(size_t maxSize) : maxSize_(maxSize) {}
@@ -20,9 +22,14 @@ void RowCache::EnsureDbOpen() {
 }
 
 const CachedRow* RowCache::Get(int64_t rowId) {
-    // 缓存命中
+    // 缓存命中：提升到 LRU 队列头部
     auto it = cache_.find(rowId);
     if (it != cache_.end()) {
+        auto lruIt = std::find(lru_.begin(), lru_.end(), rowId);
+        if (lruIt != lru_.end()) {
+            lru_.erase(lruIt);
+        }
+        lru_.push_front(rowId);
         return &it->second;
     }
 

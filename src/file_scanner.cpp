@@ -24,7 +24,7 @@ static bool HasTargetExt(const wchar_t* name, size_t len) {
     return endsWithI(L".zip");
 }
 
-static bool GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
+bool FileScanner::GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
     if (outFileSize) *outFileSize = 0;
     if (outModifyTime) *outModifyTime = 0;
     if (outFullPath) outFullPath->clear();
@@ -173,7 +173,7 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
                 uint64_t fileSize = 0;
                 uint64_t modifyTime = 0;
                 std::wstring fullPath;
-                if (GetFileInfoByRefNumber(hVol, rec->FileReferenceNumber, &fileSize, &modifyTime, &fullPath)) {
+                if (FileScanner::GetFileInfoByRefNumber(hVol, rec->FileReferenceNumber, &fileSize, &modifyTime, &fullPath)) {
                     af.fileSize = fileSize;
                     af.modifyTime = modifyTime;
                     af.filePath = std::move(fullPath);

@@ -31,6 +31,7 @@ public:
 
     bool Open(const std::wstring& dbPath, std::wstring* err);
     void Close();
+    bool IsOpen() const { return db_ != nullptr; }
 
     bool CreateConfigsTable(std::wstring* err);
     bool SaveJournalUsn(wchar_t driveLetter, int64_t journalId, USN nextUsn, std::wstring* err);

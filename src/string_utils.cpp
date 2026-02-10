@@ -48,14 +48,16 @@ std::wstring GetEntryNameFromPath(const std::wstring& path) {
 
 // 为整数字符串添加千位分隔符（如 "1234567" → "1,234,567"）
 std::wstring AddThousandsSeparator(const std::wstring& num) {
+    const int len = (int)num.size();
+    if (len <= 3) return num;
     std::wstring result;
-    int count = 0;
-    for (int i = (int)num.size() - 1; i >= 0; --i) {
-        if (count > 0 && count % 3 == 0) {
-            result.insert(result.begin(), L',');
+    result.reserve(len + (len - 1) / 3);
+    const int firstGroup = ((len - 1) % 3) + 1;  // 第一组的字符数（1~3）
+    for (int i = 0; i < len; ++i) {
+        if (i > 0 && (i - firstGroup) % 3 == 0) {
+            result.push_back(L',');
         }
-        result.insert(result.begin(), num[i]);
-        ++count;
+        result.push_back(num[i]);
     }
     return result;
 }

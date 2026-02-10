@@ -6,7 +6,7 @@
 #include <Windows.h>
 
 // 归档文件
-typedef struct ArchiveFile
+struct ArchiveFile_t
 {
     // 盘符
     std::wstring driveLetter;
@@ -15,34 +15,34 @@ typedef struct ArchiveFile
     // 文件路径
     std::wstring filePath;
     // 文件大小
-    uint64_t fileSize;
+    uint64_t fileSize = 0;
     // 文件修改时间
-    uint64_t modifyTime;
+    uint64_t modifyTime = 0;
     // FileReferenceNumber
-    DWORDLONG fileRefNumber;
+    DWORDLONG fileRefNumber = 0;
     // ParentFileReferenceNumber
-    DWORDLONG parentFileRefNumber;
+    DWORDLONG parentFileRefNumber = 0;
     //
-    USN usn;
-} ArchiveFile_t;
+    USN usn = 0;
+};
 
 // USN Journal 增量变化记录
-typedef struct UsnChangeRecord
+struct UsnChangeRecord_t
 {
-    wchar_t driveLetter;
-    DWORDLONG fileRefNumber;
-    DWORDLONG parentFileRefNumber;
-    DWORD reason;           // USN_REASON_* 标志
+    wchar_t driveLetter = 0;
+    DWORDLONG fileRefNumber = 0;
+    DWORDLONG parentFileRefNumber = 0;
+    DWORD reason = 0;           // USN_REASON_* 标志
     std::wstring fileName;
-    USN usn;
-} UsnChangeRecord_t;
+    USN usn = 0;
+};
 
 // 归档文件内容
-typedef struct ArchiveEntry
+struct ArchiveEntry_t
 {
     int64_t archiveId = 0;          // archives 表的 id（插入时使用）
     std::wstring archivePath;       // archives.file_path（查询时由 JOIN 填充）
     std::wstring entryPath;
     std::uint64_t compressed_size = 0;
     std::uint64_t uncompressed_size = 0;
-} ArchiveEntry_t;
+};

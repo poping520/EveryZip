@@ -49,13 +49,6 @@ static std::wstring GetSearchFilter(MainWindowState* s) {
     return f;
 }
 
-static void EnsureCommonControls() {
-    INITCOMMONCONTROLSEX icc{};
-    icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS;
-    InitCommonControlsEx(&icc);
-}
-
 // 创建主窗口菜单栏
 static HMENU CreateMainMenu(MainWindowState* s) {
     HMENU hMenuBar = CreateMenu();
@@ -353,6 +346,8 @@ static LRESULT CALLBACK SearchEditProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
     if (msg == WM_KEYDOWN && wParam == VK_RETURN) {
         if (hParent) {
+            // 回车键立即执行搜索（跳过防抖）
+            KillTimer(hParent, IDT_SEARCH_DEBOUNCE);
             PostMessageW(hParent, WM_COMMAND, MAKEWPARAM(IDM_SEARCH_FIND, 0), 0);
         }
         return 0;
@@ -361,7 +356,8 @@ static LRESULT CALLBACK SearchEditProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     if (msg == WM_CHAR || msg == WM_CLEAR || msg == WM_CUT || msg == WM_PASTE || msg == WM_UNDO ||
         (msg == WM_KEYUP && (wParam == VK_DELETE || wParam == VK_BACK))) {
         if (hParent) {
-            PostMessageW(hParent, WM_COMMAND, MAKEWPARAM(IDM_SEARCH_FIND, 0), 0);
+            // 文本变化时使用防抖定时器，避免频繁创建查询线程
+            SetTimer(hParent, IDT_SEARCH_DEBOUNCE, 200, nullptr);
         }
     }
     return result;
@@ -384,7 +380,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: { // 窗口创建：初始化所有子控件、字体、数据库，启动索引
         LOG_INFO(L"WM_CREATE");
-        EnsureCommonControls();
 
         SetMenu(hWnd, CreateMainMenu(s));
 
@@ -504,6 +499,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == IDT_STATUSBAR_TIMER) {
             UpdateStatusBar(s);
+            return 0;
+        }
+        if (wParam == IDT_SEARCH_DEBOUNCE) {
+            KillTimer(hWnd, IDT_SEARCH_DEBOUNCE);
+            LoadRowsFromDbAndRefreshAsync(hWnd, s);
             return 0;
         }
         break;
@@ -735,6 +735,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         LOG_INFO(L"WM_DESTROY");
         RemoveTrayIcon();
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
+        KillTimer(hWnd, IDT_SEARCH_DEBOUNCE);
         s->indexer.Stop();
         s->rowCache.Close();
         if (s->hSearchFont) { DeleteObject(s->hSearchFont); s->hSearchFont = nullptr; }

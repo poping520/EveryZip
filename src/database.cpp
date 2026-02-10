@@ -1,33 +1,14 @@
 #include "database.h"
 
-#include <iomanip>
-#include <iostream>
-#include <sstream>
 #include <windows.h>
 
 #include "sqlite3.h"
 #include "logger.h"
+#include "string_utils.h"
 
-static std::wstring Utf8ToWString(const char* s)
-{
-    if (!s) return L"";
-    const int needed = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (needed <= 0) return L"";
-    std::wstring w;
-    w.resize(static_cast<size_t>(needed - 1));
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), needed);
-    return w;
-}
-
-static std::string WStringToUtf8(const std::wstring& w)
-{
-    if (w.empty()) return "";
-    const int needed = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (needed <= 0) return "";
-    std::string s(static_cast<size_t>(needed - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), needed, nullptr, nullptr);
-    return s;
-}
+// 使用 string_utils.h 中的 Utf8ToWString / WideToUtf8
+// WStringToUtf8 作为 WideToUtf8 的别名，保持内部代码兼容
+static inline std::string WStringToUtf8(const std::wstring& w) { return WideToUtf8(w); }
 
 Database::Database() = default;
 
@@ -43,9 +24,7 @@ bool Database::Open(const std::wstring& dbPath, std::wstring* err)
     Close();
 
     // 转换路径为 UTF-8（sqlite3_open 创建 UTF-8 编码数据库，文本存储减半）
-    int needed = WideCharToMultiByte(CP_UTF8, 0, dbPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string dbPathUtf8(needed > 0 ? needed - 1 : 0, '\0');
-    if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, dbPath.c_str(), -1, dbPathUtf8.data(), needed, nullptr, nullptr);
+    std::string dbPathUtf8 = WStringToUtf8(dbPath);
 
     sqlite3* db = nullptr;
     const int rc = sqlite3_open(dbPathUtf8.c_str(), &db);
@@ -667,20 +646,6 @@ bool Database::CreateArchivesTable(std::wstring* err)
     return true;
 }
 
-static std::string FileTimeToString(const FILETIME& ft)
-{
-    SYSTEMTIME st;
-    FileTimeToSystemTime(&ft, &st);
-    std::ostringstream oss;
-    oss << st.wYear << "-"
-        << std::setfill('0') << std::setw(2) << st.wMonth << "-"
-        << std::setfill('0') << std::setw(2) << st.wDay << " "
-        << std::setfill('0') << std::setw(2) << st.wHour << ":"
-        << std::setfill('0') << std::setw(2) << st.wMinute << ":"
-        << std::setfill('0') << std::setw(2) << st.wSecond;
-    return oss.str();
-}
-
 bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
 {
     const char* sql = R"(
@@ -693,7 +658,7 @@ bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK)
     {
-        std::cerr << "Prepare failed: " << sqlite3_errmsg(db_) << std::endl;
+        LOG_ERROR(L"Prepare failed: %s", Utf8ToWString(sqlite3_errmsg(db_)).c_str());
         return false;
     }
 
@@ -714,7 +679,7 @@ bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
 
     if (rc != SQLITE_DONE)
     {
-        std::cerr << "Insert/Update failed: " << sqlite3_errmsg(db_) << std::endl;
+        LOG_ERROR(L"Insert/Update failed: %s", Utf8ToWString(sqlite3_errmsg(db_)).c_str());
         return false;
     }
     return true;
@@ -1002,7 +967,7 @@ bool Database::BeginTransaction()
     int rc = sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, &errMsg);
     if (rc != SQLITE_OK)
     {
-        std::cerr << "Begin transaction failed: " << errMsg << std::endl;
+        LOG_ERROR(L"Begin transaction failed: %s", Utf8ToWString(errMsg).c_str());
         sqlite3_free(errMsg);
         return false;
     }
@@ -1015,7 +980,7 @@ bool Database::CommitTransaction()
     int rc = sqlite3_exec(db_, "COMMIT", nullptr, nullptr, &errMsg);
     if (rc != SQLITE_OK)
     {
-        std::cerr << "Commit failed: " << errMsg << std::endl;
+        LOG_ERROR(L"Commit failed: %s", Utf8ToWString(errMsg).c_str());
         sqlite3_free(errMsg);
         return false;
     }

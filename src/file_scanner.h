@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "database.h"
-#include "user_config.h"
+#include "config/user_config.h"
 
 // USN Journal 元数据
 struct JournalInfo {

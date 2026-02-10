@@ -5,7 +5,7 @@
 #include "main_window.h"
 #include "string_utils.h"
 #include "indexer.h"
-#include "user_config.h"
+#include "config/user_config.h"
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")

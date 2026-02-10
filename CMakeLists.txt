@@ -24,11 +24,16 @@ add_executable(EveryArchive WIN32
         src/types.h
         src/file_scanner.h
         src/file_scanner.cpp
-        src/user_config.h
-        src/user_config.cpp
+ 
         src/database.h
         src/database.cpp
         src/logger.cpp
+        
+        src/config/advconfig.h
+        src/config/advconfig.cpp
+        src/config/user_config.h
+        src/config/user_config.cpp
+
         src/parser/archive_parser.h
         src/parser/zip_archive_parser.h
         src/parser/zip_archive_parser.cpp

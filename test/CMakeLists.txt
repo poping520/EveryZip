@@ -51,13 +51,13 @@ target_include_directories(QueryDB PRIVATE
 
 add_executable(TestConfig
         test_config.cpp
-        ../src/user_config.cpp
+        ../src/config/advconfig.cpp
         ../src/string_utils.cpp
         ../src/logger.cpp
 )
 
 target_include_directories(TestConfig PRIVATE
-        ../src
+        ../src/config
 )
 
 target_link_libraries(TestConfig PRIVATE

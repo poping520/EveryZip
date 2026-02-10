@@ -9,6 +9,18 @@ add_executable(EveryArchive WIN32
         src/resource.h
         src/strings.rc
         src/main.cpp
+        src/main_window.h
+        src/main_window.cpp
+        src/string_utils.h
+        src/string_utils.cpp
+        src/tray_icon.h
+        src/tray_icon.cpp
+        src/icon_cache.h
+        src/icon_cache.cpp
+        src/row_cache.h
+        src/row_cache.cpp
+        src/indexer.h
+        src/indexer.cpp
         src/types.h
         src/file_scanner.h
         src/file_scanner.cpp

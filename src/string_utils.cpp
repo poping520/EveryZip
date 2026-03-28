@@ -46,7 +46,6 @@ std::wstring GetEntryNameFromPath(const std::wstring& path) {
     return path.substr(pos + 1);
 }
 
-// 为整数字符串添加千位分隔符（如 "1234567" → "1,234,567"）
 std::wstring AddThousandsSeparator(const std::wstring& num) {
     const int len = (int)num.size();
     if (len <= 3) return num;
@@ -62,7 +61,6 @@ std::wstring AddThousandsSeparator(const std::wstring& num) {
     return result;
 }
 
-// 将字节数格式化为 KB 单位的字符串（>=1KB 取整数并添加千位分隔符，<1KB 保留两位小数）
 std::wstring FormatSizeULongLong(ULONGLONG v) {
     double kb = (double)v / 1024.0;
     if (kb >= 1.0) {
@@ -78,7 +76,6 @@ std::wstring FormatSizeULongLong(ULONGLONG v) {
     }
 }
 
-// 将 UTC FILETIME 转换为本地时间字符串
 std::wstring FormatFileTimeLocal(const FILETIME& ftUtc) {
     FILETIME ftLocal{};
     SYSTEMTIME st{};

@@ -13,12 +13,18 @@ extern "C" {
 
 namespace EveryArchive {
 
+ // 判断归档条目名是否以目录分隔符结尾，以识别目录项。
+ // 参数：s - 归档内原始条目名称。
+ // 返回值：目录项返回 true，否则返回 false。
 static bool EndsWithSlash(const std::string& s) {
     if (s.empty()) return false;
     const char c = s.back();
     return c == '/' || c == '\\';
 }
 
+ // 尝试将归档条目名称转换为宽字符串，优先按 UTF-8，失败后退回系统代码页。
+ // 参数：s - 原始窄字符串名称。
+ // 返回值：转换后的宽字符串；失败时返回空字符串。
 static std::wstring ToWideBestEffort(const std::string& s) {
     if (s.empty()) return std::wstring();
 

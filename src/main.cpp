@@ -19,6 +19,9 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 static constexpr wchar_t kAppClassName[] = L"EveryArchiveMainWindow";
 static constexpr wchar_t kAppTitle[] = L"EveryArchive";
 
+ // 初始化程序依赖的公共控件类，确保 ListView、状态栏和进度条可用。
+ // 参数：无。
+ // 返回值：无。
 static void EnsureCommonControls() {
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
@@ -29,6 +32,9 @@ static void EnsureCommonControls() {
 // ══════════════════════════════════════════════════════════════
 //  程序入口
 // ══════════════════════════════════════════════════════════════
+ // 初始化日志、配置、窗口和消息循环，是应用程序的主入口。
+ // 参数：hInstance - 当前实例句柄；第二个 HINSTANCE 未使用；PWSTR 未使用；nCmdShow - 初始窗口显示方式。
+ // 返回值：进程退出码。
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     Logger::Init();
     LOG_INFO(L"wWinMain start");

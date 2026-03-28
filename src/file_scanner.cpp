@@ -6,6 +6,11 @@
 
 #include <vector>
 
+/**
+ * 判断给定盘符根路径是否为 NTFS 文件系统，仅 NTFS 才支持 USN Journal。
+ * @param driveRoot 盘符根路径，例如 L"C:\\"。
+ * @return NTFS 盘返回 true，否则返回 false。
+ */
 static bool IsNtfsDriveRoot(const std::wstring& driveRoot) {
     wchar_t fsName[MAX_PATH] = {0};
     if (!GetVolumeInformationW(driveRoot.c_str(), nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH)) {
@@ -14,6 +19,13 @@ static bool IsNtfsDriveRoot(const std::wstring& driveRoot) {
     return _wcsicmp(fsName, L"NTFS") == 0;
 }
 
+/**
+ * 判断文件名是否匹配目标归档扩展名集合。
+ * @param name 文件名起始指针。
+ * @param len 文件名长度。
+ * @param extensions 允许的归档扩展名列表。
+ * @return 命中任一扩展名返回 true，否则返回 false。
+ */
 static bool HasTargetExt(const wchar_t* name, size_t len, const std::vector<std::wstring>& extensions) {
     auto endsWithI = [&](const std::wstring& ext) -> bool {
         const size_t extLen = ext.size();
@@ -90,6 +102,15 @@ bool FileScanner::GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, ui
     return success;
 }
 
+/**
+ * 基于 FSCTL_ENUM_USN_DATA 对整个盘符进行 USN 扫描，收集匹配扩展名的归档文件。
+ * @param driveLetter 盘符。
+ * @param out 输出扫描结果。
+ * @param err 可选错误输出。
+ * @param cancel 可选取消标志。
+ * @param extensions 目标扩展名列表。
+ * @return 扫描成功返回 true，否则返回 false。
+ */
 static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel, const std::vector<std::wstring>& extensions) {
     if (err) err->clear();
     if (!out) {
@@ -232,12 +253,15 @@ bool FileScanner::QueryJournalInfo(wchar_t driveLetter, JournalInfo* out, std::w
 }
 
 bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN startUsn,
-                                  std::vector<UsnChangeRecord_t>* out, USN* outNextUsn,
-                                  std::wstring* err, std::atomic_bool* cancel,
-                                  const std::vector<std::wstring>* extensions) {
+                                 std::vector<UsnChangeRecord_t>* out, USN* outNextUsn,
+                                 std::wstring* err, std::atomic_bool* cancel,
+                                 const std::vector<std::wstring>* extensions) {
     const std::vector<std::wstring>& exts = extensions ? *extensions : kDefaultExtensions;
     if (err) err->clear();
-    if (!out) { if (err) *err = L"out is null"; return false; }
+    if (!out) {
+        if (err) *err = L"out is null";
+        return false;
+    }
 
     wchar_t volumePath[] = L"\\\\.\\X:";
     volumePath[4] = driveLetter;
@@ -343,6 +367,13 @@ bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN sta
     return true;
 }
 
+/**
+ * 扫描所有 NTFS 盘符，收集匹配扩展名的归档文件列表，作为初始全量索引输入。
+ * @param out 输出归档文件列表。
+ * @param err 可选错误输出。
+ * @param cancel 可选取消标志。
+ * @return 扫描成功返回 true，否则返回 false。
+ */
 bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::atomic_bool* cancel) {
     if (err) err->clear();
     if (!out) {

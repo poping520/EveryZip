@@ -16,8 +16,12 @@
 #include "row_cache.h"
 
 // 从 STRINGTABLE 资源加载本地化字符串（只读指针，不以 '\0' 结尾）
+ // 参数：hInstance - 模块实例句柄；id - 字符串资源编号。
+ // 返回值：指向资源字符串的只读指针；加载失败时返回空字符串常量。
 const wchar_t* S(HINSTANCE hInstance, UINT id);
 // 从 STRINGTABLE 资源加载本地化字符串（拷贝到 std::wstring）
+ // 参数：hInstance - 模块实例句柄；id - 字符串资源编号。
+ // 返回值：拷贝后的本地化字符串；加载失败时返回空字符串。
 std::wstring LS(HINSTANCE hInstance, UINT id);
 
 // ── 异步加载结果（后台线程只查询 rowid 列表，传递到 UI 线程）──
@@ -64,4 +68,6 @@ struct MainWindowState {
 };
 
 // 主窗口过程
+ // 参数：hWnd - 当前窗口句柄；msg - 消息编号；wParam - 消息参数；lParam - 消息参数。
+ // 返回值：消息处理结果。
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);

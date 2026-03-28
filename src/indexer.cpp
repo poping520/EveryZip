@@ -161,7 +161,6 @@ void Indexer::Stop() {
     LOG_INFO(L"StopIndexing done");
 }
 
-// 启动后台索引线程：扫描磁盘 → 增量更新数据库 → 解析归档条目 → 进入监控循环
 void Indexer::Start(HWND hWnd) {
     LOG_INFO(L"StartIndexing requested");
     Stop();

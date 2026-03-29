@@ -15,21 +15,13 @@ STRINGTABLE
 {
     // 菜单栏
     IDS_MENU_FILE,          "文件(&F)"
-    IDS_MENU_EDIT,          "编辑(&E)"
-    IDS_MENU_VIEW,          "视图(&V)"
-    IDS_MENU_SEARCH,        "搜索(&S)"
-    IDS_MENU_BOOKMARK,      "书签(&B)"
-    IDS_MENU_TOOLS,         "工具(&T)"
+    IDS_MENU_SETTINGS,      "设置(&S)"
     IDS_MENU_HELP,          "帮助(&H)"
     // 菜单项
     IDS_MENU_FILE_EXIT,     "退出(&X)\tAlt+F4"
-    IDS_MENU_EDIT_COPY,     "复制(&C)"
-    IDS_MENU_VIEW_REFRESH,  "刷新索引(&R)\tF5"
-    IDS_MENU_VIEW_STOP,     "停止索引(&S)"
-    IDS_MENU_SEARCH_FIND,   "搜索(&F)"
-    IDS_MENU_BOOKMARK_ADD,  "添加书签(&A)"
     IDS_MENU_TOOLS_OPTIONS, "选项(&O)"
     IDS_MENU_HELP_ABOUT,    "关于(&A)"
+    IDS_MENU_CHECK_UPDATE,  "检查更新(&U)"
     // 托盘菜单
     IDS_TRAY_SHOW,          "显示窗口"
     IDS_TRAY_EXIT,          "退出"
@@ -74,21 +66,13 @@ STRINGTABLE
 {
     // Menu bar
     IDS_MENU_FILE,          "&File"
-    IDS_MENU_EDIT,          "&Edit"
-    IDS_MENU_VIEW,          "&View"
-    IDS_MENU_SEARCH,        "&Search"
-    IDS_MENU_BOOKMARK,      "&Bookmark"
-    IDS_MENU_TOOLS,         "&Tools"
+    IDS_MENU_SETTINGS,      "&Settings"
     IDS_MENU_HELP,          "&Help"
     // Menu items
     IDS_MENU_FILE_EXIT,     "E&xit\tAlt+F4"
-    IDS_MENU_EDIT_COPY,     "&Copy"
-    IDS_MENU_VIEW_REFRESH,  "&Refresh Index\tF5"
-    IDS_MENU_VIEW_STOP,     "&Stop Indexing"
-    IDS_MENU_SEARCH_FIND,   "&Find"
-    IDS_MENU_BOOKMARK_ADD,  "&Add Bookmark"
     IDS_MENU_TOOLS_OPTIONS, "&Options"
     IDS_MENU_HELP_ABOUT,    "&About"
+    IDS_MENU_CHECK_UPDATE,  "Check for &Updates"
     // Tray menu
     IDS_TRAY_SHOW,          "Show Window"
     IDS_TRAY_EXIT,          "Exit"

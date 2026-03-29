@@ -75,6 +75,9 @@ struct MainWindowState {
 
     // 转圈动画角度（0~359，每帧递增）
     int spinnerAngle = 0;
+
+    // 标记是否有行数据加载失败，需要延迟重试刷新列表
+    bool needsListRetry = false;
 };
 
 // 主窗口过程

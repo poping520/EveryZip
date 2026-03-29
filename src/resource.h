@@ -8,6 +8,7 @@
 #define IDM_BOOKMARK_ADD 140
 #define IDM_TOOLS_OPTIONS 150
 #define IDM_HELP_ABOUT 160
+#define IDM_CHECK_UPDATE 161
 
 #define IDC_SEARCH_EDIT 1000
 #define IDC_RESULTS_LIST 1001
@@ -17,6 +18,7 @@
 #define IDT_STATUSBAR_TIMER 2000
 #define IDT_SEARCH_DEBOUNCE 2001
 #define IDT_SPINNER_ANIM    2002
+#define IDT_LIST_RETRY      2003
 
 #define IDI_TRAY_ICON     1         // 托盘图标 ID
 #define IDM_TRAY_SHOW     170       // 托盘菜单：显示窗口
@@ -33,21 +35,13 @@
 // ── 多语言字符串 ID ──
 // 菜单栏
 #define IDS_MENU_FILE           2001
-#define IDS_MENU_EDIT           2002
-#define IDS_MENU_VIEW           2003
-#define IDS_MENU_SEARCH         2004
-#define IDS_MENU_BOOKMARK       2005
-#define IDS_MENU_TOOLS          2006
-#define IDS_MENU_HELP           2007
+#define IDS_MENU_SETTINGS       2008
+#define IDS_MENU_HELP           2009
 // 菜单项
 #define IDS_MENU_FILE_EXIT      2010
-#define IDS_MENU_EDIT_COPY      2011
-#define IDS_MENU_VIEW_REFRESH   2012
-#define IDS_MENU_VIEW_STOP      2013
-#define IDS_MENU_SEARCH_FIND    2014
-#define IDS_MENU_BOOKMARK_ADD   2015
 #define IDS_MENU_TOOLS_OPTIONS  2016
 #define IDS_MENU_HELP_ABOUT     2017
+#define IDS_MENU_CHECK_UPDATE   2018
 // 托盘菜单
 #define IDS_TRAY_SHOW           2020
 #define IDS_TRAY_EXIT           2021

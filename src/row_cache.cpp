@@ -18,6 +18,9 @@ void RowCache::EnsureDbOpen() {
     if (!dbOpen_) {
         std::wstring err;
         dbOpen_ = cacheDb_.Open(dbPath_, &err);
+        if (dbOpen_) {
+            cacheDb_.SetBusyTimeout(500);
+        }
     }
 }
 

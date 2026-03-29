@@ -53,6 +53,11 @@ bool Database::Open(const std::wstring& dbPath, std::wstring* err)
     return true;
 }
 
+void Database::SetBusyTimeout(int ms)
+{
+    if (db_) sqlite3_busy_timeout(db_, ms);
+}
+
 bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
 {
     if (!db_)

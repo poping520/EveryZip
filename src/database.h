@@ -49,6 +49,12 @@ public:
     bool IsOpen() const { return db_ != nullptr; }
 
     /**
+     * 设置 SQLite 忙等待超时（毫秒），防止并发读写时立即返回 SQLITE_BUSY。
+     * @param ms 超时毫秒数。
+     */
+    void SetBusyTimeout(int ms);
+
+    /**
      * 创建保存配置键值对的 configs 表。
      * @param err 可选，用于输出错误信息。
      * @return 创建成功返回 true，否则返回 false。

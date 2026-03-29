@@ -227,32 +227,16 @@ static HMENU CreateMainMenu(MainWindowState* s) {
     HMENU hFile = CreatePopupMenu();
     AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT, LS_(s, IDS_MENU_FILE_EXIT).c_str());
 
-    HMENU hEdit = CreatePopupMenu();
-    AppendMenuW(hEdit, MF_STRING, IDM_EDIT_COPY, LS_(s, IDS_MENU_EDIT_COPY).c_str());
+    HMENU hSettings = CreatePopupMenu();
+    AppendMenuW(hSettings, MF_STRING, IDM_TOOLS_OPTIONS, LS_(s, IDS_MENU_TOOLS_OPTIONS).c_str());
 
-    HMENU hView = CreatePopupMenu();
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_REFRESH, LS_(s, IDS_MENU_VIEW_REFRESH).c_str());
-    AppendMenuW(hView, MF_STRING, IDM_VIEW_STOP, LS_(s, IDS_MENU_VIEW_STOP).c_str());
+    HMENU hAbout = CreatePopupMenu();
+    AppendMenuW(hAbout, MF_STRING, IDM_HELP_ABOUT,     LS_(s, IDS_MENU_HELP_ABOUT).c_str());
+    AppendMenuW(hAbout, MF_STRING, IDM_CHECK_UPDATE,   LS_(s, IDS_MENU_CHECK_UPDATE).c_str());
 
-    HMENU hSearch = CreatePopupMenu();
-    AppendMenuW(hSearch, MF_STRING, IDM_SEARCH_FIND, LS_(s, IDS_MENU_SEARCH_FIND).c_str());
-
-    HMENU hBookmark = CreatePopupMenu();
-    AppendMenuW(hBookmark, MF_STRING, IDM_BOOKMARK_ADD, LS_(s, IDS_MENU_BOOKMARK_ADD).c_str());
-
-    HMENU hTools = CreatePopupMenu();
-    AppendMenuW(hTools, MF_STRING, IDM_TOOLS_OPTIONS, LS_(s, IDS_MENU_TOOLS_OPTIONS).c_str());
-
-    HMENU hHelp = CreatePopupMenu();
-    AppendMenuW(hHelp, MF_STRING, IDM_HELP_ABOUT, LS_(s, IDS_MENU_HELP_ABOUT).c_str());
-
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFile, LS_(s, IDS_MENU_FILE).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hEdit, LS_(s, IDS_MENU_EDIT).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hView, LS_(s, IDS_MENU_VIEW).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSearch, LS_(s, IDS_MENU_SEARCH).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hBookmark, LS_(s, IDS_MENU_BOOKMARK).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hTools, LS_(s, IDS_MENU_TOOLS).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hHelp, LS_(s, IDS_MENU_HELP).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFile,     LS_(s, IDS_MENU_FILE).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSettings, LS_(s, IDS_MENU_SETTINGS).c_str());
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hAbout,    LS_(s, IDS_MENU_HELP).c_str());
 
     return hMenuBar;
 }
@@ -353,7 +337,24 @@ static void LayoutChildren(HWND hWnd, MainWindowState* s) {
 
     const UINT dpi = GetWindowDpi(hWnd);
     const int margin = ScaleDpi(6, dpi);
-    const int editH  = ScaleDpi(24, dpi);
+
+    // 根据字体度量动态计算搜索框高度，避免高 DPI 下出现过大空白
+    int editH = ScaleDpi(24, dpi);
+    if (s->hSearch) {
+        HDC hdc = GetDC(s->hSearch);
+        if (hdc) {
+            HFONT hFont = s->hSearchFont ? s->hSearchFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            HFONT hOld = (HFONT)SelectObject(hdc, hFont);
+            TEXTMETRICW tm{};
+            GetTextMetricsW(hdc, &tm);
+            SelectObject(hdc, hOld);
+            ReleaseDC(s->hSearch, hdc);
+            // 字体高度 + 行间距 + 上下内边距(4px×2) + 边框(2px×2)
+            const int border = ScaleDpi(2, dpi);
+            const int padding = ScaleDpi(4, dpi);
+            editH = tm.tmHeight + tm.tmExternalLeading + padding * 2 + border * 2;
+        }
+    }
 
     RECT statusRect{};
     if (s->hStatusBar) {
@@ -676,6 +677,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             LoadRowsFromDbAndRefreshAsync(hWnd, s);
             return 0;
         }
+        if (wParam == IDT_LIST_RETRY) {
+            KillTimer(hWnd, IDT_LIST_RETRY);
+            s->needsListRetry = false;
+            LoadRowsFromDbAndRefreshAsync(hWnd, s);
+            return 0;
+        }
         if (wParam == IDT_SPINNER_ANIM) {
             if (s->hProgress && (GetWindowLongW(s->hProgress, GWL_STYLE) & WS_VISIBLE)) {
                 s->spinnerAngle = (s->spinnerAngle + 12) % 360;
@@ -712,6 +719,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         case IDM_HELP_ABOUT:
             MessageBoxW(hWnd, LS_(s, IDS_ABOUT_TEXT).c_str(), LS_(s, IDS_ABOUT_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
+            return 0;
+        case IDM_CHECK_UPDATE:
             return 0;
         case IDM_CTX_PROPERTIES: {
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
@@ -926,7 +935,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                 // 从 LRU 缓存获取行数据（缓存未命中时自动查询数据库）
                 const CachedRow* cr = s->rowCache.Get(rowId);
-                if (!cr) return 0;
+                if (!cr) {
+                    // rowId 已失效（索引器重建期间删除了旧条目），调度一次延迟刷新
+                    if (!s->needsListRetry) {
+                        s->needsListRetry = true;
+                        SetTimer(hWnd, IDT_LIST_RETRY, 500, nullptr);
+                    }
+                    return 0;
+                }
 
                 if ((pdi->item.mask & LVIF_IMAGE) && iSub == 0) {
                     pdi->item.iImage = cr->iconIndex;
@@ -1031,6 +1047,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                     case 1: text = cr->archivePath; break;
                                     case 2: text = cr->entryPath; break;
                                     }
+                                } else if (!s->needsListRetry) {
+                                    s->needsListRetry = true;
+                                    SetTimer(hWnd, IDT_LIST_RETRY, 500, nullptr);
                                 }
                             }
                         }
@@ -1126,6 +1145,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         RemoveTrayIcon();
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         KillTimer(hWnd, IDT_SEARCH_DEBOUNCE);
+        KillTimer(hWnd, IDT_LIST_RETRY);
         s->indexer.Stop();
         s->rowCache.Close();
         if (s->hSearchFont) { DeleteObject(s->hSearchFont); s->hSearchFont = nullptr; }

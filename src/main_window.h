@@ -65,6 +65,9 @@ struct MainWindowState {
 
     // 托盘/退出
     bool forceQuit = false;
+
+    // 转圈动画角度（0~359，每帧递增）
+    int spinnerAngle = 0;
 };
 
 // 主窗口过程

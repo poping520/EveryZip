@@ -36,6 +36,24 @@ static void EnsureCommonControls() {
  // 参数：hInstance - 当前实例句柄；第二个 HINSTANCE 未使用；PWSTR 未使用；nCmdShow - 初始窗口显示方式。
  // 返回值：进程退出码。
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
+    // 单实例检测：创建命名 Mutex，已存在说明有实例在运行
+    static constexpr wchar_t kMutexName[] = L"EveryArchive_SingleInstance_Mutex";
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
+    if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        // 已有实例：找到其主窗口并激活显示
+        HWND hExisting = FindWindowW(kAppClassName, nullptr);
+        if (hExisting) {
+            if (IsIconic(hExisting)) {
+                ShowWindow(hExisting, SW_RESTORE);
+            } else {
+                ShowWindow(hExisting, SW_SHOW);
+            }
+            SetForegroundWindow(hExisting);
+        }
+        CloseHandle(hMutex);
+        return 0;
+    }
+
     Logger::Init();
     LOG_INFO("wWinMain start");
 
@@ -54,7 +72,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     const bool p1 = Indexer::EnablePrivilege(SE_MANAGE_VOLUME_NAME);
     const bool p2 = Indexer::EnablePrivilege(SE_BACKUP_NAME);
-    LOG_INFO(L"EnablePrivilege SeManageVolume=%d SeBackup=%d", (int)p1, (int)p2);
+    LOG_INFO("EnablePrivilege SeManageVolume=%d SeBackup=%d", (int)p1, (int)p2);
 
     EnsureCommonControls();
 
@@ -78,7 +96,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     wc.lpszClassName = kAppClassName;
 
     if (!RegisterClassExW(&wc)) {
-        LOG_ERROR(L"RegisterClassExW failed (err=%lu)", GetLastError());
+        LOG_ERROR("RegisterClassExW failed (err=%lu)", GetLastError());
         MessageBoxW(nullptr, L"RegisterClassExW failed", L"Error", MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -96,7 +114,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         &state);  // 传递 state 指针
 
     if (!hWnd) {
-        LOG_ERROR(L"CreateWindowExW main window failed (err=%lu)", GetLastError());
+        LOG_ERROR("CreateWindowExW main window failed (err=%lu)", GetLastError());
         MessageBoxW(nullptr, L"CreateWindowExW failed", L"Error", MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -111,7 +129,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         DispatchMessageW(&msg);
     }
 
-    LOG_INFO(L"Message loop exit code=%lld", (long long)msg.wParam);
+    LOG_INFO("Message loop exit code=%lld", (long long)msg.wParam);
     Logger::Shutdown();
     return (int)msg.wParam;
 }

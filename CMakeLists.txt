@@ -70,10 +70,11 @@ if(MSVC)
     target_compile_options(EveryArchive PRIVATE /utf-8)
 endif()
 
-# 嵌入自定义 manifest（请求管理员权限 + ComCtl32 v6 视觉样式）
-set_target_properties(EveryArchive PROPERTIES
-    LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\""
-)
+if(MSVC)
+    # manifest 已通过 RC 文件嵌入（strings.rc: 1 RT_MANIFEST "app.manifest"），
+    # 禁止链接器自动生成并合并 manifest，避免覆盖 DPI 感知声明
+    target_link_options(EveryArchive PRIVATE /MANIFEST:NO)
+endif()
 
 target_link_libraries(EveryArchive PRIVATE
         comctl32

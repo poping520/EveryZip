@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
 #include <thread>
 
@@ -24,9 +25,176 @@ std::wstring LS(HINSTANCE hInstance, UINT id) {
     return (len > 0 && p) ? std::wstring(p, len) : std::wstring();
 }
 
+// ── Spinner 自绘窗口类名 ──
+static constexpr wchar_t kSpinnerClass[] = L"EveryArchiveSpinner";
+
+// Spinner 窗口过程：自绘旋转圆弧动画
+static LRESULT CALLBACK SpinnerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps{};
+        HDC hdc = BeginPaint(hWnd, &ps);
+
+        RECT rc{};
+        GetClientRect(hWnd, &rc);
+        int w = rc.right - rc.left;
+        int h = rc.bottom - rc.top;
+
+        // 双缓冲避免闪烁
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP memBmp = CreateCompatibleBitmap(hdc, w, h);
+        HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+        // 填充状态栏背景色
+        HBRUSH bgBrush = GetSysColorBrush(COLOR_BTNFACE);
+        FillRect(memDC, &rc, bgBrush);
+
+        // 读取当前角度（存储在窗口用户数据）
+        int angle = (int)(LONG_PTR)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+
+        // 超采样：在 2 倍尺寸的离屏 DC 上绘制，再缩放到实际尺寸，消除 GDI 锯齿
+        const int scale = 2;
+        const int sw = w * scale;
+        const int sh = h * scale;
+        HDC scaleDC = CreateCompatibleDC(hdc);
+        HBITMAP scaleBmp = CreateCompatibleBitmap(hdc, sw, sh);
+        HBITMAP oldScaleBmp = (HBITMAP)SelectObject(scaleDC, scaleBmp);
+
+        // 填充背景
+        RECT scaleRc = { 0, 0, sw, sh };
+        FillRect(scaleDC, &scaleRc, bgBrush);
+
+        // 计算圆弧区域（居中留边距），全部坐标 ×scale
+        const int margin = 3 * scale;
+        const int size = (min(sw, sh) - margin * 2);
+        if (size > 4) {
+            const int cx = sw / 2;
+            const int cy = sh / 2;
+            const int r  = size / 2;
+
+            // 笔宽约为直径的 1/5，至少 3px（scaled）
+            const int penW = max(3, size / 5);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(scaleDC, GetStockObject(NULL_BRUSH));
+
+            // 先画灰色轨道（完整圆）
+            HPEN trackPen = CreatePen(PS_SOLID, penW, RGB(220, 220, 220));
+            HPEN oldPen = (HPEN)SelectObject(scaleDC, trackPen);
+            Ellipse(scaleDC, cx - r, cy - r, cx + r, cy + r);
+            SelectObject(scaleDC, oldPen);
+            DeleteObject(trackPen);
+
+            // 再画经典绿色旋转弧（270°）
+            const double pi = 3.14159265358979323846;
+            const double startRad = (angle - 90) * pi / 180.0;
+            const double sweepRad = 270.0 * pi / 180.0;
+            const int x1 = cx + (int)(r * cos(startRad));
+            const int y1 = cy + (int)(r * sin(startRad));
+            const double endRad = startRad + sweepRad;
+            const int x2 = cx + (int)(r * cos(endRad));
+            const int y2 = cy + (int)(r * sin(endRad));
+
+            HPEN arcPen = CreatePen(PS_SOLID, penW, RGB(0, 164, 0));
+            SelectObject(scaleDC, arcPen);
+            SetArcDirection(scaleDC, AD_CLOCKWISE);
+            Arc(scaleDC, cx - r, cy - r, cx + r, cy + r, x1, y1, x2, y2);
+            SelectObject(scaleDC, oldPen);
+            DeleteObject(arcPen);
+
+            SelectObject(scaleDC, oldBrush);
+        }
+
+        // 缩放回实际尺寸（HALFTONE 算法产生平滑效果）
+        SetStretchBltMode(memDC, HALFTONE);
+        SetBrushOrgEx(memDC, 0, 0, nullptr);
+        StretchBlt(memDC, 0, 0, w, h, scaleDC, 0, 0, sw, sh, SRCCOPY);
+
+        SelectObject(scaleDC, oldScaleBmp);
+        DeleteObject(scaleBmp);
+        DeleteDC(scaleDC);
+
+        BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+        SelectObject(memDC, oldBmp);
+        DeleteObject(memBmp);
+        DeleteDC(memDC);
+
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+    default:
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+}
+
+// 注册 Spinner 窗口类（应在创建第一个 spinner 前调用一次）
+static void RegisterSpinnerClass(HINSTANCE hInstance) {
+    WNDCLASSEXW wc{};
+    wc.cbSize        = sizeof(wc);
+    wc.lpfnWndProc   = SpinnerWndProc;
+    wc.hInstance     = hInstance;
+    wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
+    wc.lpszClassName = kSpinnerClass;
+    RegisterClassExW(&wc);
+}
+
 // ── 内部辅助：从窗口获取 MainWindowState ──
 static MainWindowState* GetState(HWND hWnd) {
     return (MainWindowState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+}
+
+// 获取窗口所在显示器的 DPI（Win8.1+ 返回真实值，否则回退到系统 DPI）
+static UINT GetWindowDpi(HWND hWnd) {
+    using FnGetDpiForWindow = UINT(WINAPI*)(HWND);
+    static auto fn = (FnGetDpiForWindow)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+    if (fn) return fn(hWnd);
+    HDC hdc = GetDC(nullptr);
+    UINT dpi = (UINT)GetDeviceCaps(hdc, LOGPIXELSX);
+    ReleaseDC(nullptr, hdc);
+    return dpi ? dpi : 96;
+}
+
+// 将 96dpi 下的逻辑像素换算为当前 DPI 下的物理像素
+static int ScaleDpi(int px, UINT dpi) {
+    return MulDiv(px, (int)dpi, 96);
+}
+
+// 按当前 DPI 创建/重建 UI 字体并应用到控件
+static void RecreateFonts(HWND hWnd, MainWindowState* s, UINT dpi) {
+    NONCLIENTMETRICSW ncm{};
+    ncm.cbSize = sizeof(ncm);
+    // SPI_GETNONCLIENTMETRICS 在 PerMonitorV2 下仍返回主显示器 DPI 的值，
+    // 需手动将 lfHeight 按目标 DPI 重新缩放
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    // SPI_GETNONCLIENTMETRICS 返回的 lfHeight 基于主显示器 DPI，需按目标 DPI 重新缩放
+    // lfHeight 为负时其绝对值是字符高度（点数），为正时是单元格高度
+    const UINT sysDpi = []() -> UINT {
+        HDC hdc = GetDC(nullptr);
+        UINT d = (UINT)GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(nullptr, hdc);
+        return d ? d : 96;
+    }();
+    if (ncm.lfMessageFont.lfHeight != 0) {
+        ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, (int)dpi, (int)sysDpi);
+    }
+
+    HFONT hOldSearch = s->hSearchFont;
+    HFONT hOldNormal = s->hNormalFont;
+    HFONT hOldBold   = s->hBoldFont;
+
+    ncm.lfMessageFont.lfWeight = FW_NORMAL;
+    s->hSearchFont = CreateFontIndirectW(&ncm.lfMessageFont);
+    s->hNormalFont = CreateFontIndirectW(&ncm.lfMessageFont);
+    ncm.lfMessageFont.lfWeight = FW_BOLD;
+    s->hBoldFont = CreateFontIndirectW(&ncm.lfMessageFont);
+
+    if (s->hSearchFont && s->hSearch)
+        SendMessageW(s->hSearch, WM_SETFONT, (WPARAM)s->hSearchFont, TRUE);
+
+    if (hOldSearch) DeleteObject(hOldSearch);
+    if (hOldNormal) DeleteObject(hOldNormal);
+    if (hOldBold)   DeleteObject(hOldBold);
 }
 
 // ── 内部辅助：LS 的便捷包装（从 state 获取 hInstance）──
@@ -180,8 +348,9 @@ static void LayoutChildren(HWND hWnd, MainWindowState* s) {
     RECT rc{};
     GetClientRect(hWnd, &rc);
 
-    const int margin = 6;
-    const int editH = 24;
+    const UINT dpi = GetWindowDpi(hWnd);
+    const int margin = ScaleDpi(6, dpi);
+    const int editH  = ScaleDpi(24, dpi);
 
     RECT statusRect{};
     if (s->hStatusBar) {
@@ -257,25 +426,23 @@ static void UpdateStatusBar(MainWindowState* s) {
 
     bool running = s->indexer.IsRunning();
 
-    // 控制 Marquee 进度条的显示/隐藏，并定位到状态栏右侧
+    // 控制 Spinner 的显示/隐藏，并定位到状态栏右侧
     if (s->hProgress) {
         bool isVisible = (GetWindowLongW(s->hProgress, GWL_STYLE) & WS_VISIBLE) != 0;
         if (running && !isVisible) {
-            SendMessageW(s->hProgress, PBM_SETMARQUEE, TRUE, 30);
-            ShowWindow(s->hProgress, SW_SHOW);
-        } else if (!running && isVisible) {
-            SendMessageW(s->hProgress, PBM_SETMARQUEE, FALSE, 0);
-            ShowWindow(s->hProgress, SW_HIDE);
-        }
-        // 将进度条定位到状态栏右侧
-        if (running) {
+            // 定位到状态栏右侧
             RECT sbRect{};
             GetClientRect(s->hStatusBar, &sbRect);
-            const int pbWidth = 120;
-            const int pbHeight = sbRect.bottom - sbRect.top - 4;
-            const int pbX = sbRect.right - pbWidth - 20; // 留出 sizegrip 空间
-            const int pbY = 2;
-            MoveWindow(s->hProgress, pbX, pbY, pbWidth, pbHeight, TRUE);
+            const int size   = sbRect.bottom - sbRect.top - 2;
+            const int pbX    = sbRect.right - size - 18; // 留出 sizegrip 空间
+            const int pbY    = 1;
+            MoveWindow(s->hProgress, pbX, pbY, size, size, FALSE);
+            ShowWindow(s->hProgress, SW_SHOW);
+            // 启动动画定时器（每 40ms 旋转一帧），挂在主窗口上
+            SetTimer(GetParent(s->hStatusBar), IDT_SPINNER_ANIM, 40, nullptr);
+        } else if (!running && isVisible) {
+            KillTimer(GetParent(s->hStatusBar), IDT_SPINNER_ANIM);
+            ShowWindow(s->hProgress, SW_HIDE);
         }
     }
 
@@ -433,13 +600,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             LOG_ERROR(L"CreateWindowExW statusbar failed (err=%lu)", GetLastError());
         }
 
-        // 在状态栏内创建 Marquee 进度条（转圈样式，初始隐藏）
+        // 在状态栏内创建自绘圆形转圈 Spinner（初始隐藏）
         if (s->hStatusBar) {
+            RegisterSpinnerClass(s->hInstance);
             s->hProgress = CreateWindowExW(
                 0,
-                PROGRESS_CLASSW,
+                kSpinnerClass,
                 nullptr,
-                WS_CHILD | PBS_MARQUEE,  // 不含 WS_VISIBLE，初始隐藏
+                WS_CHILD,  // 不含 WS_VISIBLE，初始隐藏
                 0, 0, 0, 0,
                 s->hStatusBar,
                 (HMENU)(INT_PTR)IDC_PROGRESS,
@@ -449,22 +617,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         s->editOldProc = (WNDPROC)SetWindowLongPtrW(s->hSearch, GWLP_WNDPROC, (LONG_PTR)SearchEditProc);
 
-        {
-            NONCLIENTMETRICSW ncm{};
-            ncm.cbSize = sizeof(ncm);
-            SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-
-            ncm.lfMessageFont.lfWeight = FW_NORMAL;
-            s->hSearchFont = CreateFontIndirectW(&ncm.lfMessageFont);
-            if (s->hSearchFont && s->hSearch) {
-                SendMessageW(s->hSearch, WM_SETFONT, (WPARAM)s->hSearchFont, TRUE);
-            }
-
-            s->hNormalFont = CreateFontIndirectW(&ncm.lfMessageFont);
-
-            ncm.lfMessageFont.lfWeight = FW_BOLD;
-            s->hBoldFont = CreateFontIndirectW(&ncm.lfMessageFont);
-        }
+        RecreateFonts(hWnd, s, GetWindowDpi(hWnd));
 
         RefreshList(s);
         LayoutChildren(hWnd, s);
@@ -492,6 +645,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // g_forceQuit=true 时落入 DefWindowProc 触发 WM_DESTROY
         break;
 
+    case WM_DPICHANGED: {
+        // 系统提供新 DPI 和建议窗口矩形，直接采纳以避免模糊
+        UINT newDpi = HIWORD(wParam);
+        const RECT* suggested = (const RECT*)lParam;
+        SetWindowPos(hWnd, nullptr,
+            suggested->left, suggested->top,
+            suggested->right - suggested->left,
+            suggested->bottom - suggested->top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        RecreateFonts(hWnd, s, newDpi);
+        LayoutChildren(hWnd, s);
+        return 0;
+    }
+
     case WM_SIZE:
         LayoutChildren(hWnd, s);
         return 0;
@@ -504,6 +671,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (wParam == IDT_SEARCH_DEBOUNCE) {
             KillTimer(hWnd, IDT_SEARCH_DEBOUNCE);
             LoadRowsFromDbAndRefreshAsync(hWnd, s);
+            return 0;
+        }
+        if (wParam == IDT_SPINNER_ANIM) {
+            if (s->hProgress && (GetWindowLongW(s->hProgress, GWL_STYLE) & WS_VISIBLE)) {
+                s->spinnerAngle = (s->spinnerAngle + 12) % 360;
+                SetWindowLongPtrW(s->hProgress, GWLP_USERDATA, (LONG_PTR)s->spinnerAngle);
+                InvalidateRect(s->hProgress, nullptr, FALSE);
+            }
             return 0;
         }
         break;

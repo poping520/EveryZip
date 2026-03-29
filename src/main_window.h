@@ -31,6 +31,13 @@ struct AsyncLoadResult {
     int64_t entryCount = 0;
 };
 
+// ── 异步解压结果（后台线程解压完成后传递到 UI 线程）──
+struct ExtractResult {
+    bool success = false;
+    std::wstring destDir;
+    std::string errorMsg;
+};
+
 // 主窗口状态（通过 GWLP_USERDATA 附加到窗口）
 struct MainWindowState {
     HINSTANCE hInstance = nullptr;

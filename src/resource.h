@@ -22,6 +22,14 @@
 #define IDM_TRAY_SHOW     170       // 托盘菜单：显示窗口
 #define IDM_TRAY_EXIT     171       // 托盘菜单：退出程序
 
+#define IDM_CTX_OPEN_FOLDER     180  // 右键菜单：打开归档文件所在文件夹
+#define IDM_CTX_PROPERTIES      181  // 右键菜单：显示归档文件属性
+#define IDM_CTX_COPY_NAME       182  // 右键菜单：复制文件名
+#define IDM_CTX_COPY_ENTRY_PATH 183  // 右键菜单：复制条目相对路径
+#define IDM_CTX_COPY_ARCHIVE    184  // 右键菜单：复制归档文件路径
+#define IDM_CTX_EXTRACT         185  // 右键菜单：解压到自定义目录
+#define IDM_CTX_OPEN_ARCHIVE    186  // 右键菜单：打开归档文件
+
 // ── 多语言字符串 ID ──
 // 菜单栏
 #define IDS_MENU_FILE           2001
@@ -62,6 +70,17 @@
 #define IDS_ABOUT_TEXT          2061
 #define IDS_ERROR               2062
 #define IDS_DBLCLICK_PLACEHOLDER 2063
+// 右键菜单
+#define IDS_CTX_OPEN_FOLDER     2070
+#define IDS_CTX_PROPERTIES      2071
+#define IDS_CTX_COPY_NAME       2072
+#define IDS_CTX_COPY_ENTRY_PATH 2073
+#define IDS_CTX_COPY_ARCHIVE    2074
+#define IDS_CTX_EXTRACT         2075
+#define IDS_CTX_EXTRACT_OK      2076
+#define IDS_CTX_EXTRACT_FAIL    2077
+#define IDS_CTX_EXTRACT_TITLE   2078
+#define IDS_CTX_OPEN_ARCHIVE    2079
 
 #define WM_APP_ADD_RESULT (WM_APP + 1)
 #define WM_APP_INDEX_DONE (WM_APP + 2)
@@ -69,3 +88,4 @@
 #define WM_APP_UPDATE_STATUSBAR (WM_APP + 4)
 #define WM_APP_ROWS_READY (WM_APP + 5)  // 异步加载完成，wParam=0, lParam=AsyncLoadResult*
 #define WM_APP_TRAY       (WM_APP + 6)  // 托盘图标回调消息
+#define WM_APP_EXTRACT_DONE (WM_APP + 7) // 解压完成，wParam=1成功/0失败，lParam=ExtractResult*

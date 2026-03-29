@@ -5,7 +5,10 @@
 #include <cwctype>
 #include <thread>
 
+#include <shlobj.h>
+
 #include "logger.h"
+#include "parser/zip_archive_parser.h"
 #include "resource.h"
 #include "string_utils.h"
 #include "tray_icon.h"
@@ -710,6 +713,160 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case IDM_HELP_ABOUT:
             MessageBoxW(hWnd, LS_(s, IDS_ABOUT_TEXT).c_str(), LS_(s, IDS_ABOUT_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
             return 0;
+        case IDM_CTX_PROPERTIES: {
+            int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
+            if (iItem < 0) return 0;
+            int64_t rowId = 0;
+            {
+                std::lock_guard<std::mutex> lk(s->rowsMutex);
+                if (iItem >= 0 && iItem < (int)s->rowIds.size())
+                    rowId = s->rowIds[iItem];
+            }
+            if (rowId <= 0) return 0;
+            const CachedRow* cr = s->rowCache.Get(rowId);
+            if (!cr || cr->archivePath.empty()) return 0;
+            // 调用 Windows Shell 文件属性对话框
+            SHELLEXECUTEINFOW sei{};
+            sei.cbSize = sizeof(sei);
+            sei.fMask  = SEE_MASK_INVOKEIDLIST;
+            sei.hwnd   = hWnd;
+            sei.lpVerb = L"properties";
+            sei.lpFile = cr->archivePath.c_str();
+            sei.nShow  = SW_SHOW;
+            ShellExecuteExW(&sei);
+            return 0;
+        }
+        case IDM_CTX_EXTRACT: {
+            // 获取选中条目的归档路径和条目路径
+            int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
+            if (iItem < 0) return 0;
+            int64_t rowId = 0;
+            {
+                std::lock_guard<std::mutex> lk(s->rowsMutex);
+                if (iItem >= 0 && iItem < (int)s->rowIds.size())
+                    rowId = s->rowIds[iItem];
+            }
+            if (rowId <= 0) return 0;
+            const CachedRow* cr = s->rowCache.Get(rowId);
+            if (!cr || cr->archivePath.empty()) return 0;
+            std::wstring archivePath = cr->archivePath;
+            std::wstring entryPath   = cr->entryPath;
+
+            // 将 entryPath（宽字符）转为 UTF-8 窄字符串，供 minizip 使用
+            std::string entryPathA;
+            {
+                int need = WideCharToMultiByte(CP_UTF8, 0, entryPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                if (need > 0) {
+                    entryPathA.resize(need - 1);
+                    WideCharToMultiByte(CP_UTF8, 0, entryPath.c_str(), -1, entryPathA.data(), need, nullptr, nullptr);
+                }
+                // 将路径分隔符统一为正斜杠（minizip 使用正斜杠）
+                std::replace(entryPathA.begin(), entryPathA.end(), '\\', '/');
+            }
+
+            // 用 SHBrowseForFolder 让用户选择目标目录
+            wchar_t destBuf[MAX_PATH] = {};
+            BROWSEINFOW bi{};
+            bi.hwndOwner = hWnd;
+            bi.pszDisplayName = destBuf;
+            bi.lpszTitle = LS_(s, IDS_CTX_EXTRACT).c_str();
+            bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+            if (!pidl) return 0;
+            if (!SHGetPathFromIDListW(pidl, destBuf)) {
+                CoTaskMemFree(pidl);
+                return 0;
+            }
+            CoTaskMemFree(pidl);
+            std::wstring destDir = destBuf;
+
+            // 后台线程异步解压，完成后 PostMessage 通知 UI
+            std::thread([hWnd, archivePath, entryPathA, destDir]() {
+                auto* res = new ExtractResult();
+                res->destDir = destDir;
+                EveryArchive::ZipArchiveParser parser;
+                std::string err;
+                if (!parser.Open(archivePath, &err)) {
+                    res->success  = false;
+                    res->errorMsg = err;
+                } else {
+                    res->success = parser.ExtractEntry(entryPathA, destDir, &err);
+                    if (!res->success) res->errorMsg = err;
+                    parser.Close();
+                }
+                PostMessageW(hWnd, WM_APP_EXTRACT_DONE, res->success ? 1 : 0, (LPARAM)res);
+            }).detach();
+            return 0;
+        }
+        case IDM_CTX_COPY_NAME:
+        case IDM_CTX_COPY_ENTRY_PATH:
+        case IDM_CTX_COPY_ARCHIVE: {
+            int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
+            if (iItem < 0) return 0;
+            int64_t rowId = 0;
+            {
+                std::lock_guard<std::mutex> lk(s->rowsMutex);
+                if (iItem >= 0 && iItem < (int)s->rowIds.size())
+                    rowId = s->rowIds[iItem];
+            }
+            if (rowId <= 0) return 0;
+            const CachedRow* cr = s->rowCache.Get(rowId);
+            if (!cr) return 0;
+            std::wstring text;
+            if (id == IDM_CTX_COPY_NAME)       text = cr->name;
+            else if (id == IDM_CTX_COPY_ENTRY_PATH) text = cr->entryPath;
+            else                               text = cr->archivePath;
+            if (text.empty()) return 0;
+            // 将文本写入剩切板
+            if (OpenClipboard(hWnd)) {
+                EmptyClipboard();
+                size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                if (hMem) {
+                    void* p = GlobalLock(hMem);
+                    if (p) {
+                        memcpy(p, text.c_str(), bytes);
+                        GlobalUnlock(hMem);
+                    }
+                    SetClipboardData(CF_UNICODETEXT, hMem);
+                }
+                CloseClipboard();
+            }
+            return 0;
+        }
+        case IDM_CTX_OPEN_ARCHIVE: {
+            int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
+            if (iItem < 0) return 0;
+            int64_t rowId = 0;
+            {
+                std::lock_guard<std::mutex> lk(s->rowsMutex);
+                if (iItem >= 0 && iItem < (int)s->rowIds.size())
+                    rowId = s->rowIds[iItem];
+            }
+            if (rowId <= 0) return 0;
+            const CachedRow* cr = s->rowCache.Get(rowId);
+            if (!cr || cr->archivePath.empty()) return 0;
+            ShellExecuteW(hWnd, L"open", cr->archivePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
+        }
+        case IDM_CTX_OPEN_FOLDER: {
+            // 获取当前选中项的归档文件路径
+            int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
+            if (iItem < 0) return 0;
+            int64_t rowId = 0;
+            {
+                std::lock_guard<std::mutex> lk(s->rowsMutex);
+                if (iItem >= 0 && iItem < (int)s->rowIds.size())
+                    rowId = s->rowIds[iItem];
+            }
+            if (rowId <= 0) return 0;
+            const CachedRow* cr = s->rowCache.Get(rowId);
+            if (!cr || cr->archivePath.empty()) return 0;
+            // 使用 Explorer /select 打开文件夹并选中归档文件
+            std::wstring param = L"/select,\"" + cr->archivePath + L"\"";
+            ShellExecuteW(hWnd, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
+            return 0;
+        }
         default:
             return 0;
         }
@@ -810,6 +967,38 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 MessageBoxW(hWnd, LS_(s, IDS_DBLCLICK_PLACEHOLDER).c_str(), L"Info", MB_OK);
                 return 0;
             }
+            if (hdr->code == NM_RCLICK) {
+                // 获取当前选中项索引
+                int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
+                if (iItem < 0) return 0;
+
+                // 构建右键菜单
+                HMENU hMenu = CreatePopupMenu();
+                if (!hMenu) return 0;
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_OPEN_FOLDER,
+                    LS_(s, IDS_CTX_OPEN_FOLDER).c_str());
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_OPEN_ARCHIVE,
+                    LS_(s, IDS_CTX_OPEN_ARCHIVE).c_str());
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_EXTRACT,
+                    LS_(s, IDS_CTX_EXTRACT).c_str());
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_NAME,
+                    LS_(s, IDS_CTX_COPY_NAME).c_str());
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_ENTRY_PATH,
+                    LS_(s, IDS_CTX_COPY_ENTRY_PATH).c_str());
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_ARCHIVE,
+                    LS_(s, IDS_CTX_COPY_ARCHIVE).c_str());
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_PROPERTIES,
+                    LS_(s, IDS_CTX_PROPERTIES).c_str());
+
+                // 使用鼠标位置弹出菜单
+                POINT pt{};
+                GetCursorPos(&pt);
+                TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
+                DestroyMenu(hMenu);
+                return 0;
+            }
             if (hdr->code == NM_CUSTOMDRAW) {
                 LPNMLVCUSTOMDRAW lvcd = (LPNMLVCUSTOMDRAW)lParam;
                 switch (lvcd->nmcd.dwDrawStage) {
@@ -888,6 +1077,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
         }
         break;
+    }
+
+    case WM_APP_EXTRACT_DONE: {
+        auto* res = (ExtractResult*)lParam;
+        if (!res) return 0;
+        if (res->success) {
+            MessageBoxW(hWnd, LS_(s, IDS_CTX_EXTRACT_OK).c_str(),
+                LS_(s, IDS_CTX_EXTRACT_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
+        } else {
+            // 将 errorMsg 转为宽字符串显示
+            std::wstring wmsg;
+            if (!res->errorMsg.empty()) {
+                int need = MultiByteToWideChar(CP_UTF8, 0, res->errorMsg.c_str(), -1, nullptr, 0);
+                if (need > 0) {
+                    wmsg.resize(need - 1);
+                    MultiByteToWideChar(CP_UTF8, 0, res->errorMsg.c_str(), -1, wmsg.data(), need);
+                }
+            }
+            std::wstring msg = LS_(s, IDS_CTX_EXTRACT_FAIL);
+            if (!wmsg.empty()) msg += L"\n" + wmsg;
+            MessageBoxW(hWnd, msg.c_str(),
+                LS_(s, IDS_CTX_EXTRACT_TITLE).c_str(), MB_OK | MB_ICONERROR);
+        }
+        delete res;
+        return 0;
     }
 
     case WM_APP_TRAY:

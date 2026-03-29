@@ -44,6 +44,17 @@ public:
      */
     bool ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) override;
 
+    /**
+     * 将 ZIP 归档内指定条目解压到目标目录。
+     * @param entry_path 归档内条目路径。
+     * @param dest_dir   解压目标目录。
+     * @param error      可选，用于输出错误信息。
+     * @return 解压成功返回 true，否则返回 false。
+     */
+    bool ExtractEntry(const std::string& entry_path,
+                      const std::wstring& dest_dir,
+                      std::string* error) override;
+
 private:
     void* handle_ = nullptr; // unzFile
     std::wstring archive_path_;

@@ -58,6 +58,17 @@ public:
      * @return 枚举成功返回 true，否则返回 false。
      */
     virtual bool ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) = 0;
+
+    /**
+     * 将归档内指定条目解压到目标目录。
+     * @param entry_path 归档内条目路径（与 ArchiveEntry::name 一致）。
+     * @param dest_dir   解压目标目录路径（宽字符），目录须已存在或由实现自动创建。
+     * @param error      可选，用于输出错误信息。
+     * @return 解压成功返回 true，否则返回 false。
+     */
+    virtual bool ExtractEntry(const std::string& entry_path,
+                              const std::wstring& dest_dir,
+                              std::string* error) = 0;
 };
 
 } // namespace EveryArchive

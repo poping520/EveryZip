@@ -52,6 +52,17 @@ STRINGTABLE
     IDS_ABOUT_TEXT,         "EveryArchive"
     IDS_ERROR,              "错误"
     IDS_DBLCLICK_PLACEHOLDER,"双击（占位功能）"
+    // 右键菜单
+    IDS_CTX_OPEN_FOLDER,    "打开所在文件夹"
+    IDS_CTX_PROPERTIES,     "属性"
+    IDS_CTX_COPY_NAME,       "复制文件名"
+    IDS_CTX_COPY_ENTRY_PATH, "复制归档内路径"
+    IDS_CTX_COPY_ARCHIVE,    "复制归档文件路径"
+    IDS_CTX_EXTRACT,         "解压到..."
+    IDS_CTX_EXTRACT_OK,      "解压完成"
+    IDS_CTX_EXTRACT_FAIL,    "解压失败"
+    IDS_CTX_EXTRACT_TITLE,   "解压"
+    IDS_CTX_OPEN_ARCHIVE,    "打开归档文件"
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -100,4 +111,15 @@ STRINGTABLE
     IDS_ABOUT_TEXT,         "EveryArchive"
     IDS_ERROR,              "Error"
     IDS_DBLCLICK_PLACEHOLDER,"Double click (placeholder)"
+    // Context menu
+    IDS_CTX_OPEN_FOLDER,    "Open Containing Folder"
+    IDS_CTX_PROPERTIES,     "Properties"
+    IDS_CTX_COPY_NAME,       "Copy File Name"
+    IDS_CTX_COPY_ENTRY_PATH, "Copy Path in Archive"
+    IDS_CTX_COPY_ARCHIVE,    "Copy Archive Path"
+    IDS_CTX_EXTRACT,         "Extract To..."
+    IDS_CTX_EXTRACT_OK,      "Extraction complete"
+    IDS_CTX_EXTRACT_FAIL,    "Extraction failed"
+    IDS_CTX_EXTRACT_TITLE,   "Extract"
+    IDS_CTX_OPEN_ARCHIVE,    "Open Archive File"
 }

@@ -5,10 +5,6 @@ project(EveryArchive LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(MSVC)
-    add_compile_options($<$<COMPILE_LANGUAGE:C>:/utf-8> $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
-endif()
-
 add_executable(EveryArchive WIN32
         src/resource.h
         src/strings.rc
@@ -69,6 +65,10 @@ target_include_directories(EveryArchive PRIVATE
 )
 
 target_compile_definitions(EveryArchive PRIVATE UNICODE _UNICODE)
+
+if(MSVC)
+    target_compile_options(EveryArchive PRIVATE /utf-8)
+endif()
 
 # 嵌入自定义 manifest（请求管理员权限 + ComCtl32 v6 视觉样式）
 set_target_properties(EveryArchive PROPERTIES

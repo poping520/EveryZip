@@ -22,6 +22,8 @@ static HANDLE g_logFileHandle = INVALID_HANDLE_VALUE;
 
 static bool g_consoleReady = false;
 static bool g_consoleExplicit = false;
+static bool g_consoleAttached = false;
+static HANDLE g_stderrHandle = INVALID_HANDLE_VALUE;
 
 static const wchar_t* LevelToString(Level level) {
     switch (level) {
@@ -92,10 +94,23 @@ static void EnsureConsoleReady() {
     const std::wstring mode = ToLower(GetEnvVar(L"EVERYARCHIVE_LOG_CONSOLE"));
     g_consoleExplicit = !mode.empty();
 
-    bool ok = false;
     if (mode == L"0" || mode == L"false" || mode == L"off" || mode == L"no") {
-        ok = false;
-    } else if (mode == L"alloc" || mode == L"new") {
+        g_consoleReady = false;
+        return;
+    }
+
+    // First, check if we already have a valid inherited stderr handle (e.g. CLion pipe).
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    if (h != INVALID_HANDLE_VALUE && h != nullptr) {
+        g_stderrHandle = h;
+        SetConsoleOutputCP(CP_UTF8);
+        g_consoleReady = true;
+        return;
+    }
+
+    // No inherited handle: try to attach or allocate a console.
+    bool ok = false;
+    if (mode == L"alloc" || mode == L"new") {
         ok = AllocConsole() != FALSE;
     } else {
         ok = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
@@ -103,12 +118,16 @@ static void EnsureConsoleReady() {
             ok = AllocConsole() != FALSE;
         }
     }
-
+    if (ok) {
+        SetConsoleOutputCP(CP_UTF8);
+        g_stderrHandle = GetStdHandle(STD_ERROR_HANDLE);
+        g_consoleAttached = true;
+    }
     g_consoleReady = ok;
 }
 
-static void WriteToConsole(const wchar_t* line) {
-    if (!line) return;
+static void WriteToConsoleUtf8(const char* utf8, DWORD len) {
+    if (!utf8 || len == 0) return;
 
     if (!g_consoleReady) {
         if (g_consoleExplicit) {
@@ -117,45 +136,75 @@ static void WriteToConsole(const wchar_t* line) {
         if (!g_consoleReady) return;
     }
 
-    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    HANDLE h = (g_stderrHandle != INVALID_HANDLE_VALUE) ? g_stderrHandle : GetStdHandle(STD_ERROR_HANDLE);
     if (h == INVALID_HANDLE_VALUE || h == nullptr) return;
 
-    DWORD mode = 0;
-    if (GetConsoleMode(h, &mode)) {
-        DWORD written = 0;
-        WriteConsoleW(h, line, (DWORD)wcslen(line), &written, nullptr);
-    } else {
-        DWORD written = 0;
-        WriteFile(h, line, (DWORD)(wcslen(line) * sizeof(wchar_t)), &written, nullptr);
-    }
+    DWORD written = 0;
+    WriteFile(h, utf8, len, &written, nullptr);
 }
 
-static void WriteLine(Level level, const wchar_t* message) {
+static void WriteLineUtf8(Level level, const wchar_t* wideMsg, const char* utf8Msg) {
     SYSTEMTIME st{};
     GetLocalTime(&st);
-
     DWORD tid = GetCurrentThreadId();
 
-    wchar_t line[4096]{};
+    // 构造宽字符完整行，仅供 OutputDebugStringW 使用
+    wchar_t wideLine[4096]{};
     _snwprintf_s(
-        line,
-        _countof(line),
+        wideLine,
+        _countof(wideLine),
         _TRUNCATE,
         L"%04u-%02u-%02u %02u:%02u:%02u.%03u [%s] [tid:%lu] %s\r\n",
-        st.wYear,
-        st.wMonth,
-        st.wDay,
-        st.wHour,
-        st.wMinute,
-        st.wSecond,
-        st.wMilliseconds,
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
         LevelToString(level),
         (unsigned long)tid,
-        message ? message : L""
+        wideMsg ? wideMsg : L""
     );
+    OutputDebugStringW(wideLine);
 
-    OutputDebugStringW(line);
-    WriteToConsole(line);
+    // 构造 UTF-8 完整行（单次转换，同时用于控制台和文件）
+    // 先用栈缓冲，超出时回退到堆分配
+    char stackBuf[8192];
+    int headerLen = _snprintf_s(
+        stackBuf, sizeof(stackBuf), _TRUNCATE,
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u [%s] [tid:%lu] ",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        // level 标签为纯 ASCII，直接窄字节写入
+        [level]() -> const char* {
+            switch (level) {
+            case Level::Debug: return "DEBUG";
+            case Level::Info:  return "INFO";
+            case Level::Warn:  return "WARN";
+            case Level::Error: return "ERROR";
+            case Level::Off:   return "OFF";
+            default:           return "?";
+            }
+        }(),
+        (unsigned long)tid
+    );
+    if (headerLen < 0) headerLen = 0;
+
+    // 追加消息体到栈缓冲（utf8Msg 已是 UTF-8）
+    const char* body = utf8Msg ? utf8Msg : "";
+    const size_t bodyLen = strlen(body);
+    const size_t tailLen = 2; // "\r\n"
+    const size_t totalLen = (size_t)headerLen + bodyLen + tailLen;
+
+    char* utf8Line = stackBuf;
+    std::string heapBuf;
+    if (totalLen + 1 > sizeof(stackBuf)) {
+        heapBuf.resize(totalLen + 1);
+        memcpy(heapBuf.data(), stackBuf, (size_t)headerLen);
+        utf8Line = heapBuf.data();
+    }
+    memcpy(utf8Line + headerLen, body, bodyLen);
+    utf8Line[headerLen + bodyLen]     = '\r';
+    utf8Line[headerLen + bodyLen + 1] = '\n';
+    utf8Line[headerLen + bodyLen + 2] = '\0';
+
+    WriteToConsoleUtf8(utf8Line, (DWORD)totalLen);
 
     // 使用持久化文件句柄，避免每条日志都 CreateFileW/CloseHandle
     if (g_logFileHandle == INVALID_HANDLE_VALUE) {
@@ -170,11 +219,18 @@ static void WriteLine(Level level, const wchar_t* message) {
             nullptr);
     }
     if (g_logFileHandle != INVALID_HANDLE_VALUE) {
-        // 写入 UTF-8 编码，使日志文件可被标准文本编辑器正常读取
-        std::string utf8Line = WideToUtf8(line);
         DWORD written = 0;
-        WriteFile(g_logFileHandle, utf8Line.data(), (DWORD)utf8Line.size(), &written, nullptr);
+        WriteFile(g_logFileHandle, utf8Line, (DWORD)totalLen, &written, nullptr);
     }
+}
+
+static void WriteLine(Level level, const wchar_t* message) {
+    // Wide→UTF-8 单次转换，结果复用于控制台和文件输出
+    char utf8Msg[4096];
+    const wchar_t* src = message ? message : L"";
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, src, -1, utf8Msg, (int)sizeof(utf8Msg), nullptr, nullptr);
+    if (utf8Len <= 0) utf8Msg[0] = '\0';
+    WriteLineUtf8(level, message, utf8Msg);
 }
 
 void Init() {
@@ -205,10 +261,12 @@ void Shutdown() {
         CloseHandle(g_logFileHandle);
         g_logFileHandle = INVALID_HANDLE_VALUE;
     }
-    if (g_consoleReady) {
+    if (g_consoleAttached) {
         FreeConsole();
-        g_consoleReady = false;
+        g_consoleAttached = false;
     }
+    g_consoleReady = false;
+    g_stderrHandle = INVALID_HANDLE_VALUE;
 }
 
 void SetLevel(Level level) {
@@ -240,6 +298,28 @@ void Logf(Level level, const wchar_t* fmt, ...) {
 
     std::lock_guard<std::mutex> lk(g_mutex);
     WriteLine(level, msg);
+}
+
+void Logf(Level level, const char* fmt, ...) {
+    if (!g_initialized.load()) {
+        Init();
+    }
+
+    if (!ShouldLog(level)) return;
+
+    // UTF-8 格式化到栈缓冲
+    char utf8Msg[2048]{};
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnprintf_s(utf8Msg, _countof(utf8Msg), _TRUNCATE, fmt ? fmt : "", ap);
+    va_end(ap);
+
+    // OutputDebugStringW 需要宽字符，按需转换一次；控制台和文件直接用 UTF-8
+    wchar_t wideMsg[2048]{};
+    MultiByteToWideChar(CP_UTF8, 0, utf8Msg, -1, wideMsg, _countof(wideMsg));
+
+    std::lock_guard<std::mutex> lk(g_mutex);
+    WriteLineUtf8(level, wideMsg, utf8Msg);
 }
 
 } // namespace Logger

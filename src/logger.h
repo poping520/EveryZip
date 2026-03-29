@@ -36,11 +36,17 @@ Level GetLevel();
 bool ShouldLog(Level level);
 
 /**
- * 使用格式化参数写入一条日志。
+ * 使用格式化参数写入一条日志（宽字节接口）。
  * @param level 日志级别。
  * @param fmt 宽字符串格式模板。
  */
 void Logf(Level level, const wchar_t* fmt, ...);
+/**
+ * 使用格式化参数写入一条日志（窄字节接口，格式串须为 UTF-8）。
+ * @param level 日志级别。
+ * @param fmt UTF-8 窄字符串格式模板。
+ */
+void Logf(Level level, const char* fmt, ...);
 
 } // namespace Logger
 
@@ -52,11 +58,34 @@ void Logf(Level level, const wchar_t* fmt, ...);
 #endif
 #endif
 
-#define LOG_INFO(...) ::Logger::Logf(::Logger::Level::Info, __VA_ARGS__)
-#define LOG_WARN(...) ::Logger::Logf(::Logger::Level::Warn, __VA_ARGS__)
+// 宽字节宏（W 后缀），格式串使用 L"..." 字面量
+#define LOG_INFO_W(...)  ::Logger::Logf(::Logger::Level::Info,  __VA_ARGS__)
+#define LOG_WARN_W(...)  ::Logger::Logf(::Logger::Level::Warn,  __VA_ARGS__)
+#define LOG_ERROR_W(...) ::Logger::Logf(::Logger::Level::Error, __VA_ARGS__)
+
+// 窄字节宏（A 后缀），格式串使用 UTF-8 字面量
+#define LOG_INFO_A(...)  ::Logger::Logf(::Logger::Level::Info,  __VA_ARGS__)
+#define LOG_WARN_A(...)  ::Logger::Logf(::Logger::Level::Warn,  __VA_ARGS__)
+#define LOG_ERROR_A(...) ::Logger::Logf(::Logger::Level::Error, __VA_ARGS__)
+
+// 默认宏（保持向后兼容，等价于宽字节版本）
+#define LOG_INFO(...)  ::Logger::Logf(::Logger::Level::Info,  __VA_ARGS__)
+#define LOG_WARN(...)  ::Logger::Logf(::Logger::Level::Warn,  __VA_ARGS__)
 #define LOG_ERROR(...) ::Logger::Logf(::Logger::Level::Error, __VA_ARGS__)
 
 #if EVERYARCHIVE_ENABLE_DEBUG_LOG
+#define LOG_DEBUG_W(...) \
+    do { \
+        if (::Logger::ShouldLog(::Logger::Level::Debug)) { \
+            ::Logger::Logf(::Logger::Level::Debug, __VA_ARGS__); \
+        } \
+    } while (0)
+#define LOG_DEBUG_A(...) \
+    do { \
+        if (::Logger::ShouldLog(::Logger::Level::Debug)) { \
+            ::Logger::Logf(::Logger::Level::Debug, __VA_ARGS__); \
+        } \
+    } while (0)
 #define LOG_DEBUG(...) \
     do { \
         if (::Logger::ShouldLog(::Logger::Level::Debug)) { \
@@ -64,5 +93,7 @@ void Logf(Level level, const wchar_t* fmt, ...);
         } \
     } while (0)
 #else
-#define LOG_DEBUG(...) do { } while (0)
+#define LOG_DEBUG_W(...) do { } while (0)
+#define LOG_DEBUG_A(...) do { } while (0)
+#define LOG_DEBUG(...)   do { } while (0)
 #endif

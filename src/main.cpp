@@ -37,7 +37,7 @@ static void EnsureCommonControls() {
  // 返回值：进程退出码。
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     Logger::Init();
-    LOG_INFO(L"wWinMain start");
+    LOG_INFO("wWinMain start");
 
     std::wstring exeDir = GetExeDir();
     std::wstring dbPath = exeDir + L"\\everyarchive.db";

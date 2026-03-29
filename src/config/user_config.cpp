@@ -15,7 +15,7 @@ using namespace AdvConfig;
 static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
 
 // 默认归档扩展名
-static const std::vector<std::wstring> kDefaultArchiveExtensions = { L".zip" };
+static const std::vector<std::wstring> kDefaultArchiveExtensions = { L".zip", L".rar" };
 
 UserConfig::UserConfig()
     : archiveExtensions_(kDefaultArchiveExtensions)

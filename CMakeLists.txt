@@ -35,36 +35,45 @@ add_executable(EveryArchive WIN32
         src/config/user_config.cpp
 
         src/parser/archive_parser.h
-        src/parser/zip_archive_parser.h
-        src/parser/zip_archive_parser.cpp
+        src/parser/libarchive_parser.h
+        src/parser/libarchive_parser.cpp
 
         external/sqlite/sqlite3.c
 )
 
 add_subdirectory(test)
-add_subdirectory(external/zlib)
 
-add_library(minizip STATIC
-        external/zlib/contrib/minizip/ioapi.c
-        external/zlib/contrib/minizip/iowin32.c
-        external/zlib/contrib/minizip/mztools.c
-        external/zlib/contrib/minizip/unzip.c
-)
-
-target_include_directories(minizip PUBLIC
-        external/zlib
-        external/zlib/contrib/minizip
-)
-
-target_link_libraries(minizip PUBLIC zlibstatic)
+# libarchive 静态编译，关闭所有外部可选依赖，仅使用内置解码器
+set(ENABLE_TEST           OFF CACHE BOOL "" FORCE)
+set(ENABLE_TAR            OFF CACHE BOOL "" FORCE)
+set(ENABLE_CPIO           OFF CACHE BOOL "" FORCE)
+set(ENABLE_CAT            OFF CACHE BOOL "" FORCE)
+set(ENABLE_UNZIP          OFF CACHE BOOL "" FORCE)
+set(ENABLE_INSTALL        OFF CACHE BOOL "" FORCE)
+set(ENABLE_OPENSSL        OFF CACHE BOOL "" FORCE)
+set(ENABLE_LIBB2          OFF CACHE BOOL "" FORCE)
+set(ENABLE_LZ4            OFF CACHE BOOL "" FORCE)
+set(ENABLE_LZO            OFF CACHE BOOL "" FORCE)
+set(ENABLE_LZMA           OFF CACHE BOOL "" FORCE)
+set(ENABLE_ZSTD           OFF CACHE BOOL "" FORCE)
+set(ENABLE_BZip2          OFF CACHE BOOL "" FORCE)
+set(ENABLE_LIBXML2        OFF CACHE BOOL "" FORCE)
+set(ENABLE_EXPAT          OFF CACHE BOOL "" FORCE)
+set(ENABLE_PCREPOSIX      OFF CACHE BOOL "" FORCE)
+set(ENABLE_LibGCC         OFF CACHE BOOL "" FORCE)
+set(ENABLE_CNG            OFF CACHE BOOL "" FORCE)
+set(ENABLE_MBEDTLS        OFF CACHE BOOL "" FORCE)
+set(ENABLE_NETTLE         OFF CACHE BOOL "" FORCE)
+set(ENABLE_ZLIB           ON  CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS     OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/libarchive)
 
 target_include_directories(EveryArchive PRIVATE
         external/sqlite
-        external/zlib
-        external/zlib/contrib/minizip
+        external/libarchive/libarchive
 )
 
-target_compile_definitions(EveryArchive PRIVATE UNICODE _UNICODE)
+target_compile_definitions(EveryArchive PRIVATE UNICODE _UNICODE LIBARCHIVE_STATIC)
 
 if(MSVC)
     target_compile_options(EveryArchive PRIVATE /utf-8)
@@ -79,5 +88,5 @@ endif()
 target_link_libraries(EveryArchive PRIVATE
         comctl32
         shlwapi
-        minizip
+        archive_static
 )

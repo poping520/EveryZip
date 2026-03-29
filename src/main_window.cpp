@@ -8,7 +8,7 @@
 #include <shlobj.h>
 
 #include "logger.h"
-#include "parser/zip_archive_parser.h"
+#include "parser/libarchive_parser.h"
 #include "resource.h"
 #include "string_utils.h"
 #include "tray_icon.h"
@@ -784,15 +784,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::thread([hWnd, archivePath, entryPathA, destDir]() {
                 auto* res = new ExtractResult();
                 res->destDir = destDir;
-                EveryArchive::ZipArchiveParser parser;
+                std::unique_ptr<EveryArchive::IArchiveParser> parser =
+                    std::make_unique<EveryArchive::LibArchiveParser>();
                 std::string err;
-                if (!parser.Open(archivePath, &err)) {
+                if (!parser->Open(archivePath, &err)) {
                     res->success  = false;
                     res->errorMsg = err;
                 } else {
-                    res->success = parser.ExtractEntry(entryPathA, destDir, &err);
+                    res->success = parser->ExtractEntry(entryPathA, destDir, &err);
                     if (!res->success) res->errorMsg = err;
-                    parser.Close();
+                    parser->Close();
                 }
                 PostMessageW(hWnd, WM_APP_EXTRACT_DONE, res->success ? 1 : 0, (LPARAM)res);
             }).detach();

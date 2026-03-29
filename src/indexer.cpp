@@ -3,8 +3,11 @@
 #include "logger.h"
 #include "resource.h"
 #include "string_utils.h"
-#include "parser/zip_archive_parser.h"
+#include "parser/libarchive_parser.h"
 
+#include <algorithm>
+#include <cwctype>
+#include <memory>
 #include <unordered_map>
 
 Indexer::Indexer() = default;
@@ -75,20 +78,32 @@ bool Indexer::EnablePrivilege(const wchar_t* privilegeName) {
 }
 
 void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
-    EveryArchive::ZipArchiveParser parser;
+    // 根据文件扩展名选择对应的解析器
+    std::wstring ext;
+    const size_t dotPos = a.filePath.find_last_of(L'.');
+    if (dotPos != std::wstring::npos) {
+        ext = a.filePath.substr(dotPos);
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+    }
+
+    std::unique_ptr<EveryArchive::IArchiveParser> parserPtr =
+        std::make_unique<EveryArchive::LibArchiveParser>();
+
     std::string perr;
-    if (!parser.Open(a.filePath, &perr)) {
-        LOG_WARN(L"ZipArchiveParser::Open failed: %s", Utf8ToWString(perr.c_str()).c_str());
+    if (!parserPtr->Open(a.filePath, &perr)) {
+        LOG_WARN(L"ArchiveParser::Open failed (%s): %s",
+                 a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
         return;
     }
 
     std::vector<EveryArchive::ArchiveEntry> parsed;
-    if (!parser.ListEntries(&parsed, &perr)) {
-        LOG_WARN(L"ZipArchiveParser::ListEntries failed: %s", Utf8ToWString(perr.c_str()).c_str());
-        parser.Close();
+    if (!parserPtr->ListEntries(&parsed, &perr)) {
+        LOG_WARN(L"ArchiveParser::ListEntries failed (%s): %s",
+                 a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
+        parserPtr->Close();
         return;
     }
-    parser.Close();
+    parserPtr->Close();
 
     int64_t archiveId = db.GetArchiveIdByPath(a.filePath);
     if (archiveId < 0) {

@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(EveryArchive LANGUAGES C CXX)
+project(EveryZip LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(EveryArchive WIN32
+add_executable(EveryZip WIN32
         src/resource.h
         src/strings.rc
         src/main.cpp
@@ -35,58 +35,51 @@ add_executable(EveryArchive WIN32
         src/config/user_config.cpp
 
         src/parser/archive_parser.h
-        src/parser/libarchive_parser.h
-        src/parser/libarchive_parser.cpp
+        src/parser/zip_archive_parser.h
+        src/parser/zip_archive_parser.cpp
+        # src/parser/libarchive_parser.h
+        # src/parser/libarchive_parser.cpp
 
         external/sqlite/sqlite3.c
 )
 
 add_subdirectory(test)
+add_subdirectory(external/zlib)
 
-# libarchive 静态编译，关闭所有外部可选依赖，仅使用内置解码器
-set(ENABLE_TEST           OFF CACHE BOOL "" FORCE)
-set(ENABLE_TAR            OFF CACHE BOOL "" FORCE)
-set(ENABLE_CPIO           OFF CACHE BOOL "" FORCE)
-set(ENABLE_CAT            OFF CACHE BOOL "" FORCE)
-set(ENABLE_UNZIP          OFF CACHE BOOL "" FORCE)
-set(ENABLE_INSTALL        OFF CACHE BOOL "" FORCE)
-set(ENABLE_OPENSSL        OFF CACHE BOOL "" FORCE)
-set(ENABLE_LIBB2          OFF CACHE BOOL "" FORCE)
-set(ENABLE_LZ4            OFF CACHE BOOL "" FORCE)
-set(ENABLE_LZO            OFF CACHE BOOL "" FORCE)
-set(ENABLE_LZMA           OFF CACHE BOOL "" FORCE)
-set(ENABLE_ZSTD           OFF CACHE BOOL "" FORCE)
-set(ENABLE_BZip2          OFF CACHE BOOL "" FORCE)
-set(ENABLE_LIBXML2        OFF CACHE BOOL "" FORCE)
-set(ENABLE_EXPAT          OFF CACHE BOOL "" FORCE)
-set(ENABLE_PCREPOSIX      OFF CACHE BOOL "" FORCE)
-set(ENABLE_LibGCC         OFF CACHE BOOL "" FORCE)
-set(ENABLE_CNG            OFF CACHE BOOL "" FORCE)
-set(ENABLE_MBEDTLS        OFF CACHE BOOL "" FORCE)
-set(ENABLE_NETTLE         OFF CACHE BOOL "" FORCE)
-set(ENABLE_ZLIB           ON  CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS     OFF CACHE BOOL "" FORCE)
-add_subdirectory(external/libarchive)
-
-target_include_directories(EveryArchive PRIVATE
-        external/sqlite
-        external/libarchive/libarchive
+add_library(minizip STATIC
+        external/zlib/contrib/minizip/ioapi.c
+        external/zlib/contrib/minizip/iowin32.c
+        external/zlib/contrib/minizip/mztools.c
+        external/zlib/contrib/minizip/unzip.c
 )
 
-target_compile_definitions(EveryArchive PRIVATE UNICODE _UNICODE LIBARCHIVE_STATIC)
+target_include_directories(minizip PUBLIC
+        external/zlib
+        external/zlib/contrib/minizip
+)
+
+target_link_libraries(minizip PUBLIC zlibstatic)
+
+target_include_directories(EveryZip PRIVATE
+        external/sqlite
+        external/zlib
+        external/zlib/contrib/minizip
+)
+
+target_compile_definitions(EveryZip PRIVATE UNICODE _UNICODE)
 
 if(MSVC)
-    target_compile_options(EveryArchive PRIVATE /utf-8)
+    target_compile_options(EveryZip PRIVATE /utf-8)
 endif()
 
 if(MSVC)
     # manifest 已通过 RC 文件嵌入（strings.rc: 1 RT_MANIFEST "app.manifest"），
     # 禁止链接器自动生成并合并 manifest，避免覆盖 DPI 感知声明
-    target_link_options(EveryArchive PRIVATE /MANIFEST:NO)
+    target_link_options(EveryZip PRIVATE /MANIFEST:NO)
 endif()
 
-target_link_libraries(EveryArchive PRIVATE
+target_link_libraries(EveryZip PRIVATE
         comctl32
         shlwapi
-        archive_static
+        minizip
 )

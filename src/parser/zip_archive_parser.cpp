@@ -11,7 +11,7 @@ extern "C" {
 #include "unzip.h"
 }
 
-namespace EveryArchive {
+namespace EveryZip {
 
  // 判断归档条目名是否以目录分隔符结尾，以识别目录项。
  // 参数：s - 归档内原始条目名称。
@@ -265,4 +265,4 @@ bool ZipArchiveParser::ExtractEntry(const std::string& entry_path,
     return ok;
 }
 
-} // namespace EveryArchive
+} // namespace EveryZip

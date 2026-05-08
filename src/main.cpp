@@ -16,8 +16,8 @@ name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 
-static constexpr wchar_t kAppClassName[] = L"EveryArchiveMainWindow";
-static constexpr wchar_t kAppTitle[] = L"EveryArchive";
+static constexpr wchar_t kAppClassName[] = L"EveryZipMainWindow";
+static constexpr wchar_t kAppTitle[] = L"EveryZip";
 
  // 初始化程序依赖的公共控件类，确保 ListView、状态栏和进度条可用。
  // 参数：无。
@@ -37,7 +37,7 @@ static void EnsureCommonControls() {
  // 返回值：进程退出码。
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     // 单实例检测：创建命名 Mutex，已存在说明有实例在运行
-    static constexpr wchar_t kMutexName[] = L"EveryArchive_SingleInstance_Mutex";
+    static constexpr wchar_t kMutexName[] = L"EveryZip_SingleInstance_Mutex";
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
         // 已有实例：找到其主窗口并激活显示
@@ -58,8 +58,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     LOG_INFO("wWinMain start");
 
     std::wstring exeDir = GetExeDir();
-    std::wstring dbPath = exeDir + L"\\everyarchive.db";
-    std::wstring configPath = exeDir + L"\\everyarchive.cfg";
+    std::wstring dbPath = exeDir + L"\\everyzip.db";
+    std::wstring configPath = exeDir + L"\\everyzip.cfg";
 
     // 加载用户配置文件（独立于数据库，不随数据库删除而丢失）
     UserConfig config;

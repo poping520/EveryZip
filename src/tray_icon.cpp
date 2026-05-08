@@ -15,7 +15,7 @@ void AddTrayIcon(HWND hWnd, UINT uID, UINT uCallbackMessage) {
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = uCallbackMessage;
     g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(g_nid.szTip, L"EveryArchive");
+    wcscpy_s(g_nid.szTip, L"EveryZip");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
 

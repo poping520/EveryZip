@@ -8,7 +8,7 @@
 #include <cstring>
 #include <ctime>
 
-namespace EveryArchive {
+namespace EveryZip {
 
 // 将宽字符串转换为 UTF-8 窄字符串
 static std::string WStringToUtf8(const std::wstring& w) {
@@ -226,4 +226,4 @@ bool LibArchiveParser::ExtractEntry(const std::string& entry_path,
     return ok;
 }
 
-} // namespace EveryArchive
+} // namespace EveryZip

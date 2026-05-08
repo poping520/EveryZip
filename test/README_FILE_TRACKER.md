@@ -48,7 +48,7 @@ run_test.bat
 #### 方法 2: 直接运行
 ```bash
 # 以管理员身份打开 PowerShell 或命令提示符
-cd C:\Users\123\Desktop\EveryArchive
+cd C:\Users\123\Desktop\EveryZip
 .\build\test\Release\TestFileTracker.exe
 ```
 

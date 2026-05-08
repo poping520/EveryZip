@@ -75,13 +75,13 @@ static void EnsureLogFilePathInitialized() {
     wchar_t tempPath[MAX_PATH]{};
     DWORD len = GetTempPathW((DWORD)(sizeof(tempPath) / sizeof(tempPath[0])), tempPath);
     if (len == 0 || len >= (DWORD)(sizeof(tempPath) / sizeof(tempPath[0]))) {
-        g_logFilePath = L"EveryArchive.log";
+        g_logFilePath = L"everyzip.log";
         return;
     }
 
     wchar_t path[MAX_PATH]{};
-    if (!PathCombineW(path, tempPath, L"EveryArchive.log")) {
-        g_logFilePath = L"EveryArchive.log";
+    if (!PathCombineW(path, tempPath, L"everyzip.log")) {
+        g_logFilePath = L"everyzip.log";
         return;
     }
 
@@ -91,7 +91,7 @@ static void EnsureLogFilePathInitialized() {
 static void EnsureConsoleReady() {
     if (g_consoleReady) return;
 
-    const std::wstring mode = ToLower(GetEnvVar(L"EVERYARCHIVE_LOG_CONSOLE"));
+    const std::wstring mode = ToLower(GetEnvVar(L"EVERYZIP_LOG_CONSOLE"));
     g_consoleExplicit = !mode.empty();
 
     if (mode == L"0" || mode == L"false" || mode == L"off" || mode == L"no") {
@@ -243,7 +243,7 @@ void Init() {
     g_level.store(Level::Debug);
 #endif
 
-    const std::wstring levelEnv = GetEnvVar(L"EVERYARCHIVE_LOG_LEVEL");
+    const std::wstring levelEnv = GetEnvVar(L"EVERYZIP_LOG_LEVEL");
     if (!levelEnv.empty()) {
         g_level.store(ParseLevel(levelEnv));
     }

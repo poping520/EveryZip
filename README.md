@@ -1,4 +1,4 @@
-# EveryArchive
+# EveryZip
 
 快速检索本机所有归档文件（zip 等）内部条目的桌面工具，类似 Everything 的体验。
 
@@ -24,7 +24,7 @@ cmake --build build --config Debug
 ## 技术栈
 
 - **语言**: C++17 / Win32 API
-- **数据库**: SQLite（嵌入式，单文件 `everyarchive.db`）
+- **数据库**: SQLite（嵌入式，单文件 `everyzip.db`）
 - **归档解析**: minizip（基于 zlib）
 - **UI**: Win32 ListView（虚拟列表模式）+ 状态栏 + 系统托盘
 

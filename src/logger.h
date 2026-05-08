@@ -50,11 +50,11 @@ void Logf(Level level, const char* fmt, ...);
 
 } // namespace Logger
 
-#ifndef EVERYARCHIVE_ENABLE_DEBUG_LOG
+#ifndef EVERYZIP_ENABLE_DEBUG_LOG
 #if defined(NDEBUG)
-#define EVERYARCHIVE_ENABLE_DEBUG_LOG 0
+#define EVERYZIP_ENABLE_DEBUG_LOG 0
 #else
-#define EVERYARCHIVE_ENABLE_DEBUG_LOG 1
+#define EVERYZIP_ENABLE_DEBUG_LOG 1
 #endif
 #endif
 
@@ -73,7 +73,7 @@ void Logf(Level level, const char* fmt, ...);
 #define LOG_WARN(...)  ::Logger::Logf(::Logger::Level::Warn,  __VA_ARGS__)
 #define LOG_ERROR(...) ::Logger::Logf(::Logger::Level::Error, __VA_ARGS__)
 
-#if EVERYARCHIVE_ENABLE_DEBUG_LOG
+#if EVERYZIP_ENABLE_DEBUG_LOG
 #define LOG_DEBUG_W(...) \
     do { \
         if (::Logger::ShouldLog(::Logger::Level::Debug)) { \

@@ -41,7 +41,7 @@ STRINGTABLE
     IDS_STATUS_ARCHIVE_COUNT,"归档文件"
     // 对话框
     IDS_ABOUT_TITLE,        "关于"
-    IDS_ABOUT_TEXT,         "EveryArchive"
+    IDS_ABOUT_TEXT,         "EveryZip"
     IDS_ERROR,              "错误"
     IDS_DBLCLICK_PLACEHOLDER,"双击（占位功能）"
     // 右键菜单
@@ -92,7 +92,7 @@ STRINGTABLE
     IDS_STATUS_ARCHIVE_COUNT,"Archives"
     // Dialogs
     IDS_ABOUT_TITLE,        "About"
-    IDS_ABOUT_TEXT,         "EveryArchive"
+    IDS_ABOUT_TEXT,         "EveryZip"
     IDS_ERROR,              "Error"
     IDS_DBLCLICK_PLACEHOLDER,"Double click (placeholder)"
     // Context menu

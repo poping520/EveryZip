@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace EveryArchive {
+namespace EveryZip {
 
 struct ArchiveEntry {
     std::string name;
@@ -71,4 +71,4 @@ public:
                               std::string* error) = 0;
 };
 
-} // namespace EveryArchive
+} // namespace EveryZip

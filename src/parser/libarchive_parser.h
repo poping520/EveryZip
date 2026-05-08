@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace EveryArchive {
+namespace EveryZip {
 
 /**
  * 基于 libarchive 的统一归档解析器，支持 zip、rar、7z、tar 等格式。
@@ -30,4 +30,4 @@ private:
     std::wstring archive_path_;
 };
 
-} // namespace EveryArchive
+} // namespace EveryZip

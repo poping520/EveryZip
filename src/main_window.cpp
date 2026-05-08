@@ -12,6 +12,7 @@
 #include "resource.h"
 #include "string_utils.h"
 #include "tray_icon.h"
+#include "parser/zip_archive_parser.h"
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -29,7 +30,7 @@ std::wstring LS(HINSTANCE hInstance, UINT id) {
 }
 
 // ── Spinner 自绘窗口类名 ──
-static constexpr wchar_t kSpinnerClass[] = L"EveryArchiveSpinner";
+static constexpr wchar_t kSpinnerClass[] = L"EveryZipSpinner";
 
 // Spinner 窗口过程：自绘旋转圆弧动画
 static LRESULT CALLBACK SpinnerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -793,8 +794,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::thread([hWnd, archivePath, entryPathA, destDir]() {
                 auto* res = new ExtractResult();
                 res->destDir = destDir;
-                std::unique_ptr<EveryArchive::IArchiveParser> parser =
-                    std::make_unique<EveryArchive::LibArchiveParser>();
+                std::unique_ptr<EveryZip::IArchiveParser> parser =
+                    std::make_unique<EveryZip::ZipArchiveParser>();
                 std::string err;
                 if (!parser->Open(archivePath, &err)) {
                     res->success  = false;

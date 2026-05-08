@@ -10,6 +10,8 @@
 #include <memory>
 #include <unordered_map>
 
+#include "parser/zip_archive_parser.h"
+
 Indexer::Indexer() = default;
 
 Indexer::~Indexer() {
@@ -86,8 +88,8 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
         std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
     }
 
-    std::unique_ptr<EveryArchive::IArchiveParser> parserPtr =
-        std::make_unique<EveryArchive::LibArchiveParser>();
+    std::unique_ptr<EveryZip::IArchiveParser> parserPtr =
+        std::make_unique<EveryZip::ZipArchiveParser>();
 
     std::string perr;
     if (!parserPtr->Open(a.filePath, &perr)) {
@@ -96,7 +98,7 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
         return;
     }
 
-    std::vector<EveryArchive::ArchiveEntry> parsed;
+    std::vector<EveryZip::ArchiveEntry> parsed;
     if (!parserPtr->ListEntries(&parsed, &perr)) {
         LOG_WARN(L"ArchiveParser::ListEntries failed (%s): %s",
                  a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());

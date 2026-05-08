@@ -4,7 +4,7 @@
 
 #include "archive_parser.h"
 
-namespace EveryArchive {
+namespace EveryZip {
 
 class ZipArchiveParser final : public IArchiveParser {
 public:
@@ -60,4 +60,4 @@ private:
     std::wstring archive_path_;
 };
 
-} // namespace EveryArchive
+} // namespace EveryZip

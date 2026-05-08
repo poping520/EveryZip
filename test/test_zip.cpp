@@ -18,12 +18,12 @@ int main(int argc, char* argv[]) {
 
     std::wstring testFile = L"C:\\Users\\123\\Desktop\\apk\\com.guomilive.xtkj.apk";
 
-    EveryArchive::ZipArchiveParser parser;
+    EveryZip::ZipArchiveParser parser;
 
     std::string err;
     parser.Open(testFile, &err);
 
-    std::vector<EveryArchive::ArchiveEntry> entries;
+    std::vector<EveryZip::ArchiveEntry> entries;
     parser.ListEntries(&entries, &err);
 
     for (const auto& entry : entries) {

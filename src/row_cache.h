@@ -15,6 +15,7 @@ struct CachedRow {
     std::wstring name;
     std::wstring archivePath;
     std::wstring entryPath;
+    std::string entryRawPath;
     std::wstring sizeStr;       // 格式化后的压缩大小
     std::wstring origSizeStr;   // 格式化后的原始大小
     int iconIndex = 0;

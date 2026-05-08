@@ -122,6 +122,7 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
         ArchiveEntry_t out;
         out.archiveId = archiveId;
         out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
+        out.entryRawPath = e.name;
         out.compressed_size = e.compressed_size;
         out.uncompressed_size = e.uncompressed_size;
         entries.push_back(std::move(out));

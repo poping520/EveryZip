@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "database.h"
@@ -26,6 +27,7 @@ std::wstring LS(HINSTANCE hInstance, UINT id);
 
 // ── 异步加载结果（后台线程只查询 rowid 列表，传递到 UI 线程）──
 struct AsyncLoadResult {
+    uint64_t generation = 0;
     std::vector<int64_t> rowIds;
     int64_t archiveCount = 0;
     int64_t entryCount = 0;
@@ -78,6 +80,11 @@ struct MainWindowState {
 
     // 标记是否有行数据加载失败，需要延迟重试刷新列表
     bool needsListRetry = false;
+
+    std::atomic_bool shuttingDown{ false };
+    std::atomic_uint64_t loadGeneration{ 0 };
+    std::mutex asyncThreadsMutex;
+    std::vector<std::thread> asyncThreads;
 };
 
 // 主窗口过程

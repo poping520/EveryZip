@@ -54,6 +54,32 @@ static std::wstring ToWideBestEffort(const std::string& s, bool isUtf8) {
     }
 }
 
+static bool GetCurrentFileInfoWithName(unzFile handle,
+                                       unz_file_info64* info,
+                                       std::string* name,
+                                       std::string* error) {
+    if (!info || !name) {
+        if (error) *error = "invalid output argument";
+        return false;
+    }
+
+    int rc = unzGetCurrentFileInfo64(handle, info, nullptr, 0, nullptr, 0, nullptr, 0);
+    if (rc != UNZ_OK) {
+        if (error) *error = "unzGetCurrentFileInfo64 failed";
+        return false;
+    }
+
+    std::vector<char> namebuf((size_t)info->size_filename + 1, '\0');
+    rc = unzGetCurrentFileInfo64(handle, info, namebuf.data(), (uLong)namebuf.size(), nullptr, 0, nullptr, 0);
+    if (rc != UNZ_OK) {
+        if (error) *error = "unzGetCurrentFileInfo64 failed";
+        return false;
+    }
+
+    name->assign(namebuf.data(), info->size_filename);
+    return true;
+}
+
 ZipArchiveParser::ZipArchiveParser() = default;
 
 ZipArchiveParser::~ZipArchiveParser() {
@@ -119,17 +145,10 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
 
     while (rc == UNZ_OK) {
         unz_file_info64 info{};
-        std::vector<char> namebuf;
-        namebuf.resize(4096);
-
-        rc = unzGetCurrentFileInfo64((unzFile)handle_, &info, namebuf.data(), (uLong)namebuf.size(), nullptr, 0, nullptr, 0);
-        if (rc != UNZ_OK) {
-            if (error) *error = "unzGetCurrentFileInfo64 failed";
+        std::string name;
+        if (!GetCurrentFileInfoWithName((unzFile)handle_, &info, &name, error)) {
             return false;
         }
-
-        namebuf.back() = '\0';
-        std::string name(namebuf.data());
 
         const bool isUtf8 = (info.flag & 0x800) != 0;
         ArchiveEntry e;
@@ -185,14 +204,10 @@ bool ZipArchiveParser::ExtractEntry(const std::string& entry_path,
 
     // 获取条目信息（用于判断是否目录）
     unz_file_info64 info{};
-    char namebuf[4096]{};
-    rc = unzGetCurrentFileInfo64((unzFile)handle_, &info, namebuf, sizeof(namebuf) - 1, nullptr, 0, nullptr, 0);
-    if (rc != UNZ_OK) {
-        if (error) *error = "unzGetCurrentFileInfo64 failed";
+    std::string name;
+    if (!GetCurrentFileInfoWithName((unzFile)handle_, &info, &name, error)) {
         return false;
     }
-
-    std::string name(namebuf);
     if (EndsWithSlash(name)) {
         // 纯目录条目，直接创建目录即可
         const bool isUtf8dir = (info.flag & 0x800) != 0;

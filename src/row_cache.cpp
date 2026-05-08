@@ -50,6 +50,7 @@ const CachedRow* RowCache::Get(int64_t rowId) {
     cr.name = GetEntryNameFromPath(entry.entryPath);
     cr.archivePath = entry.archivePath;
     cr.entryPath = entry.entryPath;
+    cr.entryRawPath = entry.entryRawPath;
     cr.sizeStr = FormatSizeULongLong((ULONGLONG)entry.compressed_size);
     cr.origSizeStr = FormatSizeULongLong((ULONGLONG)entry.uncompressed_size);
     cr.iconIndex = iconCache_ ? iconCache_->GetFileIconIndex(cr.name) : 0;

@@ -147,6 +147,32 @@ static MainWindowState* GetState(HWND hWnd) {
     return (MainWindowState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
 }
 
+static void TrackAsyncThread(MainWindowState* s, std::thread&& worker) {
+    std::lock_guard<std::mutex> lk(s->asyncThreadsMutex);
+    s->asyncThreads.push_back(std::move(worker));
+}
+
+static void JoinAsyncThreads(MainWindowState* s) {
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lk(s->asyncThreadsMutex);
+        threads.swap(s->asyncThreads);
+    }
+    for (auto& t : threads) {
+        if (t.joinable()) t.join();
+    }
+}
+
+static void DrainAsyncResultMessages(HWND hWnd) {
+    MSG msg{};
+    while (PeekMessageW(&msg, hWnd, WM_APP_ROWS_READY, WM_APP_ROWS_READY, PM_REMOVE)) {
+        delete (AsyncLoadResult*)msg.lParam;
+    }
+    while (PeekMessageW(&msg, hWnd, WM_APP_EXTRACT_DONE, WM_APP_EXTRACT_DONE, PM_REMOVE)) {
+        delete (ExtractResult*)msg.lParam;
+    }
+}
+
 // 获取窗口所在显示器的 DPI（Win8.1+ 返回真实值，否则回退到系统 DPI）
 static UINT GetWindowDpi(HWND hWnd) {
     using FnGetDpiForWindow = UINT(WINAPI*)(HWND);
@@ -384,15 +410,19 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
     std::wstring dbPath = s->dbPath;
     int sortCol = s->sortColumn;
     bool sortAsc = s->sortAscending;
+    uint64_t generation = ++s->loadGeneration;
 
-    std::thread([hWnd, filter = std::move(filter), dbPath = std::move(dbPath), sortCol, sortAsc]() {
+    TrackAsyncThread(s, std::thread([hWnd, s, filter = std::move(filter), dbPath = std::move(dbPath), sortCol, sortAsc, generation]() {
         auto* result = new AsyncLoadResult();
+        result->generation = generation;
 
         std::wstring err;
         Database db;
         if (!db.Open(dbPath, &err)) {
             LOG_WARN(L"Database::Open failed: %s", err.c_str());
-            PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result);
+            if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
+                delete result;
+            }
             return;
         }
 
@@ -401,15 +431,19 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
         // 只查询 rowid 列表（36万条 ≈ 3MB，而非 1.4GB 的完整数据）
         if (!db.QueryEntryIds(filter, sortCol, sortAsc, &result->rowIds, &err)) {
             LOG_WARN(L"QueryEntryIds failed: %s", err.c_str());
-            PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result);
+            if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
+                delete result;
+            }
             return;
         }
 
         result->entryCount = (int64_t)result->rowIds.size();
         result->archiveCount = db.GetArchiveCount();
 
-        PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result);
-    }).detach();
+        if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
+            delete result;
+        }
+    }));
 }
 
 // 更新底部状态栏（显示索引状态、文件数量和归档文件数量）
@@ -763,8 +797,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::wstring entryPath   = cr->entryPath;
 
             // 将 entryPath（宽字符）转为 UTF-8 窄字符串，供 minizip 使用
-            std::string entryPathA;
-            {
+            std::string entryPathA = cr->entryRawPath;
+            if (entryPathA.empty()) {
                 int need = WideCharToMultiByte(CP_UTF8, 0, entryPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
                 if (need > 0) {
                     entryPathA.resize(need - 1);
@@ -791,7 +825,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::wstring destDir = destBuf;
 
             // 后台线程异步解压，完成后 PostMessage 通知 UI
-            std::thread([hWnd, archivePath, entryPathA, destDir]() {
+            TrackAsyncThread(s, std::thread([hWnd, s, archivePath, entryPathA, destDir]() {
                 auto* res = new ExtractResult();
                 res->destDir = destDir;
                 std::unique_ptr<EveryZip::IArchiveParser> parser =
@@ -805,8 +839,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (!res->success) res->errorMsg = err;
                     parser->Close();
                 }
-                PostMessageW(hWnd, WM_APP_EXTRACT_DONE, res->success ? 1 : 0, (LPARAM)res);
-            }).detach();
+                if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_EXTRACT_DONE, res->success ? 1 : 0, (LPARAM)res)) {
+                    delete res;
+                }
+            }));
             return 0;
         }
         case IDM_CTX_COPY_NAME:
@@ -896,6 +932,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // 后台线程查询完成，交换 rowid 列表到 UI 线程
         auto* result = (AsyncLoadResult*)lParam;
         if (result) {
+            if (s->shuttingDown.load() || result->generation != s->loadGeneration.load()) {
+                delete result;
+                return 0;
+            }
             {
                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                 s->rowIds = std::move(result->rowIds);
@@ -1143,11 +1183,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_DESTROY: // 窗口销毁：移除托盘图标、停止索引、关闭数据库、释放字体资源
         LOG_INFO(L"WM_DESTROY");
+        s->shuttingDown.store(true);
+        ++s->loadGeneration;
         RemoveTrayIcon();
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         KillTimer(hWnd, IDT_SEARCH_DEBOUNCE);
         KillTimer(hWnd, IDT_LIST_RETRY);
         s->indexer.Stop();
+        JoinAsyncThreads(s);
+        DrainAsyncResultMessages(hWnd);
         s->rowCache.Close();
         if (s->hSearchFont) { DeleteObject(s->hSearchFont); s->hSearchFont = nullptr; }
         if (s->hNormalFont) { DeleteObject(s->hNormalFont); s->hNormalFont = nullptr; }

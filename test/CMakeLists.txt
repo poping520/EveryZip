@@ -26,6 +26,14 @@ add_executable(TestSevenZip
         ../src/string_utils.cpp
 )
 
+add_executable(TestRar
+        test_rar.cpp
+        ../src/parser/archive_parser.h
+        ../src/parser/rar_archive_parser.h
+        ../src/parser/rar_archive_parser.cpp
+        ../src/string_utils.cpp
+)
+
 add_executable(TestUsnScan
         test_usn_scan.cpp
 )
@@ -64,6 +72,15 @@ target_include_directories(TestSevenZip PRIVATE
         ../external/7zip/C
 )
 
+target_link_libraries(TestRar PRIVATE
+        unrar_static
+)
+
+target_include_directories(TestRar PRIVATE
+        ../src
+        ../external/unrar
+)
+
 target_include_directories(TestFileTracker PRIVATE
         ../external/sqlite
 )
@@ -90,10 +107,12 @@ target_link_libraries(TestConfig PRIVATE
 target_compile_definitions(TestConfig PRIVATE UNICODE _UNICODE)
 
 target_compile_definitions(TestSevenZip PRIVATE UNICODE _UNICODE)
+target_compile_definitions(TestRar PRIVATE UNICODE _UNICODE)
 target_compile_definitions(TestFileTracker PRIVATE UNICODE _UNICODE)
 
 everyzip_configure_test_target(TestZip)
 everyzip_configure_test_target(TestSevenZip)
+everyzip_configure_test_target(TestRar)
 everyzip_configure_test_target(TestUsnScan)
 everyzip_configure_test_target(TestMftScan)
 everyzip_configure_test_target(TestFileTracker)

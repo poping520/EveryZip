@@ -16,7 +16,7 @@ static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
 
 // 默认归档扩展名
 static const std::vector<std::wstring> kDefaultArchiveExtensions = {
-    L".zip", L".apk", L".7z"
+    L".zip", L".apk", L".7z", L".rar"
 };
 
 UserConfig::UserConfig()
@@ -26,11 +26,18 @@ UserConfig::UserConfig()
 
 UserConfig::~UserConfig() = default;
 
-static bool IsOldDefaultExtensions(const std::vector<std::wstring>& exts)
+static bool HasExtension(const std::vector<std::wstring>& exts, const std::wstring& ext)
 {
-    return exts.size() == 2 &&
-           std::find(exts.begin(), exts.end(), L".zip") != exts.end() &&
-           std::find(exts.begin(), exts.end(), L".apk") != exts.end();
+    return std::find(exts.begin(), exts.end(), ext) != exts.end();
+}
+
+static bool IsDefaultExtensionsBeforeRar(const std::vector<std::wstring>& exts)
+{
+    const bool hasZip = HasExtension(exts, L".zip");
+    const bool hasApk = HasExtension(exts, L".apk");
+    const bool has7z = HasExtension(exts, L".7z");
+    return (exts.size() == 2 && hasZip && hasApk) ||
+           (exts.size() == 3 && hasZip && hasApk && has7z);
 }
 
 const std::vector<std::wstring>& UserConfig::GetArchiveExtensions() const
@@ -87,8 +94,11 @@ void UserConfig::SyncFromParser()
         }
     }
 
-    if (parsedConfig && IsOldDefaultExtensions(archiveExtensions_)) {
-        archiveExtensions_.push_back(L".7z");
+    if (parsedConfig && IsDefaultExtensionsBeforeRar(archiveExtensions_)) {
+        if (!HasExtension(archiveExtensions_, L".7z")) {
+            archiveExtensions_.push_back(L".7z");
+        }
+        archiveExtensions_.push_back(L".rar");
         SyncToParser();
         configMigrated_ = true;
     }

@@ -75,5 +75,5 @@ public:
                                const std::vector<std::wstring>* extensions = nullptr);
 
 private:
-    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".apk", L".7z" };
+    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".apk", L".7z", L".rar" };
 };

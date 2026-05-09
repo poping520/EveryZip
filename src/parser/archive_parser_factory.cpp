@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cwctype>
 
+#include "rar_archive_parser.h"
 #include "sevenzip_archive_parser.h"
 #include "zip_archive_parser.h"
 
@@ -22,6 +23,9 @@ std::unique_ptr<IArchiveParser> CreateArchiveParserForPath(const std::wstring& a
     const std::wstring ext = GetLowerExtension(archive_path);
     if (ext == L".7z") {
         return std::make_unique<SevenZipArchiveParser>();
+    }
+    if (ext == L".rar") {
+        return std::make_unique<RarArchiveParser>();
     }
     if (ext == L".zip" || ext == L".apk") {
         return std::make_unique<ZipArchiveParser>();

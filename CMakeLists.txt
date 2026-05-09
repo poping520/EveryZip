@@ -44,6 +44,8 @@ add_executable(EveryZip WIN32
         src/parser/zip_archive_parser.cpp
         src/parser/sevenzip_archive_parser.h
         src/parser/sevenzip_archive_parser.cpp
+        src/parser/rar_archive_parser.h
+        src/parser/rar_archive_parser.cpp
         # src/parser/libarchive_parser.h
         # src/parser/libarchive_parser.cpp
 
@@ -97,11 +99,86 @@ target_compile_definitions(sevenzip_c PUBLIC
         USE_C_CRC
 )
 
+add_library(unrar_static STATIC
+        external/unrar/rar.cpp
+        external/unrar/strlist.cpp
+        external/unrar/strfn.cpp
+        external/unrar/pathfn.cpp
+        external/unrar/smallfn.cpp
+        external/unrar/global.cpp
+        external/unrar/file.cpp
+        external/unrar/filefn.cpp
+        external/unrar/filcreat.cpp
+        external/unrar/archive.cpp
+        external/unrar/arcread.cpp
+        external/unrar/unicode.cpp
+        external/unrar/system.cpp
+        external/unrar/crypt.cpp
+        external/unrar/crc.cpp
+        external/unrar/rawread.cpp
+        external/unrar/encname.cpp
+        external/unrar/resource.cpp
+        external/unrar/match.cpp
+        external/unrar/timefn.cpp
+        external/unrar/rdwrfn.cpp
+        external/unrar/consio.cpp
+        external/unrar/options.cpp
+        external/unrar/errhnd.cpp
+        external/unrar/rarvm.cpp
+        external/unrar/secpassword.cpp
+        external/unrar/rijndael.cpp
+        external/unrar/getbits.cpp
+        external/unrar/sha1.cpp
+        external/unrar/sha256.cpp
+        external/unrar/blake2s.cpp
+        external/unrar/hash.cpp
+        external/unrar/extinfo.cpp
+        external/unrar/extract.cpp
+        external/unrar/volume.cpp
+        external/unrar/list.cpp
+        external/unrar/find.cpp
+        external/unrar/unpack.cpp
+        external/unrar/headers.cpp
+        external/unrar/threadpool.cpp
+        external/unrar/rs16.cpp
+        external/unrar/cmddata.cpp
+        external/unrar/ui.cpp
+        external/unrar/largepage.cpp
+        external/unrar/isnt.cpp
+        external/unrar/motw.cpp
+        external/unrar/filestr.cpp
+        external/unrar/scantree.cpp
+        external/unrar/dll.cpp
+        external/unrar/qopen.cpp
+)
+
+target_include_directories(unrar_static PUBLIC
+        external/unrar
+)
+
+target_compile_definitions(unrar_static PRIVATE
+        RARDLL
+        UNICODE
+        _UNICODE
+)
+
+if(MSVC)
+    target_compile_options(unrar_static PRIVATE /utf-8)
+endif()
+
+target_link_libraries(unrar_static PUBLIC
+        shlwapi
+        powrprof
+        psapi
+        wbemuuid
+)
+
 target_include_directories(EveryZip PRIVATE
         external/sqlite
         external/zlib
         external/zlib/contrib/minizip
         external/7zip/C
+        external/unrar
 )
 
 target_compile_definitions(EveryZip PRIVATE UNICODE _UNICODE)
@@ -121,6 +198,7 @@ target_link_libraries(EveryZip PRIVATE
         shlwapi
         minizip
         sevenzip_c
+        unrar_static
 )
 
 add_subdirectory(test)

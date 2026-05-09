@@ -2,17 +2,17 @@
 
 ## 总体状态
 
-项目已经形成可运行的 Windows 桌面 MVP 骨架：启动后创建主窗口和数据库，后台扫描 NTFS 盘中的目标归档文件，解析 ZIP/APK 内部条目并写入 SQLite，前台通过虚拟 ListView 搜索、排序和展示结果。后台还具备基于 USN Journal 的增量监控循环。
+项目已经形成可运行的 Windows 桌面 MVP 骨架：启动后创建主窗口和数据库，后台扫描 NTFS 盘中的目标归档文件，解析 ZIP/APK/7z 内部条目并写入 SQLite，前台通过虚拟 ListView 搜索、排序和展示结果。后台还具备基于 USN Journal 的增量监控循环。
 
 当前完成度可以概括为：
 
 - 核心扫描链路：已实现。
-- ZIP/APK 条目解析：已实现。
+- ZIP/APK/7z 条目解析：已实现。
 - SQLite 索引库：已实现。
 - 查询展示 UI：已实现。
 - 右键菜单基础操作：已实现多项。
 - 配置文件基础设施：已实现。
-- 多格式归档：libarchive 路线已放弃，当前只保留 ZIP/APK 主线。
+- 多格式归档：7z 已通过 7-Zip C SDK 接入；libarchive 路线已放弃。
 - 设置页、更新检查、双击行为：仍是占位或未完成。
 
 ## 模块进度
@@ -65,6 +65,7 @@
 
 - `.zip`
 - `.apk`
+- `.7z`
 
 待完善：
 
@@ -95,7 +96,7 @@
 
 待完善：
 
-- 当前解析器选择逻辑固定使用 `ZipArchiveParser`，扩展名分发尚未真正实现。
+- 当前已按扩展名分发到 `ZipArchiveParser` 或 `SevenZipArchiveParser`。
 - 大量变化时仍是同步逐个解析，可进一步拆成任务队列。
 - 增量监控失败后的恢复策略还需要产品化。
 
@@ -106,6 +107,10 @@
 - `src/parser/archive_parser.h`
 - `src/parser/zip_archive_parser.h`
 - `src/parser/zip_archive_parser.cpp`
+- `src/parser/sevenzip_archive_parser.h`
+- `src/parser/sevenzip_archive_parser.cpp`
+- `src/parser/archive_parser_factory.h`
+- `src/parser/archive_parser_factory.cpp`
 - `src/parser/libarchive_parser.h`（历史草稿，不再作为接入路线）
 - `src/parser/libarchive_parser.cpp`（历史草稿，不再作为接入路线）
 
@@ -113,11 +118,14 @@
 
 - 定义统一解析器接口 `IArchiveParser`。
 - `ZipArchiveParser` 基于 minizip 打开 ZIP 类归档。
+- `SevenZipArchiveParser` 基于 7-Zip C SDK 打开 7z 归档。
 - 枚举归档内部条目。
 - 过滤目录条目。
 - 读取条目压缩大小、原始大小、CRC、压缩方法、外部属性、修改时间。
 - 按 ZIP UTF-8 标志位选择 UTF-8 或系统代码页做路径转换。
 - 支持解压单个条目到用户选择目录。
+- 7z 单条目解压已接入右键解压流程。
+- 7z 的 solid archive 多文件共享压缩块时，压缩后大小显示为 `-`，避免把共享块大小误认为逐文件压缩大小。
 - 对目录条目可创建目录。
 - 解压时做 CRC 错误检查。
 
@@ -127,7 +135,7 @@
 
 待完善：
 
-- 寻找非 libarchive 的多格式方案，或按格式逐步实现专用解析器。
+- 继续寻找非 libarchive 的多格式方案，或按格式逐步实现专用解析器。
 - 新解析方案必须能在列表模式获取条目的压缩后大小。
 - 完善 ZIP 内部路径编码兼容。
 - 解压时当前主要按 basename 输出，未保留完整内部目录结构。
@@ -356,7 +364,7 @@
 - 自动创建 `everyzip.cfg`。
 - 扫描所有 NTFS 盘。
 - 根据配置扩展名识别归档文件。
-- 索引 ZIP/APK 内部文件条目。
+- 索引 ZIP/APK/7z 内部文件条目。
 - 搜索归档内部路径。
 - 展示条目名称、归档路径、内部路径、压缩大小、原始大小。
 - 按列排序。
@@ -372,7 +380,7 @@
 
 ## 当前未完成或需要确认的功能
 
-- 多格式归档正式支持（不采用 libarchive，需要可返回压缩后大小的替代方案）。
+- 更多归档格式正式支持（不采用 libarchive，需要可返回压缩后大小的替代方案）。
 - 设置窗口。
 - 排除路径/盘符。
 - 双击默认动作。
@@ -391,5 +399,5 @@
 2. 把右键菜单和双击行为打磨完整，形成可用 MVP。
 3. 接入设置页，让 `archive_extensions` 可视化编辑。
 4. 给索引器补恢复策略：Journal ID 变化时自动全量重建。
-5. 决定多格式路线：放弃 libarchive，评估可返回压缩后大小的替代方案，或先继续扩展 minizip 能力。
+5. 沿 7z 的格式专用解析器路线继续评估 rar、tar.gz 等格式，候选方案必须能返回压缩后大小。
 6. 将核心测试接入 CTest，并移除本机固定路径依赖。

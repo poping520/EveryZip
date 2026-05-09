@@ -1,20 +1,19 @@
 #pragma once
 
-#include "archive_parser.h"
-
+#include <memory>
 #include <string>
-#include <vector>
+
+#include "archive_parser.h"
 
 namespace EveryZip {
 
-/**
- * 历史草稿：libarchive 在 list 模式下无法可靠提供逐条目压缩后大小，
- * 因此不作为 EveryZip 的主线解析器。
- */
-class LibArchiveParser : public IArchiveParser {
+class SevenZipArchiveParser final : public IArchiveParser {
 public:
-    LibArchiveParser();
-    ~LibArchiveParser() override;
+    SevenZipArchiveParser();
+    ~SevenZipArchiveParser() override;
+
+    SevenZipArchiveParser(const SevenZipArchiveParser&) = delete;
+    SevenZipArchiveParser& operator=(const SevenZipArchiveParser&) = delete;
 
     bool Open(const std::wstring& archive_path, std::string* error) override;
     void Close() override;
@@ -28,7 +27,8 @@ public:
                       std::string* error) override;
 
 private:
-    std::wstring archive_path_;
+    struct State;
+    std::unique_ptr<State> state_;
 };
 
 } // namespace EveryZip

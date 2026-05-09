@@ -76,7 +76,7 @@ private:
     static std::vector<wchar_t> GetMonitoredDrives();
 
     std::wstring dbPath_;
-    std::vector<std::wstring> archiveExtensions_ = { L".zip" };
+    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".apk", L".7z" };
     std::atomic_bool cancel_{ false };
     std::atomic_bool running_{ false };
     std::thread thread_;

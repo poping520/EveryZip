@@ -59,4 +59,5 @@ private:
     std::wstring configPath_;
     std::vector<std::wstring> archiveExtensions_;
     AdvConfig::Parser parser_;
+    bool configMigrated_ = false;
 };

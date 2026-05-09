@@ -155,7 +155,7 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
         e.name = name;
         e.name_w = ToWideBestEffort(name, isUtf8);
         e.is_directory = EndsWithSlash(name);
-        e.compressed_size = (std::uint64_t)info.compressed_size;
+        e.compressed_size = (std::int64_t)info.compressed_size;
         e.uncompressed_size = (std::uint64_t)info.uncompressed_size;
         e.crc32 = (std::uint32_t)info.crc;
         e.compression_method = (std::uint32_t)info.compression_method;

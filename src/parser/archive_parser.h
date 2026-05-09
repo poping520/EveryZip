@@ -13,7 +13,7 @@ struct ArchiveEntry {
 
     bool is_directory = false;
 
-    std::uint64_t compressed_size = 0;
+    std::int64_t compressed_size = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小
     std::uint64_t uncompressed_size = 0;
     std::uint32_t crc32 = 0;
 

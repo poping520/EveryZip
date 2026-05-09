@@ -5,12 +5,25 @@ project(EveryZip LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+function(everyzip_configure_test_target target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE /utf-8)
+    endif()
+endfunction()
 
 add_executable(TestZip
         test_zip.cpp
         ../src/parser/archive_parser.h
         ../src/parser/zip_archive_parser.h
         ../src/parser/zip_archive_parser.cpp
+)
+
+add_executable(TestSevenZip
+        test_sevenzip.cpp
+        ../src/parser/archive_parser.h
+        ../src/parser/sevenzip_archive_parser.h
+        ../src/parser/sevenzip_archive_parser.cpp
+        ../src/string_utils.cpp
 )
 
 add_executable(TestUsnScan
@@ -41,6 +54,16 @@ target_include_directories(TestZip PRIVATE
         ../external/zlib/contrib/minizip
 )
 
+target_link_libraries(TestSevenZip PRIVATE
+        sevenzip_c
+        shlwapi
+)
+
+target_include_directories(TestSevenZip PRIVATE
+        ../src
+        ../external/7zip/C
+)
+
 target_include_directories(TestFileTracker PRIVATE
         ../external/sqlite
 )
@@ -66,4 +89,13 @@ target_link_libraries(TestConfig PRIVATE
 
 target_compile_definitions(TestConfig PRIVATE UNICODE _UNICODE)
 
+target_compile_definitions(TestSevenZip PRIVATE UNICODE _UNICODE)
 target_compile_definitions(TestFileTracker PRIVATE UNICODE _UNICODE)
+
+everyzip_configure_test_target(TestZip)
+everyzip_configure_test_target(TestSevenZip)
+everyzip_configure_test_target(TestUsnScan)
+everyzip_configure_test_target(TestMftScan)
+everyzip_configure_test_target(TestFileTracker)
+everyzip_configure_test_target(QueryDB)
+everyzip_configure_test_target(TestConfig)

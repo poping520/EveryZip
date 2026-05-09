@@ -3,19 +3,27 @@
 #include "logger.h"
 #include "resource.h"
 #include "string_utils.h"
-#include "parser/libarchive_parser.h"
+#include "parser/archive_parser_factory.h"
 
 #include <algorithm>
 #include <cwctype>
 #include <memory>
 #include <unordered_map>
 
-#include "parser/zip_archive_parser.h"
-
 Indexer::Indexer() = default;
 
 Indexer::~Indexer() {
     Stop();
+}
+
+static bool IsSevenZipPath(const std::wstring& path) {
+    const size_t dotPos = path.find_last_of(L'.');
+    if (dotPos == std::wstring::npos) return false;
+    std::wstring ext = path.substr(dotPos);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) {
+        return (wchar_t)towlower(ch);
+    });
+    return ext == L".7z";
 }
 
 void Indexer::SetDbPath(const std::wstring& dbPath) {
@@ -80,16 +88,12 @@ bool Indexer::EnablePrivilege(const wchar_t* privilegeName) {
 }
 
 void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
-    // 根据文件扩展名选择对应的解析器
-    std::wstring ext;
-    const size_t dotPos = a.filePath.find_last_of(L'.');
-    if (dotPos != std::wstring::npos) {
-        ext = a.filePath.substr(dotPos);
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-    }
-
     std::unique_ptr<EveryZip::IArchiveParser> parserPtr =
-        std::make_unique<EveryZip::ZipArchiveParser>();
+        EveryZip::CreateArchiveParserForPath(a.filePath);
+    if (!parserPtr) {
+        LOG_WARN(L"No archive parser for: %s", a.filePath.c_str());
+        return;
+    }
 
     std::string perr;
     if (!parserPtr->Open(a.filePath, &perr)) {
@@ -210,6 +214,13 @@ void Indexer::Start(HWND hWnd) {
                 if (!db.QueryArchives(L"", &old, &err)) {
                     LOG_WARN(L"QueryArchives failed: %s", err.c_str());
                 } else {
+                    static const char kSevenZipSizePolicyKey[] = "sevenzip_size_policy_version";
+                    static const char kSevenZipSizePolicyVersion[] = "2";
+                    std::string sevenZipPolicyVersion;
+                    const bool reparseSevenZip =
+                        !db.GetConfigValue(kSevenZipSizePolicyKey, &sevenZipPolicyVersion) ||
+                        sevenZipPolicyVersion != kSevenZipSizePolicyVersion;
+
                     struct OldInfo {
                         ArchiveFile_t file;
                         bool seen = false;
@@ -241,7 +252,11 @@ void Indexer::Start(HWND hWnd) {
 
                         it->second.seen = true;
                         const auto& prev = it->second.file;
-                        const bool changed = (cur.usn != prev.usn) || (cur.modifyTime != prev.modifyTime) || (cur.fileSize != prev.fileSize) || (cur.filePath != prev.filePath);
+                        const bool changed = (cur.usn != prev.usn) ||
+                                             (cur.modifyTime != prev.modifyTime) ||
+                                             (cur.fileSize != prev.fileSize) ||
+                                             (cur.filePath != prev.filePath) ||
+                                             (reparseSevenZip && IsSevenZipPath(cur.filePath));
                         if (changed) {
                             if (!prev.filePath.empty()) {
                                 std::wstring delErr;
@@ -279,6 +294,13 @@ void Indexer::Start(HWND hWnd) {
                     for (const auto& a : toParse) {
                         if (cancel_.load()) break;
                         ParseAndStoreArchive(db, a);
+                    }
+
+                    if (reparseSevenZip && !cancel_.load()) {
+                        std::wstring cfgErr;
+                        if (!db.SaveConfigValue(kSevenZipSizePolicyKey, kSevenZipSizePolicyVersion, &cfgErr)) {
+                            LOG_WARN(L"Save sevenzip size policy version failed: %s", cfgErr.c_str());
+                        }
                     }
                 }
 

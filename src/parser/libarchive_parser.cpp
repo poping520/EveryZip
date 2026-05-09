@@ -107,7 +107,7 @@ bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
         e.is_directory = (archive_entry_filetype(entry) == AE_IFDIR) || EndsWithSlash(pathUtf8);
 
         e.uncompressed_size = (std::uint64_t)archive_entry_size(entry);
-        e.compressed_size   = e.uncompressed_size; // libarchive list 模式不提供压缩后大小
+        e.compressed_size   = -1; // libarchive list 模式不提供压缩后大小
 
         const struct stat* st = archive_entry_stat(entry);
         if (st) {

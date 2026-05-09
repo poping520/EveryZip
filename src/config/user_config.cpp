@@ -16,7 +16,7 @@ static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
 
 // 默认归档扩展名
 static const std::vector<std::wstring> kDefaultArchiveExtensions = {
-    L".zip", L".apk"
+    L".zip", L".apk", L".7z"
 };
 
 UserConfig::UserConfig()
@@ -25,6 +25,13 @@ UserConfig::UserConfig()
 }
 
 UserConfig::~UserConfig() = default;
+
+static bool IsOldDefaultExtensions(const std::vector<std::wstring>& exts)
+{
+    return exts.size() == 2 &&
+           std::find(exts.begin(), exts.end(), L".zip") != exts.end() &&
+           std::find(exts.begin(), exts.end(), L".apk") != exts.end();
+}
 
 const std::vector<std::wstring>& UserConfig::GetArchiveExtensions() const
 {
@@ -38,8 +45,12 @@ void UserConfig::SetArchiveExtensions(const std::vector<std::wstring>& exts)
 
 void UserConfig::SyncFromParser()
 {
+    bool parsedConfig = false;
+    configMigrated_ = false;
+
     const Value& val = parser_.Get(kKeyArchiveExtensions);
     if (val.IsList()) {
+        parsedConfig = true;
         archiveExtensions_.clear();
         for (const auto& item : val.AsList()) {
             if (!item.IsString()) continue;
@@ -54,6 +65,7 @@ void UserConfig::SyncFromParser()
             archiveExtensions_ = kDefaultArchiveExtensions;
         }
     } else if (val.IsString()) {
+        parsedConfig = true;
         // 兼容旧格式：逗号分隔
         archiveExtensions_.clear();
         std::wistringstream extStream(val.AsString());
@@ -73,6 +85,12 @@ void UserConfig::SyncFromParser()
         if (archiveExtensions_.empty()) {
             archiveExtensions_ = kDefaultArchiveExtensions;
         }
+    }
+
+    if (parsedConfig && IsOldDefaultExtensions(archiveExtensions_)) {
+        archiveExtensions_.push_back(L".7z");
+        SyncToParser();
+        configMigrated_ = true;
     }
 }
 
@@ -100,6 +118,12 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
     }
 
     SyncFromParser();
+    if (configMigrated_) {
+        std::wstring saveErr;
+        if (!Save(&saveErr)) {
+            LOG_WARN(L"Config migration save failed: %s", saveErr.c_str());
+        }
+    }
 
     LOG_INFO(L"Config loaded: %zu archive extensions", archiveExtensions_.size());
     return true;

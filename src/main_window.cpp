@@ -8,11 +8,10 @@
 #include <shlobj.h>
 
 #include "logger.h"
-#include "parser/libarchive_parser.h"
+#include "parser/archive_parser_factory.h"
 #include "resource.h"
 #include "string_utils.h"
 #include "tray_icon.h"
-#include "parser/zip_archive_parser.h"
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -796,7 +795,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::wstring archivePath = cr->archivePath;
             std::wstring entryPath   = cr->entryPath;
 
-            // 将 entryPath（宽字符）转为 UTF-8 窄字符串，供 minizip 使用
+            // 将 entryPath（宽字符）转为 UTF-8 窄字符串，供解析器定位条目
             std::string entryPathA = cr->entryRawPath;
             if (entryPathA.empty()) {
                 int need = WideCharToMultiByte(CP_UTF8, 0, entryPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -829,9 +828,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 auto* res = new ExtractResult();
                 res->destDir = destDir;
                 std::unique_ptr<EveryZip::IArchiveParser> parser =
-                    std::make_unique<EveryZip::ZipArchiveParser>();
+                    EveryZip::CreateArchiveParserForPath(archivePath);
                 std::string err;
-                if (!parser->Open(archivePath, &err)) {
+                if (!parser) {
+                    res->success = false;
+                    res->errorMsg = "no parser for archive";
+                } else if (!parser->Open(archivePath, &err)) {
                     res->success  = false;
                     res->errorMsg = err;
                 } else {

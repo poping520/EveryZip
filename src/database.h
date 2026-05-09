@@ -71,6 +71,9 @@ public:
      */
     bool SaveJournalUsn(wchar_t driveLetter, int64_t journalId, USN nextUsn, std::wstring* err);
 
+    bool SaveConfigValue(const std::string& key, const std::string& value, std::wstring* err);
+    bool GetConfigValue(const std::string& key, std::string* outValue);
+
     /**
      * 读取指定盘符已保存的 USN Journal 位置。
      * @param driveLetter 盘符。

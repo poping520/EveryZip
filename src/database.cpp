@@ -213,7 +213,7 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
         if (ap) e.archivePath = Utf8ToWString(ap);
         if (ep) e.entryPath = Utf8ToWString(ep);
 
-        e.compressed_size = (std::uint64_t)sqlite3_column_int64(stmt, 2);
+        e.compressed_size = (std::int64_t)sqlite3_column_int64(stmt, 2);
         e.uncompressed_size = (std::uint64_t)sqlite3_column_int64(stmt, 3);
 
         out->push_back(std::move(e));
@@ -544,6 +544,66 @@ bool Database::SaveJournalUsn(wchar_t driveLetter, int64_t journalId, USN nextUs
     if (rc != SQLITE_DONE) { if (err) *err = L"step failed"; return false; }
 
     return true;
+}
+
+bool Database::SaveConfigValue(const std::string& key, const std::string& value, std::wstring* err)
+{
+    if (err) err->clear();
+    if (!db_) {
+        if (err) *err = L"db not open";
+        return false;
+    }
+
+    const char* sql = "INSERT OR REPLACE INTO configs (key, value) VALUES (?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK || !stmt) {
+        if (err) {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"prepare failed";
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, value.c_str(), -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        if (err) {
+            const char* em = sqlite3_errmsg(db_);
+            *err = em ? Utf8ToWString(em) : L"step failed";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool Database::GetConfigValue(const std::string& key, std::string* outValue)
+{
+    if (!db_ || !outValue) return false;
+    outValue->clear();
+
+    const char* sql = "SELECT value FROM configs WHERE key = ?";
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK || !stmt) {
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* val = (const char*)sqlite3_column_text(stmt, 0);
+        if (val) {
+            *outValue = val;
+            found = true;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return found;
 }
 
 bool Database::GetJournalUsn(wchar_t driveLetter, int64_t* outJournalId, USN* outNextUsn)
@@ -881,11 +941,12 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
     // 列1(归档文件): 需要 JOIN archives 表
     const char* orderCol = "e.id";
     bool needJoin = false;
+    bool compressedSizeSort = false;
     switch (sortColumn) {
     case 0: orderCol = "SUBSTR(e.entry_path, LENGTH(RTRIM(e.entry_path, REPLACE(e.entry_path, '/', ''))) + 1)"; break;
     case 1: orderCol = "a.file_path"; needJoin = true; break;
     case 2: orderCol = "e.entry_path"; break;
-    case 3: orderCol = "e.compressed_size"; break;
+    case 3: orderCol = "e.compressed_size"; compressedSizeSort = true; break;
     case 4: orderCol = "e.uncompressed_size"; break;
     default: orderCol = "e.id"; break;
     }
@@ -898,9 +959,17 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
         if (hasFilter) {
             sql += "WHERE e.entry_path LIKE '%' || ?1 || '%' ";
         }
-        sql += std::string("ORDER BY ") + orderCol + " " + orderDir;
+        if (compressedSizeSort) {
+            sql += std::string("ORDER BY CASE WHEN e.compressed_size < 0 THEN 1 ELSE 0 END ASC, ") + orderCol + " " + orderDir;
+        } else {
+            sql += std::string("ORDER BY ") + orderCol + " " + orderDir;
+        }
     } else {
-        sql = std::string("SELECT e.id FROM entries e ORDER BY ") + orderCol + " " + orderDir;
+        if (compressedSizeSort) {
+            sql = std::string("SELECT e.id FROM entries e ORDER BY CASE WHEN e.compressed_size < 0 THEN 1 ELSE 0 END ASC, ") + orderCol + " " + orderDir;
+        } else {
+            sql = std::string("SELECT e.id FROM entries e ORDER BY ") + orderCol + " " + orderDir;
+        }
     }
 
     sqlite3_stmt* stmt = nullptr;
@@ -952,7 +1021,7 @@ bool Database::QueryEntryById(int64_t rowId, ArchiveEntry_t* out)
         if (raw && rawBytes > 0) {
             out->entryRawPath.assign((const char*)raw, rawBytes);
         }
-        out->compressed_size = (uint64_t)sqlite3_column_int64(stmt, 3);
+        out->compressed_size = (int64_t)sqlite3_column_int64(stmt, 3);
         out->uncompressed_size = (uint64_t)sqlite3_column_int64(stmt, 4);
         found = true;
     }

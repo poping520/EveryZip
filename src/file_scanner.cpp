@@ -43,7 +43,7 @@ void FileScanner::SetArchiveExtensions(const std::vector<std::wstring>& exts) {
     archiveExtensions_ = exts;
 }
 
-static const std::vector<std::wstring> kDefaultExtensions = { L".zip" };
+static const std::vector<std::wstring> kDefaultExtensions = { L".zip", L".apk", L".7z" };
 
 bool FileScanner::GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
     if (outFileSize) *outFileSize = 0;
@@ -345,7 +345,7 @@ bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN sta
             const wchar_t* fileName = (const wchar_t*)((const unsigned char*)rec + rec->FileNameOffset);
             const size_t fileNameLen = rec->FileNameLength / sizeof(wchar_t);
 
-            // 只关注归档文件（.zip 等）
+            // 只关注归档文件（.zip/.apk/.7z 等）
             if (HasTargetExt(fileName, fileNameLen, exts)) {
                 UsnChangeRecord_t cr;
                 cr.driveLetter = driveLetter;

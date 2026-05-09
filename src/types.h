@@ -44,6 +44,6 @@ struct ArchiveEntry_t
     std::wstring archivePath;       // archives.file_path（查询时由 JOIN 填充）
     std::wstring entryPath;
     std::string entryRawPath;
-    std::uint64_t compressed_size = 0;
+    std::int64_t compressed_size = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小
     std::uint64_t uncompressed_size = 0;
 };

@@ -12,7 +12,7 @@
 - 查询展示 UI：已实现。
 - 右键菜单基础操作：已实现多项。
 - 配置文件基础设施：已实现。
-- 多格式归档：有接口和 libarchive 草稿，未接入主线。
+- 多格式归档：libarchive 路线已放弃，当前只保留 ZIP/APK 主线。
 - 设置页、更新检查、双击行为：仍是占位或未完成。
 
 ## 模块进度
@@ -106,8 +106,8 @@
 - `src/parser/archive_parser.h`
 - `src/parser/zip_archive_parser.h`
 - `src/parser/zip_archive_parser.cpp`
-- `src/parser/libarchive_parser.h`
-- `src/parser/libarchive_parser.cpp`
+- `src/parser/libarchive_parser.h`（历史草稿，不再作为接入路线）
+- `src/parser/libarchive_parser.cpp`（历史草稿，不再作为接入路线）
 
 已完成：
 
@@ -123,11 +123,12 @@
 
 部分完成：
 
-- `LibArchiveParser` 已有实现草稿，可枚举和解压多格式归档，但当前未纳入主程序构建，也未被索引器使用。
+- `LibArchiveParser` 已有历史草稿，但 libarchive 在 list 模式下无法可靠获取条目的压缩后大小，不满足索引展示需求，因此该路线已放弃。
 
 待完善：
 
-- 正式接入 libarchive 或其他多格式解析库。
+- 寻找非 libarchive 的多格式方案，或按格式逐步实现专用解析器。
+- 新解析方案必须能在列表模式获取条目的压缩后大小。
 - 完善 ZIP 内部路径编码兼容。
 - 解压时当前主要按 basename 输出，未保留完整内部目录结构。
 - 损坏归档、加密归档、超长路径等场景需要更多处理。
@@ -371,7 +372,7 @@
 
 ## 当前未完成或需要确认的功能
 
-- 多格式归档正式支持。
+- 多格式归档正式支持（不采用 libarchive，需要可返回压缩后大小的替代方案）。
 - 设置窗口。
 - 排除路径/盘符。
 - 双击默认动作。
@@ -390,5 +391,5 @@
 2. 把右键菜单和双击行为打磨完整，形成可用 MVP。
 3. 接入设置页，让 `archive_extensions` 可视化编辑。
 4. 给索引器补恢复策略：Journal ID 变化时自动全量重建。
-5. 决定多格式路线：正式引入 libarchive，或先继续扩展 minizip 能力。
+5. 决定多格式路线：放弃 libarchive，评估可返回压缩后大小的替代方案，或先继续扩展 minizip 能力。
 6. 将核心测试接入 CTest，并移除本机固定路径依赖。

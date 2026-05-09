@@ -3,6 +3,7 @@
 
 // 嵌入应用程序 manifest（DPI 感知 + UAC + ComCtl32 v6）
 1 RT_MANIFEST "app.manifest"
+IDI_APP_ICON ICON "../art/icon.ico"
 
  #pragma code_page(65001)
 

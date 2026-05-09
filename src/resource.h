@@ -19,6 +19,7 @@
 #define IDT_SEARCH_DEBOUNCE 2001
 #define IDT_SPINNER_ANIM    2002
 #define IDT_LIST_RETRY      2003
+#define IDI_APP_ICON      10
 
 #define IDI_TRAY_ICON     1         // 托盘图标 ID
 #define IDM_TRAY_SHOW     170       // 托盘菜单：显示窗口

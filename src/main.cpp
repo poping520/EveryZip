@@ -83,6 +83,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     state.dbPath = dbPath;
     state.indexer.SetDbPath(dbPath);
     state.indexer.SetArchiveExtensions(config.GetArchiveExtensions());
+    state.indexer.SetScanDriveLetters(config.GetScanDriveLetters());
     state.rowCache.SetDbPath(dbPath);
     state.rowCache.SetIconCache(&state.iconCache);
 

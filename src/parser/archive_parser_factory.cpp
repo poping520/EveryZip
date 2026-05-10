@@ -27,7 +27,7 @@ std::unique_ptr<IArchiveParser> CreateArchiveParserForPath(const std::wstring& a
     if (ext == L".rar") {
         return std::make_unique<RarArchiveParser>();
     }
-    if (ext == L".zip" || ext == L".apk") {
+    if (ext == L".zip") {
         return std::make_unique<ZipArchiveParser>();
     }
     return nullptr;

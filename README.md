@@ -1,6 +1,6 @@
 # EveryZip
 
-快速检索本机归档文件（ZIP/APK/7z/RAR）内部条目的桌面工具，类似 Everything 的体验。
+快速检索本机归档文件（ZIP/7z/RAR）内部条目的桌面工具，类似 Everything 的体验。
 
 ## 功能
 
@@ -25,11 +25,18 @@ cmake --build build --config Debug
 
 - **语言**: C++17 / Win32 API
 - **数据库**: SQLite（嵌入式，单文件 `everyzip.db`）
-- **归档解析**: minizip（ZIP/APK）+ 7-Zip C SDK（7z）+ RARLAB UnRAR 源码（RAR），第三方解析器均静态编译进单文件程序
+- **归档解析**: minizip（ZIP）+ 7-Zip C SDK（7z）+ RARLAB UnRAR 源码（RAR），第三方解析器均静态编译进单文件程序
 - **UI**: Win32 ListView（虚拟列表模式）+ 状态栏 + 系统托盘
 
 > 7z 的 solid archive 没有可靠的逐文件压缩后大小；这类条目的压缩大小列显示为 `-`。
 > RAR 支持基于 RARLAB 官方 UnRAR 源码，仅用于处理 RAR 归档，不用于实现 RAR 压缩器；程序不携带 `unrar.dll`。
+
+## 配置
+
+程序目录下的 `everyzip.cfg` 当前包含测试用扫描盘符开关：
+
+- `scan_drives = ["G"]`：只扫描和监控 G 盘。
+- `scan_drives = []`：扫描和监控所有 NTFS 盘。
 
 ## TODO List
 

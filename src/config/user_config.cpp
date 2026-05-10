@@ -13,14 +13,21 @@ using namespace AdvConfig;
 // ============================================================================
 
 static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
+static const wchar_t* kKeyScanDrives = L"scan_drives";
 
 // 默认归档扩展名
 static const std::vector<std::wstring> kDefaultArchiveExtensions = {
-    L".zip", L".apk", L".7z", L".rar"
+    L".zip", L".7z", L".rar"
+};
+
+// 测试阶段默认只扫描 G 盘；配置为空列表时扫描所有 NTFS 盘。
+static const std::vector<wchar_t> kDefaultScanDriveLetters = {
+    L'G'
 };
 
 UserConfig::UserConfig()
-    : archiveExtensions_(kDefaultArchiveExtensions)
+    : archiveExtensions_(kDefaultArchiveExtensions),
+      scanDriveLetters_(kDefaultScanDriveLetters)
 {
 }
 
@@ -31,13 +38,33 @@ static bool HasExtension(const std::vector<std::wstring>& exts, const std::wstri
     return std::find(exts.begin(), exts.end(), ext) != exts.end();
 }
 
-static bool IsDefaultExtensionsBeforeRar(const std::vector<std::wstring>& exts)
+static bool EnsureDefaultExtensions(std::vector<std::wstring>* exts)
 {
-    const bool hasZip = HasExtension(exts, L".zip");
-    const bool hasApk = HasExtension(exts, L".apk");
-    const bool has7z = HasExtension(exts, L".7z");
-    return (exts.size() == 2 && hasZip && hasApk) ||
-           (exts.size() == 3 && hasZip && hasApk && has7z);
+    if (!exts) return false;
+    if (!exts->empty()) return false;
+
+    for (const auto& ext : kDefaultArchiveExtensions) {
+        if (!HasExtension(*exts, ext)) {
+            exts->push_back(ext);
+        }
+    }
+    return true;
+}
+
+static wchar_t NormalizeDriveLetter(const std::wstring& drive)
+{
+    if (drive.empty()) return L'\0';
+    wchar_t ch = drive[0];
+    if (ch >= L'a' && ch <= L'z') {
+        ch = (wchar_t)(ch - L'a' + L'A');
+    }
+    if (ch < L'A' || ch > L'Z') return L'\0';
+    return ch;
+}
+
+static bool HasDriveLetter(const std::vector<wchar_t>& drives, wchar_t drive)
+{
+    return std::find(drives.begin(), drives.end(), drive) != drives.end();
 }
 
 const std::vector<std::wstring>& UserConfig::GetArchiveExtensions() const
@@ -45,9 +72,26 @@ const std::vector<std::wstring>& UserConfig::GetArchiveExtensions() const
     return archiveExtensions_;
 }
 
+const std::vector<wchar_t>& UserConfig::GetScanDriveLetters() const
+{
+    return scanDriveLetters_;
+}
+
 void UserConfig::SetArchiveExtensions(const std::vector<std::wstring>& exts)
 {
     archiveExtensions_ = exts;
+}
+
+void UserConfig::SetScanDriveLetters(const std::vector<wchar_t>& drives)
+{
+    scanDriveLetters_.clear();
+    for (wchar_t drive : drives) {
+        std::wstring s(1, drive);
+        wchar_t normalized = NormalizeDriveLetter(s);
+        if (normalized && !HasDriveLetter(scanDriveLetters_, normalized)) {
+            scanDriveLetters_.push_back(normalized);
+        }
+    }
 }
 
 void UserConfig::SyncFromParser()
@@ -94,11 +138,39 @@ void UserConfig::SyncFromParser()
         }
     }
 
-    if (parsedConfig && IsDefaultExtensionsBeforeRar(archiveExtensions_)) {
-        if (!HasExtension(archiveExtensions_, L".7z")) {
-            archiveExtensions_.push_back(L".7z");
+    if (parsedConfig && EnsureDefaultExtensions(&archiveExtensions_)) {
+        SyncToParser();
+        configMigrated_ = true;
+    }
+
+    const Value& scanDrives = parser_.Get(kKeyScanDrives);
+    if (scanDrives.IsList()) {
+        scanDriveLetters_.clear();
+        for (const auto& item : scanDrives.AsList()) {
+            if (!item.IsString()) continue;
+            wchar_t drive = NormalizeDriveLetter(item.AsString());
+            if (drive && !HasDriveLetter(scanDriveLetters_, drive)) {
+                scanDriveLetters_.push_back(drive);
+            }
         }
-        archiveExtensions_.push_back(L".rar");
+    } else if (scanDrives.IsString()) {
+        scanDriveLetters_.clear();
+        std::wistringstream driveStream(scanDrives.AsString());
+        std::wstring drive;
+        while (std::getline(driveStream, drive, L',')) {
+            size_t s = drive.find_first_not_of(L" \t");
+            size_t e = drive.find_last_not_of(L" \t");
+            if (s == std::wstring::npos) continue;
+            drive = drive.substr(s, e - s + 1);
+            wchar_t normalized = NormalizeDriveLetter(drive);
+            if (normalized && !HasDriveLetter(scanDriveLetters_, normalized)) {
+                scanDriveLetters_.push_back(normalized);
+            }
+        }
+        SyncToParser();
+        configMigrated_ = true;
+    } else if (!parser_.Contains(kKeyScanDrives)) {
+        scanDriveLetters_ = kDefaultScanDriveLetters;
         SyncToParser();
         configMigrated_ = true;
     }
@@ -111,6 +183,12 @@ void UserConfig::SyncToParser()
         list.push_back(Value(ext));
     }
     parser_.Set(kKeyArchiveExtensions, Value(std::move(list)));
+
+    Value::List driveList;
+    for (wchar_t drive : scanDriveLetters_) {
+        driveList.push_back(Value(std::wstring(1, drive)));
+    }
+    parser_.Set(kKeyScanDrives, Value(std::move(driveList)));
 }
 
 bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
@@ -123,6 +201,7 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         // 文件不存在时创建默认配置
         LOG_INFO(L"Config file not found, creating default: %s", configPath.c_str());
         archiveExtensions_ = kDefaultArchiveExtensions;
+        scanDriveLetters_ = kDefaultScanDriveLetters;
         SyncToParser();
         return Save(err);
     }
@@ -135,7 +214,8 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         }
     }
 
-    LOG_INFO(L"Config loaded: %zu archive extensions", archiveExtensions_.size());
+    LOG_INFO(L"Config loaded: %zu archive extensions, %zu scan drives",
+             archiveExtensions_.size(), scanDriveLetters_.size());
     return true;
 }
 

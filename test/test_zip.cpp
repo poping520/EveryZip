@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
 
-    std::wstring testFile = L"C:\\Users\\123\\Desktop\\apk\\com.guomilive.xtkj.apk";
+    std::wstring testFile = L"C:\\Users\\123\\Desktop\\zip\\sample.zip";
 
     EveryZip::ZipArchiveParser parser;
 

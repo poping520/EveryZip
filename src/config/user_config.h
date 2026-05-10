@@ -38,10 +38,22 @@ public:
     const std::vector<std::wstring>& GetArchiveExtensions() const;
 
     /**
+     * 获取限定扫描的盘符列表（例如 {L'G'}）。为空时扫描所有 NTFS 盘。
+     * @return 当前扫描盘符列表的只读引用。
+     */
+    const std::vector<wchar_t>& GetScanDriveLetters() const;
+
+    /**
      * 设置归档扩展名列表。
      * @param exts 新的扩展名列表。
      */
     void SetArchiveExtensions(const std::vector<std::wstring>& exts);
+
+    /**
+     * 设置限定扫描的盘符列表。为空时扫描所有 NTFS 盘。
+     * @param drives 新的扫描盘符列表。
+     */
+    void SetScanDriveLetters(const std::vector<wchar_t>& drives);
 
     /**
      * 获取配置文件路径。
@@ -58,6 +70,7 @@ private:
 
     std::wstring configPath_;
     std::vector<std::wstring> archiveExtensions_;
+    std::vector<wchar_t> scanDriveLetters_;
     AdvConfig::Parser parser_;
     bool configMigrated_ = false;
 };

@@ -43,7 +43,26 @@ void FileScanner::SetArchiveExtensions(const std::vector<std::wstring>& exts) {
     archiveExtensions_ = exts;
 }
 
-static const std::vector<std::wstring> kDefaultExtensions = { L".zip", L".apk", L".7z", L".rar" };
+void FileScanner::SetScanDriveLetters(const std::vector<wchar_t>& drives) {
+    scanDriveLetters_ = drives;
+}
+
+static const std::vector<std::wstring> kDefaultExtensions = { L".zip", L".7z", L".rar" };
+
+static bool IsDriveAllowed(wchar_t driveLetter, const std::vector<wchar_t>& allowedDrives) {
+    if (allowedDrives.empty()) return true;
+    wchar_t normalized = driveLetter;
+    if (normalized >= L'a' && normalized <= L'z') {
+        normalized = (wchar_t)(normalized - L'a' + L'A');
+    }
+    for (wchar_t allowed : allowedDrives) {
+        if (allowed >= L'a' && allowed <= L'z') {
+            allowed = (wchar_t)(allowed - L'a' + L'A');
+        }
+        if (normalized == allowed) return true;
+    }
+    return false;
+}
 
 bool FileScanner::GetFileInfoByRefNumber(HANDLE hVol, uint64_t fileRefNumber, uint64_t* outFileSize, uint64_t* outModifyTime, std::wstring* outFullPath) {
     if (outFileSize) *outFileSize = 0;
@@ -345,7 +364,7 @@ bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN sta
             const wchar_t* fileName = (const wchar_t*)((const unsigned char*)rec + rec->FileNameOffset);
             const size_t fileNameLen = rec->FileNameLength / sizeof(wchar_t);
 
-            // 只关注归档文件（.zip/.apk/.7z/.rar 等）
+            // 只关注归档文件（.zip/.7z/.rar 等）
             if (HasTargetExt(fileName, fileNameLen, exts)) {
                 UsnChangeRecord_t cr;
                 cr.driveLetter = driveLetter;
@@ -413,6 +432,9 @@ bool FileScanner::Scan(std::vector<ArchiveFile_t>* out, std::wstring* err, std::
         }
 
         const wchar_t driveLetter = root[0];
+        if (!IsDriveAllowed(driveLetter, scanDriveLetters_)) {
+            continue;
+        }
 
         if (cancel && cancel->load()) return true;
 

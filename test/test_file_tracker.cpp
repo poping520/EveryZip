@@ -312,7 +312,7 @@ static bool HasTargetExt(const wchar_t* name, size_t len) {
         return _wcsicmp(std::wstring(name + (len - extLen), extLen).c_str(), ext) == 0;
     };
 
-    return endsWithI(L".apk");
+    return endsWithI(L".zip") || endsWithI(L".7z") || endsWithI(L".rar");
 }
 
 static bool ScanDriveByUsn(wchar_t driveLetter, FileDatabase& db, bool isInitialScan,

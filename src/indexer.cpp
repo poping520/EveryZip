@@ -34,6 +34,10 @@ void Indexer::SetArchiveExtensions(const std::vector<std::wstring>& exts) {
     archiveExtensions_ = exts;
 }
 
+void Indexer::SetScanDriveLetters(const std::vector<wchar_t>& drives) {
+    scanDriveLetters_ = drives;
+}
+
 bool Indexer::EnsureDatabaseReady() {
     const DWORD attr = GetFileAttributesW(dbPath_.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) {
@@ -143,7 +147,22 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
     }
 }
 
-std::vector<wchar_t> Indexer::GetMonitoredDrives() {
+static bool IsDriveAllowed(wchar_t driveLetter, const std::vector<wchar_t>& allowedDrives) {
+    if (allowedDrives.empty()) return true;
+    wchar_t normalized = driveLetter;
+    if (normalized >= L'a' && normalized <= L'z') {
+        normalized = (wchar_t)(normalized - L'a' + L'A');
+    }
+    for (wchar_t allowed : allowedDrives) {
+        if (allowed >= L'a' && allowed <= L'z') {
+            allowed = (wchar_t)(allowed - L'a' + L'A');
+        }
+        if (normalized == allowed) return true;
+    }
+    return false;
+}
+
+std::vector<wchar_t> Indexer::GetMonitoredDrives() const {
     std::vector<wchar_t> drives;
     DWORD needed = GetLogicalDriveStringsW(0, nullptr);
     if (needed == 0) return drives;
@@ -167,6 +186,7 @@ std::vector<wchar_t> Indexer::GetMonitoredDrives() {
         if (_wcsicmp(fsName, L"NTFS") != 0) continue;
 
         wchar_t driveLetter = root[0];
+        if (!IsDriveAllowed(driveLetter, scanDriveLetters_)) continue;
 
         drives.push_back(driveLetter);
     }
@@ -192,6 +212,7 @@ void Indexer::Start(HWND hWnd) {
     thread_ = std::thread([this, hWnd]() {
         FileScanner scanner;
         scanner.SetArchiveExtensions(archiveExtensions_);
+        scanner.SetScanDriveLetters(scanDriveLetters_);
         std::vector<ArchiveFile_t> scanned;
         std::wstring err;
         const bool scanOk = scanner.Scan(&scanned, &err, &cancel_);

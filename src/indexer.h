@@ -34,6 +34,12 @@ public:
     void SetArchiveExtensions(const std::vector<std::wstring>& exts);
 
     /**
+     * 设置限定扫描和监控的盘符列表。为空时扫描所有 NTFS 盘。
+     * @param drives 需要扫描的盘符列表。
+     */
+    void SetScanDriveLetters(const std::vector<wchar_t>& drives);
+
+    /**
      * 确保数据库文件存在并创建所需的表。
      * @return 准备成功返回 true，否则返回 false。
      */
@@ -73,10 +79,11 @@ private:
      * 获取所有需要监控的 NTFS 盘符列表。
      * @return 可用于 USN 监控的盘符列表。
      */
-    static std::vector<wchar_t> GetMonitoredDrives();
+    std::vector<wchar_t> GetMonitoredDrives() const;
 
     std::wstring dbPath_;
-    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".apk", L".7z", L".rar" };
+    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".7z", L".rar" };
+    std::vector<wchar_t> scanDriveLetters_;
     std::atomic_bool cancel_{ false };
     std::atomic_bool running_{ false };
     std::thread thread_;

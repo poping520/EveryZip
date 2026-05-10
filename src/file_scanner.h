@@ -27,6 +27,12 @@ public:
     void SetArchiveExtensions(const std::vector<std::wstring>& exts);
 
     /**
+     * 设置限定扫描的盘符列表。为空时扫描所有 NTFS 盘。
+     * @param drives 需要扫描的盘符列表。
+     */
+    void SetScanDriveLetters(const std::vector<wchar_t>& drives);
+
+    /**
      * 执行全量 MFT 扫描，收集所有匹配扩展名的归档文件。
      * @param out 输出扫描得到的归档文件列表。
      * @param err 可选，用于输出错误信息。
@@ -75,5 +81,6 @@ public:
                                const std::vector<std::wstring>* extensions = nullptr);
 
 private:
-    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".apk", L".7z", L".rar" };
+    std::vector<std::wstring> archiveExtensions_ = { L".zip", L".7z", L".rar" };
+    std::vector<wchar_t> scanDriveLetters_;
 };

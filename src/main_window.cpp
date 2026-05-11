@@ -258,6 +258,43 @@ static std::wstring GetArchiveColumnTipText(MainWindowState* s, const CachedRow*
     return s->showArchiveFullPath ? GetEntryNameFromPath(cr->archivePath) : cr->archivePath;
 }
 
+static bool IsSubItemTextTruncated(HWND hList, MainWindowState* s, int item, int subItem, const std::wstring& text) {
+    if (!hList || !s || text.empty()) return false;
+
+    RECT rc{};
+    if (subItem == 0) {
+        if (!ListView_GetItemRect(hList, item, &rc, LVIR_LABEL)) {
+            return false;
+        }
+    } else {
+        if (!ListView_GetSubItemRect(hList, item, subItem, LVIR_BOUNDS, &rc)) {
+            return false;
+        }
+    }
+
+    const int padding = 8;
+    const int availableWidth = (rc.right - rc.left) - padding;
+    if (availableWidth <= 0) return true;
+
+    HDC hdc = GetDC(hList);
+    if (!hdc) return false;
+
+    HFONT oldFont = nullptr;
+    if (s->hNormalFont) {
+        oldFont = (HFONT)SelectObject(hdc, s->hNormalFont);
+    }
+
+    SIZE sz{};
+    const BOOL measured = GetTextExtentPoint32W(hdc, text.c_str(), (int)text.size(), &sz);
+
+    if (oldFont) {
+        SelectObject(hdc, oldFont);
+    }
+    ReleaseDC(hList, hdc);
+
+    return measured && sz.cx > availableWidth;
+}
+
 static void ShowSettingsPanel(HWND hOwner, MainWindowState* s);
 
 // 创建主窗口菜单栏
@@ -781,7 +818,7 @@ static void UpdateArchiveTooltip(HWND hList, MainWindowState* s, LPARAM lParam) 
     LVHITTESTINFO hit{};
     hit.pt = pt;
     const int item = ListView_SubItemHitTest(hList, &hit);
-    if (item < 0 || hit.iSubItem != 1) {
+    if (item < 0 || (hit.iSubItem != 0 && hit.iSubItem != 1 && hit.iSubItem != 2)) {
         HideArchiveTooltip(s);
         return;
     }
@@ -793,12 +830,32 @@ static void UpdateArchiveTooltip(HWND hList, MainWindowState* s, LPARAM lParam) 
     }
 
     const CachedRow* cr = s->rowCache.Get(rowId);
-    if (!cr || cr->archivePath.empty()) {
+    if (!cr) {
         HideArchiveTooltip(s);
         return;
     }
 
-    std::wstring tip = GetArchiveColumnTipText(s, cr);
+    std::wstring tip;
+    if (hit.iSubItem == 0) {
+        if (cr->name.empty() || !IsSubItemTextTruncated(hList, s, item, hit.iSubItem, cr->name)) {
+            HideArchiveTooltip(s);
+            return;
+        }
+        tip = cr->name;
+    } else if (hit.iSubItem == 1) {
+        if (cr->archivePath.empty()) {
+            HideArchiveTooltip(s);
+            return;
+        }
+        tip = GetArchiveColumnTipText(s, cr);
+    } else if (hit.iSubItem == 2) {
+        if (cr->entryPath.empty() || !IsSubItemTextTruncated(hList, s, item, hit.iSubItem, cr->entryPath)) {
+            HideArchiveTooltip(s);
+            return;
+        }
+        tip = cr->entryPath;
+    }
+
     if (tip.empty()) {
         HideArchiveTooltip(s);
         return;

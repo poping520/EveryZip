@@ -62,15 +62,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     std::wstring dbPath = exeDir + L"\\everyzip.db";
     std::wstring configPath = exeDir + L"\\everyzip.cfg";
 
-    // 加载用户配置文件（独立于数据库，不随数据库删除而丢失）
-    UserConfig config;
-    {
-        std::wstring cfgErr;
-        if (!config.Load(configPath, &cfgErr)) {
-            LOG_WARN(L"UserConfig::Load failed: %s", cfgErr.c_str());
-        }
-    }
-
     const bool p1 = Indexer::EnablePrivilege(SE_MANAGE_VOLUME_NAME);
     const bool p2 = Indexer::EnablePrivilege(SE_BACKUP_NAME);
     LOG_INFO("EnablePrivilege SeManageVolume=%d SeBackup=%d", (int)p1, (int)p2);
@@ -81,9 +72,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     MainWindowState state;
     state.hInstance = hInstance;
     state.dbPath = dbPath;
+    {
+        std::wstring cfgErr;
+        if (!state.userConfig.Load(configPath, &cfgErr)) {
+            LOG_WARN(L"UserConfig::Load failed: %s", cfgErr.c_str());
+        }
+    }
     state.indexer.SetDbPath(dbPath);
-    state.indexer.SetArchiveExtensions(config.GetArchiveExtensions());
-    state.indexer.SetScanDriveLetters(config.GetScanDriveLetters());
+    state.indexer.SetArchiveExtensions(state.userConfig.GetArchiveExtensions());
+    state.indexer.SetScanDriveLetters(state.userConfig.GetScanDriveLetters());
+    state.showArchiveFullPath = state.userConfig.GetShowArchiveFullPath();
     state.rowCache.SetDbPath(dbPath);
     state.rowCache.SetIconCache(&state.iconCache);
 

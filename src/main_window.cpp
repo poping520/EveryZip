@@ -30,6 +30,8 @@ std::wstring LS(HINSTANCE hInstance, UINT id) {
 
 // ── Spinner 自绘窗口类名 ──
 static constexpr wchar_t kSpinnerClass[] = L"EveryZipSpinner";
+static constexpr wchar_t kSettingsClass[] = L"EveryZipSettingsWindow";
+static constexpr int IDC_SETTINGS_SHOW_FULL_PATH = 3001;
 
 // Spinner 窗口过程：自绘旋转圆弧动画
 static LRESULT CALLBACK SpinnerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -246,6 +248,13 @@ static std::wstring GetSearchFilter(MainWindowState* s) {
     return f;
 }
 
+static std::wstring GetArchiveColumnText(MainWindowState* s, const CachedRow* cr) {
+    if (!cr) return {};
+    return s->showArchiveFullPath ? cr->archivePath : GetEntryNameFromPath(cr->archivePath);
+}
+
+static void ShowSettingsPanel(HWND hOwner, MainWindowState* s);
+
 // 创建主窗口菜单栏
 static HMENU CreateMainMenu(MainWindowState* s) {
     HMENU hMenuBar = CreateMenu();
@@ -336,6 +345,172 @@ static void RefreshList(MainWindowState* s) {
     InvalidateRect(s->hList, nullptr, TRUE);
 }
 
+struct SettingsWindowState {
+    HWND owner = nullptr;
+    MainWindowState* mainState = nullptr;
+    HWND hCheckFullPath = nullptr;
+    HFONT hFont = nullptr;
+};
+
+static void ApplyShowArchiveFullPathSetting(HWND hWnd, SettingsWindowState* sws) {
+    if (!sws || !sws->mainState || !sws->hCheckFullPath) return;
+
+    MainWindowState* s = sws->mainState;
+    const bool checked = SendMessageW(sws->hCheckFullPath, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool previous = s->showArchiveFullPath;
+    if (checked == previous) return;
+
+    s->showArchiveFullPath = checked;
+    s->userConfig.SetShowArchiveFullPath(checked);
+
+    std::wstring err;
+    if (!s->userConfig.Save(&err)) {
+        s->showArchiveFullPath = previous;
+        s->userConfig.SetShowArchiveFullPath(previous);
+        SendMessageW(sws->hCheckFullPath, BM_SETCHECK, previous ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        std::wstring msg = LS_(s, IDS_SETTINGS_SAVE_FAILED);
+        if (!err.empty()) msg += L"\n" + err;
+        MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    s->rowCache.Clear();
+    RefreshList(s);
+}
+
+static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    SettingsWindowState* sws = (SettingsWindowState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+
+    if (msg == WM_CREATE) {
+        auto* cs = (CREATESTRUCTW*)lParam;
+        sws = (SettingsWindowState*)cs->lpCreateParams;
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)sws);
+
+        MainWindowState* s = sws ? sws->mainState : nullptr;
+        const UINT dpi = GetWindowDpi(hWnd);
+        const int margin = ScaleDpi(16, dpi);
+        const int checkH = ScaleDpi(24, dpi);
+
+        sws->hCheckFullPath = CreateWindowExW(
+            0,
+            L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            margin, margin, ScaleDpi(260, dpi), checkH,
+            hWnd,
+            (HMENU)(INT_PTR)IDC_SETTINGS_SHOW_FULL_PATH,
+            s ? s->hInstance : nullptr,
+            nullptr);
+
+        if (sws->hCheckFullPath && s) {
+            SendMessageW(sws->hCheckFullPath, BM_SETCHECK, s->showArchiveFullPath ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
+
+        NONCLIENTMETRICSW ncm{};
+        ncm.cbSize = sizeof(ncm);
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+            sws->hFont = CreateFontIndirectW(&ncm.lfMessageFont);
+            if (sws->hFont && sws->hCheckFullPath) {
+                SendMessageW(sws->hCheckFullPath, WM_SETFONT, (WPARAM)sws->hFont, TRUE);
+            }
+        }
+        return 0;
+    }
+
+    switch (msg) {
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_SETTINGS_SHOW_FULL_PATH && HIWORD(wParam) == BN_CLICKED) {
+            ApplyShowArchiveFullPathSetting(hWnd, sws);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hWnd);
+        return 0;
+    case WM_DESTROY:
+        if (sws && sws->hFont) {
+            DeleteObject(sws->hFont);
+            sws->hFont = nullptr;
+        }
+        return 0;
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+        return 0;
+    }
+
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static void RegisterSettingsClass(HINSTANCE hInstance) {
+    static bool registered = false;
+    if (registered) return;
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = SettingsWndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    wc.hIconSm = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.lpszClassName = kSettingsClass;
+    RegisterClassExW(&wc);
+    registered = true;
+}
+
+static void ShowSettingsPanel(HWND hOwner, MainWindowState* s) {
+    if (!s) return;
+
+    RegisterSettingsClass(s->hInstance);
+
+    const UINT dpi = GetWindowDpi(hOwner);
+    const int width = ScaleDpi(360, dpi);
+    const int height = ScaleDpi(130, dpi);
+
+    RECT ownerRc{};
+    GetWindowRect(hOwner, &ownerRc);
+    int x = ownerRc.left + ((ownerRc.right - ownerRc.left) - width) / 2;
+    int y = ownerRc.top + ((ownerRc.bottom - ownerRc.top) - height) / 2;
+
+    SettingsWindowState sws{};
+    sws.owner = hOwner;
+    sws.mainState = s;
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+        kSettingsClass,
+        LS_(s, IDS_SETTINGS_TITLE).c_str(),
+        WS_CAPTION | WS_SYSMENU | WS_POPUP,
+        x, y, width, height,
+        hOwner,
+        nullptr,
+        s->hInstance,
+        &sws);
+
+    if (!hDlg) return;
+
+    EnableWindow(hOwner, FALSE);
+    ShowWindow(hDlg, SW_SHOW);
+    UpdateWindow(hDlg);
+
+    MSG msg{};
+    while (IsWindow(hDlg)) {
+        BOOL ret = GetMessageW(&msg, nullptr, 0, 0);
+        if (ret <= 0) {
+            if (ret == 0) PostQuitMessage((int)msg.wParam);
+            break;
+        }
+        if (!IsDialogMessageW(hDlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    EnableWindow(hOwner, TRUE);
+    SetForegroundWindow(hOwner);
+}
+
 // 更新 ListView 列头文本，在当前排序列后附加箭头指示符（▲/▼）
 static void UpdateColumnHeaders(MainWindowState* s) {
     static const UINT colIds[] = {
@@ -354,6 +529,20 @@ static void UpdateColumnHeaders(MainWindowState* s) {
         col.pszText = const_cast<LPWSTR>(text.c_str());
         ListView_SetColumn(s->hList, i, &col);
     }
+}
+
+static void UpdateStatusBarParts(HWND hWnd, MainWindowState* s) {
+    if (!s || !s->hStatusBar) return;
+
+    RECT rc{};
+    GetClientRect(hWnd, &rc);
+    const UINT dpi = GetWindowDpi(hWnd);
+    const int rightWidth = ScaleDpi(140, dpi);
+    int parts[2] = {
+        max(0, rc.right - rightWidth),
+        -1
+    };
+    SendMessageW(s->hStatusBar, SB_SETPARTS, 2, (LPARAM)parts);
 }
 
 // 根据主窗口大小重新布局子控件（搜索框、ListView、状态栏）
@@ -385,6 +574,7 @@ static void LayoutChildren(HWND hWnd, MainWindowState* s) {
     RECT statusRect{};
     if (s->hStatusBar) {
         SendMessageW(s->hStatusBar, WM_SIZE, 0, 0);
+        UpdateStatusBarParts(hWnd, s);
         GetWindowRect(s->hStatusBar, &statusRect);
     }
     const int statusH = statusRect.bottom - statusRect.top;
@@ -448,6 +638,10 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
 // 更新底部状态栏（显示索引状态、文件数量和归档文件数量）
 static void UpdateStatusBar(MainWindowState* s) {
     if (!s->hStatusBar) return;
+    HWND hWnd = GetParent(s->hStatusBar);
+    if (hWnd) {
+        UpdateStatusBarParts(hWnd, s);
+    }
 
     int fileCount = 0;
     {
@@ -463,37 +657,47 @@ static void UpdateStatusBar(MainWindowState* s) {
     std::wstring archiveCountStr = AddThousandsSeparator(std::to_wstring((long long)archiveCount));
 
     bool running = s->indexer.IsRunning();
+    const int64_t parseDone = s->parseDoneCount.load();
+    const int64_t parseTotal = s->parseTotalCount.load();
+    const bool hasParseProgress = parseTotal > 0 && (running || parseDone < parseTotal);
+    const bool showSpinner = running || hasParseProgress;
 
     // 控制 Spinner 的显示/隐藏，并定位到状态栏右侧
     if (s->hProgress) {
         bool isVisible = (GetWindowLongW(s->hProgress, GWL_STYLE) & WS_VISIBLE) != 0;
-        if (running && !isVisible) {
-            // 定位到状态栏右侧
+        if (showSpinner) {
             RECT sbRect{};
             GetClientRect(s->hStatusBar, &sbRect);
             const int size   = sbRect.bottom - sbRect.top - 2;
-            const int pbX    = sbRect.right - size - 18; // 留出 sizegrip 空间
+            const UINT dpi = hWnd ? GetWindowDpi(hWnd) : 96;
+            const int pbX = max(0, sbRect.right - size - ScaleDpi(2, dpi));
             const int pbY    = 1;
             MoveWindow(s->hProgress, pbX, pbY, size, size, FALSE);
-            ShowWindow(s->hProgress, SW_SHOW);
-            // 启动动画定时器（每 40ms 旋转一帧），挂在主窗口上
-            SetTimer(GetParent(s->hStatusBar), IDT_SPINNER_ANIM, 40, nullptr);
-        } else if (!running && isVisible) {
-            KillTimer(GetParent(s->hStatusBar), IDT_SPINNER_ANIM);
+            if (!isVisible) {
+                ShowWindow(s->hProgress, SW_SHOW);
+                // 启动动画定时器（每 40ms 旋转一帧），挂在主窗口上
+                if (hWnd) SetTimer(hWnd, IDT_SPINNER_ANIM, 40, nullptr);
+            }
+        } else if (!showSpinner && isVisible) {
+            if (hWnd) KillTimer(hWnd, IDT_SPINNER_ANIM);
             ShowWindow(s->hProgress, SW_HIDE);
         }
     }
 
-    std::wstring statusText;
-    if (running) {
-        statusText = LS_(s, IDS_STATUS_PROCESSING) + L" | " + LS_(s, IDS_STATUS_FILE_COUNT) + L": " + fileCountStr +
-                     L" | " + LS_(s, IDS_STATUS_ARCHIVE_COUNT) + L": " + archiveCountStr;
-    } else {
-        statusText = LS_(s, IDS_STATUS_READY) + L" | " + LS_(s, IDS_STATUS_FILE_COUNT) + L": " + fileCountStr +
-                     L" | " + LS_(s, IDS_STATUS_ARCHIVE_COUNT) + L": " + archiveCountStr;
+    std::wstring leftText = LS_(s, IDS_STATUS_FILE_COUNT) + L": " + fileCountStr +
+                            L" | " + LS_(s, IDS_STATUS_ARCHIVE_COUNT) + L": " + archiveCountStr;
+
+    std::wstring rightText = LS_(s, IDS_STATUS_READY);
+    if (hasParseProgress) {
+        const int64_t clampedDone = min(parseDone, parseTotal);
+        const int percent = parseTotal > 0 ? (int)((clampedDone * 100) / parseTotal) : 0;
+        rightText = std::to_wstring((long long)clampedDone) + L"/" +
+                    std::to_wstring((long long)parseTotal) + L"  " +
+                    std::to_wstring(percent) + L"%";
     }
 
-    SendMessageW(s->hStatusBar, SB_SETTEXTW, 0, (LPARAM)statusText.c_str());
+    SendMessageW(s->hStatusBar, SB_SETTEXTW, 0, (LPARAM)leftText.c_str());
+    SendMessageW(s->hStatusBar, SB_SETTEXTW, 1, (LPARAM)rightText.c_str());
 }
 
 // 自绘文本：将匹配搜索关键词的部分用粗体绘制，其余用普通字体
@@ -751,6 +955,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case IDM_SEARCH_FIND:
             LoadRowsFromDbAndRefreshAsync(hWnd, s);
             return 0;
+        case IDM_TOOLS_OPTIONS:
+            ShowSettingsPanel(hWnd, s);
+            return 0;
         case IDM_HELP_ABOUT:
             MessageBoxW(hWnd, LS_(s, IDS_ABOUT_TEXT).c_str(), LS_(s, IDS_ABOUT_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
             return 0;
@@ -922,6 +1129,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_APP_INDEX_DONE:
+        s->parseDoneCount.store(s->parseTotalCount.load());
         UpdateStatusBar(s);
         LOG_INFO(L"WM_APP_INDEX_DONE");
         return 0;
@@ -956,6 +1164,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     case WM_APP_UPDATE_STATUSBAR:
+        UpdateStatusBar(s);
+        return 0;
+
+    case WM_APP_PARSE_PROGRESS:
+        s->parseDoneCount.store((int64_t)wParam);
+        s->parseTotalCount.store((int64_t)lParam);
         UpdateStatusBar(s);
         return 0;
 
@@ -997,7 +1211,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     const std::wstring* src = nullptr;
                     switch (iSub) {
                     case 0: src = &cr->name; break;
-                    case 1: src = &cr->archivePath; break;
+                    case 1: {
+                        static thread_local std::wstring archiveText;
+                        archiveText = GetArchiveColumnText(s, cr);
+                        src = &archiveText;
+                        break;
+                    }
                     case 2: src = &cr->entryPath; break;
                     case 3: src = &cr->sizeStr; break;
                     case 4: src = &cr->origSizeStr; break;
@@ -1087,7 +1306,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                 if (cr) {
                                     switch (iSubItem) {
                                     case 0: text = cr->name; iconIdx = cr->iconIndex; break;
-                                    case 1: text = cr->archivePath; break;
+                                    case 1: text = GetArchiveColumnText(s, cr); break;
                                     case 2: text = cr->entryPath; break;
                                     }
                                 } else if (!s->needsListRetry) {

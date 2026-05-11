@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "database.h"
+#include "config/user_config.h"
 #include "icon_cache.h"
 #include "indexer.h"
 #include "row_cache.h"
@@ -44,6 +45,8 @@ struct ExtractResult {
 struct MainWindowState {
     HINSTANCE hInstance = nullptr;
     std::wstring dbPath;
+    UserConfig userConfig;
+    bool showArchiveFullPath = false;
 
     // UI 控件句柄
     HWND hSearch = nullptr;
@@ -66,6 +69,8 @@ struct MainWindowState {
 
     // 缓存的归档文件数量
     std::atomic<int64_t> cachedArchiveCount{ 0 };
+    std::atomic<int64_t> parseDoneCount{ 0 };
+    std::atomic<int64_t> parseTotalCount{ 0 };
 
     // 模块
     IconCache iconCache;

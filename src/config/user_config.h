@@ -44,6 +44,12 @@ public:
     const std::vector<wchar_t>& GetScanDriveLetters() const;
 
     /**
+     * 获取主列表“归档文件”列是否显示完整路径。
+     * @return 显示完整路径返回 true；仅显示文件名返回 false。
+     */
+    bool GetShowArchiveFullPath() const;
+
+    /**
      * 设置归档扩展名列表。
      * @param exts 新的扩展名列表。
      */
@@ -54,6 +60,12 @@ public:
      * @param drives 新的扫描盘符列表。
      */
     void SetScanDriveLetters(const std::vector<wchar_t>& drives);
+
+    /**
+     * 设置主列表“归档文件”列是否显示完整路径。
+     * @param showFullPath true 显示完整路径，false 仅显示文件名。
+     */
+    void SetShowArchiveFullPath(bool showFullPath);
 
     /**
      * 获取配置文件路径。
@@ -71,6 +83,7 @@ private:
     std::wstring configPath_;
     std::vector<std::wstring> archiveExtensions_;
     std::vector<wchar_t> scanDriveLetters_;
+    bool showArchiveFullPath_ = false;
     AdvConfig::Parser parser_;
     bool configMigrated_ = false;
 };

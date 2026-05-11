@@ -14,15 +14,18 @@ using namespace AdvConfig;
 
 static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
 static const wchar_t* kKeyScanDrives = L"scan_drives";
+static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
 
 // 默认归档扩展名
 static const std::vector<std::wstring> kDefaultArchiveExtensions = {
-    L".zip", L".7z", L".rar"
+    L".zip",
+    L".rar",
+    L".7z"
 };
 
 // 测试阶段默认只扫描 G 盘；配置为空列表时扫描所有 NTFS 盘。
 static const std::vector<wchar_t> kDefaultScanDriveLetters = {
-    L'G'
+    // L'G'
 };
 
 UserConfig::UserConfig()
@@ -77,9 +80,15 @@ const std::vector<wchar_t>& UserConfig::GetScanDriveLetters() const
     return scanDriveLetters_;
 }
 
+bool UserConfig::GetShowArchiveFullPath() const
+{
+    return showArchiveFullPath_;
+}
+
 void UserConfig::SetArchiveExtensions(const std::vector<std::wstring>& exts)
 {
     archiveExtensions_ = exts;
+    SyncToParser();
 }
 
 void UserConfig::SetScanDriveLetters(const std::vector<wchar_t>& drives)
@@ -92,6 +101,13 @@ void UserConfig::SetScanDriveLetters(const std::vector<wchar_t>& drives)
             scanDriveLetters_.push_back(normalized);
         }
     }
+    SyncToParser();
+}
+
+void UserConfig::SetShowArchiveFullPath(bool showFullPath)
+{
+    showArchiveFullPath_ = showFullPath;
+    SyncToParser();
 }
 
 void UserConfig::SyncFromParser()
@@ -174,6 +190,15 @@ void UserConfig::SyncFromParser()
         SyncToParser();
         configMigrated_ = true;
     }
+
+    const Value& showFullPath = parser_.Get(kKeyShowArchiveFullPath);
+    if (showFullPath.IsBool()) {
+        showArchiveFullPath_ = showFullPath.AsBool(false);
+    } else if (!parser_.Contains(kKeyShowArchiveFullPath)) {
+        showArchiveFullPath_ = false;
+        SyncToParser();
+        configMigrated_ = true;
+    }
 }
 
 void UserConfig::SyncToParser()
@@ -189,6 +214,8 @@ void UserConfig::SyncToParser()
         driveList.push_back(Value(std::wstring(1, drive)));
     }
     parser_.Set(kKeyScanDrives, Value(std::move(driveList)));
+
+    parser_.Set(kKeyShowArchiveFullPath, Value(showArchiveFullPath_));
 }
 
 bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
@@ -202,6 +229,7 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         LOG_INFO(L"Config file not found, creating default: %s", configPath.c_str());
         archiveExtensions_ = kDefaultArchiveExtensions;
         scanDriveLetters_ = kDefaultScanDriveLetters;
+        showArchiveFullPath_ = false;
         SyncToParser();
         return Save(err);
     }

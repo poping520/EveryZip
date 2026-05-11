@@ -65,6 +65,9 @@
 #define IDS_ABOUT_TEXT          2061
 #define IDS_ERROR               2062
 #define IDS_DBLCLICK_PLACEHOLDER 2063
+#define IDS_SETTINGS_TITLE      2064
+#define IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH 2065
+#define IDS_SETTINGS_SAVE_FAILED 2066
 // 右键菜单
 #define IDS_CTX_OPEN_FOLDER     2070
 #define IDS_CTX_PROPERTIES      2071
@@ -84,3 +87,4 @@
 #define WM_APP_ROWS_READY (WM_APP + 5)  // 异步加载完成，wParam=0, lParam=AsyncLoadResult*
 #define WM_APP_TRAY       (WM_APP + 6)  // 托盘图标回调消息
 #define WM_APP_EXTRACT_DONE (WM_APP + 7) // 解压完成，wParam=1成功/0失败，lParam=ExtractResult*
+#define WM_APP_PARSE_PROGRESS (WM_APP + 8) // 解析进度，wParam=已完成数，lParam=总数

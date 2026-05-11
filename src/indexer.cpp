@@ -193,6 +193,10 @@ std::vector<wchar_t> Indexer::GetMonitoredDrives() const {
     return drives;
 }
 
+static void PostParseProgress(HWND hWnd, size_t done, size_t total) {
+    PostMessageW(hWnd, WM_APP_PARSE_PROGRESS, (WPARAM)done, (LPARAM)total);
+}
+
 void Indexer::Stop() {
     LOG_INFO(L"StopIndexing requested");
     cancel_.store(true);
@@ -312,9 +316,16 @@ void Indexer::Start(HWND hWnd) {
                         }
                     }
 
+                    const size_t parseTotal = toParse.size();
+                    size_t parseDone = 0;
+                    if (!cancel_.load() && parseTotal > 0) {
+                        PostParseProgress(hWnd, 0, parseTotal);
+                    }
                     for (const auto& a : toParse) {
                         if (cancel_.load()) break;
                         ParseAndStoreArchive(db, a);
+                        ++parseDone;
+                        PostParseProgress(hWnd, parseDone, parseTotal);
                     }
 
                     if (reparseSevenZip && !cancel_.load()) {
@@ -483,7 +494,9 @@ void Indexer::Start(HWND hWnd) {
 
                         // 重新解析归档文件内容
                         LOG_INFO(L"Monitor: Re-parsing archive: %s", fullPath.c_str());
+                        PostParseProgress(hWnd, 0, 1);
                         ParseAndStoreArchive(monDb, af);
+                        PostParseProgress(hWnd, 1, 1);
                         anyChanged = true;
                     }
                 }

@@ -253,6 +253,11 @@ static std::wstring GetArchiveColumnText(MainWindowState* s, const CachedRow* cr
     return s->showArchiveFullPath ? cr->archivePath : GetEntryNameFromPath(cr->archivePath);
 }
 
+static std::wstring GetArchiveColumnTipText(MainWindowState* s, const CachedRow* cr) {
+    if (!cr) return {};
+    return s->showArchiveFullPath ? GetEntryNameFromPath(cr->archivePath) : cr->archivePath;
+}
+
 static void ShowSettingsPanel(HWND hOwner, MainWindowState* s);
 
 // 创建主窗口菜单栏
@@ -746,6 +751,151 @@ static void DrawTextWithBoldMatch(HDC hdc, const RECT& rcCell, const std::wstrin
     }
 }
 
+static void HideArchiveTooltip(MainWindowState* s) {
+    if (!s || !s->hArchiveTooltip || !s->archiveTooltipTracking) return;
+
+    TOOLINFOW ti{};
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = s->hList;
+    ti.uId = 1;
+    SendMessageW(s->hArchiveTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+    s->archiveTooltipTracking = false;
+    s->archiveTooltipItem = -1;
+    s->archiveTooltipSubItem = -1;
+    s->archiveTooltipText.clear();
+}
+
+static int64_t GetRowIdByListItem(MainWindowState* s, int item) {
+    if (!s || item < 0) return 0;
+    std::lock_guard<std::mutex> lk(s->rowsMutex);
+    if (item >= 0 && item < (int)s->rowIds.size()) {
+        return s->rowIds[item];
+    }
+    return 0;
+}
+
+static void UpdateArchiveTooltip(HWND hList, MainWindowState* s, LPARAM lParam) {
+    if (!s || !s->hArchiveTooltip) return;
+
+    POINT pt{ (short)LOWORD(lParam), (short)HIWORD(lParam) };
+    LVHITTESTINFO hit{};
+    hit.pt = pt;
+    const int item = ListView_SubItemHitTest(hList, &hit);
+    if (item < 0 || hit.iSubItem != 1) {
+        HideArchiveTooltip(s);
+        return;
+    }
+
+    const int64_t rowId = GetRowIdByListItem(s, item);
+    if (rowId <= 0) {
+        HideArchiveTooltip(s);
+        return;
+    }
+
+    const CachedRow* cr = s->rowCache.Get(rowId);
+    if (!cr || cr->archivePath.empty()) {
+        HideArchiveTooltip(s);
+        return;
+    }
+
+    std::wstring tip = GetArchiveColumnTipText(s, cr);
+    if (tip.empty()) {
+        HideArchiveTooltip(s);
+        return;
+    }
+
+    POINT screenPt = pt;
+    ClientToScreen(hList, &screenPt);
+    screenPt.x += 12;
+    screenPt.y += 20;
+
+    const bool changed = item != s->archiveTooltipItem ||
+                         hit.iSubItem != s->archiveTooltipSubItem ||
+                         tip != s->archiveTooltipText;
+
+    if (changed) {
+        s->archiveTooltipItem = item;
+        s->archiveTooltipSubItem = hit.iSubItem;
+        s->archiveTooltipText = std::move(tip);
+
+        TOOLINFOW ti{};
+        ti.cbSize = sizeof(ti);
+        ti.hwnd = hList;
+        ti.uId = 1;
+        ti.lpszText = const_cast<LPWSTR>(s->archiveTooltipText.c_str());
+        SendMessageW(s->hArchiveTooltip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+    }
+
+    TOOLINFOW ti{};
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = hList;
+    ti.uId = 1;
+    SendMessageW(s->hArchiveTooltip, TTM_TRACKPOSITION, 0, MAKELPARAM(screenPt.x, screenPt.y));
+    SendMessageW(s->hArchiveTooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
+    s->archiveTooltipTracking = true;
+
+    TRACKMOUSEEVENT tme{};
+    tme.cbSize = sizeof(tme);
+    tme.dwFlags = TME_LEAVE;
+    tme.hwndTrack = hList;
+    TrackMouseEvent(&tme);
+}
+
+static void InitArchiveTooltip(MainWindowState* s) {
+    if (!s || !s->hList || s->hArchiveTooltip) return;
+
+    s->hArchiveTooltip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        s->hList,
+        nullptr,
+        s->hInstance,
+        nullptr);
+    if (!s->hArchiveTooltip) return;
+
+    SetWindowPos(s->hArchiveTooltip, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SendMessageW(s->hArchiveTooltip, TTM_SETMAXTIPWIDTH, 0, 600);
+    SendMessageW(s->hArchiveTooltip, TTM_SETDELAYTIME, TTDT_INITIAL, 300);
+    SendMessageW(s->hArchiveTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 10000);
+
+    TOOLINFOW ti{};
+    ti.cbSize = sizeof(ti);
+    ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+    ti.hwnd = s->hList;
+    ti.uId = 1;
+    ti.lpszText = const_cast<LPWSTR>(L"");
+    GetClientRect(s->hList, &ti.rect);
+    SendMessageW(s->hArchiveTooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+}
+
+static LRESULT CALLBACK ResultsListProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HWND hParent = GetParent(hWnd);
+    MainWindowState* s = hParent ? GetState(hParent) : nullptr;
+    WNDPROC oldProc = s ? s->listOldProc : DefWindowProcW;
+
+    switch (msg) {
+    case WM_MOUSEMOVE:
+        UpdateArchiveTooltip(hWnd, s, lParam);
+        break;
+    case WM_MOUSELEAVE:
+    case WM_MOUSEWHEEL:
+    case WM_HSCROLL:
+    case WM_VSCROLL:
+    case WM_KEYDOWN:
+        HideArchiveTooltip(s);
+        break;
+    case WM_DESTROY:
+        HideArchiveTooltip(s);
+        break;
+    }
+
+    return CallWindowProcW(oldProc, hWnd, msg, wParam, lParam);
+}
+
 // 搜索框子类化窗口过程：拦截回车键触发搜索，监听文本变化实时检索
 static LRESULT CALLBACK SearchEditProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // 获取父窗口的 state 以访问 editOldProc
@@ -825,6 +975,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         if (s->hList) {
             SetupListColumns(s);
+            InitArchiveTooltip(s);
+            s->listOldProc = (WNDPROC)SetWindowLongPtrW(s->hList, GWLP_WNDPROC, (LONG_PTR)ResultsListProc);
         }
 
         s->hStatusBar = CreateWindowExW(
@@ -1413,6 +1565,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         s->indexer.Stop();
         JoinAsyncThreads(s);
         DrainAsyncResultMessages(hWnd);
+        HideArchiveTooltip(s);
+        if (s->hArchiveTooltip) {
+            DestroyWindow(s->hArchiveTooltip);
+            s->hArchiveTooltip = nullptr;
+        }
         s->rowCache.Close();
         if (s->hSearchFont) { DeleteObject(s->hSearchFont); s->hSearchFont = nullptr; }
         if (s->hNormalFont) { DeleteObject(s->hNormalFont); s->hNormalFont = nullptr; }

@@ -53,7 +53,9 @@ struct MainWindowState {
     HWND hList = nullptr;
     HWND hStatusBar = nullptr;
     HWND hProgress = nullptr;
+    HWND hArchiveTooltip = nullptr;
     WNDPROC editOldProc = nullptr;
+    WNDPROC listOldProc = nullptr;
     HFONT hSearchFont = nullptr;
     HFONT hNormalFont = nullptr;
     HFONT hBoldFont = nullptr;
@@ -85,6 +87,10 @@ struct MainWindowState {
 
     // 标记是否有行数据加载失败，需要延迟重试刷新列表
     bool needsListRetry = false;
+    int archiveTooltipItem = -1;
+    int archiveTooltipSubItem = -1;
+    bool archiveTooltipTracking = false;
+    std::wstring archiveTooltipText;
 
     std::atomic_bool shuttingDown{ false };
     std::atomic_uint64_t loadGeneration{ 0 };

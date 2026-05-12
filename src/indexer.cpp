@@ -10,7 +10,9 @@
 #include <memory>
 #include <unordered_map>
 
-Indexer::Indexer() = default;
+Indexer::Indexer() {
+    SetArchiveExtensions(archiveExtensions_);
+}
 
 Indexer::~Indexer() {
     Stop();
@@ -32,6 +34,27 @@ void Indexer::SetDbPath(const std::wstring& dbPath) {
 
 void Indexer::SetArchiveExtensions(const std::vector<std::wstring>& exts) {
     archiveExtensions_ = exts;
+    archiveFormatRules_.clear();
+    for (const auto& ext : exts) {
+        const std::wstring normalized = UserConfig::NormalizeArchiveExtension(ext);
+        if (normalized == L".7z") {
+            archiveFormatRules_.push_back({ normalized, L"7z", true, L"custom" });
+        } else if (normalized == L".rar") {
+            archiveFormatRules_.push_back({ normalized, L"rar", true, L"custom" });
+        } else if (!normalized.empty()) {
+            archiveFormatRules_.push_back({ normalized, L"zip", true, L"custom" });
+        }
+    }
+}
+
+void Indexer::SetArchiveFormatRules(const std::vector<UserConfig::ArchiveFormatRule>& rules) {
+    archiveFormatRules_ = rules;
+    archiveExtensions_.clear();
+    for (const auto& rule : archiveFormatRules_) {
+        if (rule.enabled && !rule.extension.empty()) {
+            archiveExtensions_.push_back(rule.extension);
+        }
+    }
 }
 
 void Indexer::SetScanDriveLetters(const std::vector<wchar_t>& drives) {
@@ -91,11 +114,24 @@ bool Indexer::EnablePrivilege(const wchar_t* privilegeName) {
     return err != ERROR_NOT_ALL_ASSIGNED;
 }
 
-void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
+static std::wstring GetParserTypeForPath(const std::wstring& path,
+                                         const std::vector<UserConfig::ArchiveFormatRule>& rules) {
+    const size_t dotPos = path.find_last_of(L'.');
+    if (dotPos == std::wstring::npos) return {};
+    const std::wstring ext = UserConfig::NormalizeArchiveExtension(path.substr(dotPos));
+    for (const auto& rule : rules) {
+        if (rule.enabled && rule.extension == ext) {
+            return rule.parser;
+        }
+    }
+    return {};
+}
+
+void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const std::wstring& parserType) {
     std::unique_ptr<EveryZip::IArchiveParser> parserPtr =
-        EveryZip::CreateArchiveParserForPath(a.filePath);
+        EveryZip::CreateArchiveParserByType(parserType);
     if (!parserPtr) {
-        LOG_WARN(L"No archive parser for: %s", a.filePath.c_str());
+        LOG_WARN(L"No archive parser for: %s (parser=%s)", a.filePath.c_str(), parserType.c_str());
         return;
     }
 
@@ -324,7 +360,7 @@ void Indexer::Start(HWND hWnd) {
                     }
                     for (const auto& a : toParse) {
                         if (cancel_.load()) break;
-                        ParseAndStoreArchive(db, a);
+                        ParseAndStoreArchive(db, a, GetParserTypeForPath(a.filePath, archiveFormatRules_));
                         ++parseDone;
                         PostParseProgress(hWnd, parseDone, parseTotal);
                     }
@@ -496,7 +532,7 @@ void Indexer::Start(HWND hWnd) {
                         // 重新解析归档文件内容
                         LOG_INFO(L"Monitor: Re-parsing archive: %s", fullPath.c_str());
                         PostParseProgress(hWnd, 0, 1);
-                        ParseAndStoreArchive(monDb, af);
+                        ParseAndStoreArchive(monDb, af, GetParserTypeForPath(af.filePath, archiveFormatRules_));
                         PostParseProgress(hWnd, 1, 1);
                         anyChanged = true;
                     }

@@ -33,6 +33,18 @@ static constexpr wchar_t kSpinnerClass[] = L"EveryZipSpinner";
 static constexpr wchar_t kSettingsClass[] = L"EveryZipSettingsWindow";
 static constexpr int IDC_SETTINGS_SHOW_FULL_PATH = 3001;
 static constexpr int IDC_SETTINGS_REMEMBER_UI_STATE = 3002;
+static constexpr int IDC_SETTINGS_DEFAULT_ZIP = 3010;
+static constexpr int IDC_SETTINGS_DEFAULT_RAR = 3011;
+static constexpr int IDC_SETTINGS_DEFAULT_7Z = 3012;
+static constexpr int IDC_SETTINGS_KNOWN_APK = 3020;
+static constexpr int IDC_SETTINGS_KNOWN_IPA = 3021;
+static constexpr int IDC_SETTINGS_KNOWN_JAR = 3022;
+static constexpr int IDC_SETTINGS_KNOWN_WAR = 3023;
+static constexpr int IDC_SETTINGS_CUSTOM_LIST = 3030;
+static constexpr int IDC_SETTINGS_CUSTOM_EXT = 3031;
+static constexpr int IDC_SETTINGS_CUSTOM_PARSER = 3032;
+static constexpr int IDC_SETTINGS_CUSTOM_ADD = 3033;
+static constexpr int IDC_SETTINGS_CUSTOM_DELETE = 3034;
 
 // Spinner 窗口过程：自绘旋转圆弧动画
 static LRESULT CALLBACK SpinnerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -297,6 +309,8 @@ static bool IsSubItemTextTruncated(HWND hList, MainWindowState* s, int item, int
 }
 
 static void ShowSettingsPanel(HWND hOwner, MainWindowState* s);
+static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s);
+static void UpdateStatusBar(MainWindowState* s);
 
 // 创建主窗口菜单栏
 static HMENU CreateMainMenu(MainWindowState* s) {
@@ -449,6 +463,10 @@ struct SettingsWindowState {
     MainWindowState* mainState = nullptr;
     HWND hCheckFullPath = nullptr;
     HWND hCheckRememberUiState = nullptr;
+    HWND hCustomList = nullptr;
+    HWND hCustomExt = nullptr;
+    HWND hCustomParser = nullptr;
+    std::vector<UserConfig::ArchiveFormatRule> rules;
     HFONT hFont = nullptr;
 };
 
@@ -545,6 +563,186 @@ static void ResetLayoutColumns(HWND hWnd, MainWindowState* s) {
     RefreshList(s);
 }
 
+static UserConfig::ArchiveFormatRule* FindSettingsRule(SettingsWindowState* sws, const std::wstring& ext) {
+    if (!sws) return nullptr;
+    const std::wstring normalized = UserConfig::NormalizeArchiveExtension(ext);
+    for (auto& rule : sws->rules) {
+        if (rule.extension == normalized) return &rule;
+    }
+    return nullptr;
+}
+
+static bool HasSettingsRule(SettingsWindowState* sws, const std::wstring& ext) {
+    return FindSettingsRule(sws, ext) != nullptr;
+}
+
+static void SetRuleCheckbox(HWND hWnd, SettingsWindowState* sws, int controlId, const std::wstring& ext) {
+    HWND hCheck = GetDlgItem(hWnd, controlId);
+    const auto* rule = FindSettingsRule(sws, ext);
+    if (hCheck && rule) {
+        SendMessageW(hCheck, BM_SETCHECK, rule->enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+}
+
+static void UpdateRuleFromCheckbox(HWND hWnd, SettingsWindowState* sws, int controlId, const std::wstring& ext) {
+    HWND hCheck = GetDlgItem(hWnd, controlId);
+    auto* rule = FindSettingsRule(sws, ext);
+    if (hCheck && rule) {
+        rule->enabled = SendMessageW(hCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    }
+}
+
+static void RefreshCustomFormatList(SettingsWindowState* sws) {
+    if (!sws || !sws->hCustomList) return;
+
+    ListView_DeleteAllItems(sws->hCustomList);
+    int row = 0;
+    for (const auto& rule : sws->rules) {
+        if (rule.group != L"custom") continue;
+
+        LVITEMW item{};
+        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.iItem = row;
+        item.iSubItem = 0;
+        std::wstring enabledText = rule.enabled ? L"Y" : L"";
+        item.pszText = const_cast<LPWSTR>(enabledText.c_str());
+        item.lParam = row;
+        const int inserted = ListView_InsertItem(sws->hCustomList, &item);
+        if (inserted >= 0) {
+            ListView_SetCheckState(sws->hCustomList, inserted, rule.enabled ? TRUE : FALSE);
+            ListView_SetItemText(sws->hCustomList, inserted, 1, const_cast<LPWSTR>(rule.extension.c_str()));
+            ListView_SetItemText(sws->hCustomList, inserted, 2, const_cast<LPWSTR>(rule.parser.c_str()));
+        }
+        ++row;
+    }
+}
+
+static void SyncCustomChecksFromList(SettingsWindowState* sws) {
+    if (!sws || !sws->hCustomList) return;
+
+    const int count = ListView_GetItemCount(sws->hCustomList);
+    for (int i = 0; i < count; ++i) {
+        wchar_t extBuf[64]{};
+        ListView_GetItemText(sws->hCustomList, i, 1, extBuf, _countof(extBuf));
+        auto* rule = FindSettingsRule(sws, extBuf);
+        if (rule && rule->group == L"custom") {
+            rule->enabled = ListView_GetCheckState(sws->hCustomList, i) != FALSE;
+        }
+    }
+}
+
+static void SetupCustomFormatListColumns(HWND hList, MainWindowState* s) {
+    if (!hList || !s) return;
+
+    ListView_SetExtendedListViewStyle(hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_CHECKBOXES);
+
+    static const UINT ids[] = { IDS_SETTINGS_COL_ENABLED, IDS_SETTINGS_COL_EXTENSION, IDS_SETTINGS_COL_PARSER };
+    static const int widths[] = { 70, 120, 110 };
+    for (int i = 0; i < 3; ++i) {
+        std::wstring text = LS_(s, ids[i]);
+        LVCOLUMNW col{};
+        col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        col.pszText = const_cast<LPWSTR>(text.c_str());
+        col.cx = widths[i];
+        col.iSubItem = i;
+        ListView_InsertColumn(hList, i, &col);
+    }
+}
+
+static void AddCustomFormat(HWND hWnd, SettingsWindowState* sws) {
+    if (!sws || !sws->mainState || !sws->hCustomExt || !sws->hCustomParser) return;
+
+    wchar_t extBuf[64]{};
+    GetWindowTextW(sws->hCustomExt, extBuf, _countof(extBuf));
+    const std::wstring ext = UserConfig::NormalizeArchiveExtension(extBuf);
+    if (!UserConfig::IsValidCustomArchiveExtension(ext)) {
+        MessageBoxW(hWnd, LS_(sws->mainState, IDS_SETTINGS_INVALID_EXTENSION).c_str(),
+            LS_(sws->mainState, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (HasSettingsRule(sws, ext)) {
+        MessageBoxW(hWnd, LS_(sws->mainState, IDS_SETTINGS_DUPLICATE_EXTENSION).c_str(),
+            LS_(sws->mainState, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    wchar_t parserBuf[16]{};
+    GetWindowTextW(sws->hCustomParser, parserBuf, _countof(parserBuf));
+    std::wstring parser = parserBuf;
+    if (parser.empty()) parser = L"zip";
+
+    sws->rules.push_back({ ext, parser, true, L"custom" });
+    SetWindowTextW(sws->hCustomExt, L"");
+    RefreshCustomFormatList(sws);
+}
+
+static void DeleteSelectedCustomFormat(SettingsWindowState* sws) {
+    if (!sws || !sws->hCustomList) return;
+
+    const int selected = ListView_GetNextItem(sws->hCustomList, -1, LVNI_SELECTED);
+    if (selected < 0) return;
+
+    wchar_t extBuf[64]{};
+    ListView_GetItemText(sws->hCustomList, selected, 1, extBuf, _countof(extBuf));
+    const std::wstring ext = UserConfig::NormalizeArchiveExtension(extBuf);
+    sws->rules.erase(std::remove_if(sws->rules.begin(), sws->rules.end(),
+        [&](const UserConfig::ArchiveFormatRule& rule) {
+            return rule.group == L"custom" && rule.extension == ext;
+        }), sws->rules.end());
+    RefreshCustomFormatList(sws);
+}
+
+static bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
+    if (!sws || !sws->mainState) return false;
+
+    MainWindowState* s = sws->mainState;
+
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_DEFAULT_ZIP, L".zip");
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_DEFAULT_RAR, L".rar");
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_DEFAULT_7Z, L".7z");
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_APK, L".apk");
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_IPA, L".ipa");
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_JAR, L".jar");
+    UpdateRuleFromCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_WAR, L".war");
+    SyncCustomChecksFromList(sws);
+
+    const auto previousRules = s->userConfig.GetArchiveFormatRules();
+    const bool previousFullPath = s->showArchiveFullPath;
+    const bool previousRemember = s->userConfig.GetRememberUiState();
+
+    const bool fullPath = sws->hCheckFullPath &&
+        SendMessageW(sws->hCheckFullPath, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool remember = sws->hCheckRememberUiState &&
+        SendMessageW(sws->hCheckRememberUiState, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+    s->userConfig.SetArchiveFormatRules(sws->rules);
+    s->showArchiveFullPath = fullPath;
+    s->userConfig.SetShowArchiveFullPath(fullPath);
+    s->userConfig.SetRememberUiState(remember);
+
+    std::wstring err;
+    if (!s->userConfig.Save(&err)) {
+        s->userConfig.SetArchiveFormatRules(previousRules);
+        s->showArchiveFullPath = previousFullPath;
+        s->userConfig.SetShowArchiveFullPath(previousFullPath);
+        s->userConfig.SetRememberUiState(previousRemember);
+        std::wstring msg = LS_(s, IDS_SETTINGS_SAVE_FAILED);
+        if (!err.empty()) msg += L"\n" + err;
+        MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    s->parseDoneCount.store(0);
+    s->parseTotalCount.store(0);
+    s->indexer.Stop();
+    s->indexer.SetArchiveFormatRules(s->userConfig.GetArchiveFormatRules());
+    s->rowCache.Clear();
+    LoadRowsFromDbAndRefreshAsync(sws->owner, s);
+    s->indexer.Start(sws->owner);
+    UpdateStatusBar(s);
+    return true;
+}
+
 static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     SettingsWindowState* sws = (SettingsWindowState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
 
@@ -554,17 +752,70 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)sws);
 
         MainWindowState* s = sws ? sws->mainState : nullptr;
+        if (sws && s) {
+            sws->rules = s->userConfig.GetArchiveFormatRules();
+        }
         const UINT dpi = GetWindowDpi(hWnd);
         const int margin = ScaleDpi(16, dpi);
         const int checkH = ScaleDpi(24, dpi);
         const int checkGap = ScaleDpi(8, dpi);
+        const int groupH = ScaleDpi(86, dpi);
+        const int groupW = ScaleDpi(310, dpi);
+        const int rightX = margin + groupW + ScaleDpi(14, dpi);
+        const int rightW = ScaleDpi(360, dpi);
+
+        HWND hDefaultGroup = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_DEFAULT_FORMATS).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            margin, margin, groupW, groupH,
+            hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
+
+        HWND hKnownGroup = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_KNOWN_ALIASES).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            margin, margin + groupH + ScaleDpi(10, dpi), groupW, ScaleDpi(112, dpi),
+            hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
+
+        HWND hCustomGroup = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_CUSTOM_FORMATS).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            rightX, margin, rightW, ScaleDpi(266, dpi),
+            hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
+
+        auto createCheck = [&](int id, const wchar_t* text, int x, int y, int w) -> HWND {
+            return CreateWindowExW(0, L"BUTTON", text,
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                x, y, w, checkH,
+                hWnd, (HMENU)(INT_PTR)id, s ? s->hInstance : nullptr, nullptr);
+        };
+
+        const int groupPadX = ScaleDpi(14, dpi);
+        const int groupPadY = ScaleDpi(24, dpi);
+        const int defaultY = margin + groupPadY;
+        createCheck(IDC_SETTINGS_DEFAULT_ZIP, L".zip", margin + groupPadX, defaultY, ScaleDpi(80, dpi));
+        createCheck(IDC_SETTINGS_DEFAULT_RAR, L".rar", margin + groupPadX + ScaleDpi(86, dpi), defaultY, ScaleDpi(80, dpi));
+        createCheck(IDC_SETTINGS_DEFAULT_7Z, L".7z", margin + groupPadX + ScaleDpi(172, dpi), defaultY, ScaleDpi(80, dpi));
+
+        const int knownBaseY = margin + groupH + ScaleDpi(10, dpi) + groupPadY;
+        createCheck(IDC_SETTINGS_KNOWN_APK, L".apk", margin + groupPadX, knownBaseY, ScaleDpi(80, dpi));
+        createCheck(IDC_SETTINGS_KNOWN_IPA, L".ipa", margin + groupPadX + ScaleDpi(86, dpi), knownBaseY, ScaleDpi(80, dpi));
+        createCheck(IDC_SETTINGS_KNOWN_JAR, L".jar", margin + groupPadX, knownBaseY + checkH + checkGap, ScaleDpi(80, dpi));
+        createCheck(IDC_SETTINGS_KNOWN_WAR, L".war", margin + groupPadX + ScaleDpi(86, dpi), knownBaseY + checkH + checkGap, ScaleDpi(80, dpi));
+
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_DEFAULT_ZIP, L".zip");
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_DEFAULT_RAR, L".rar");
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_DEFAULT_7Z, L".7z");
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_APK, L".apk");
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_IPA, L".ipa");
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_JAR, L".jar");
+        SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_WAR, L".war");
 
         sws->hCheckFullPath = CreateWindowExW(
             0,
             L"BUTTON",
             s ? LS_(s, IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            margin, margin, ScaleDpi(260, dpi), checkH,
+            margin, margin + groupH + ScaleDpi(132, dpi), ScaleDpi(260, dpi), checkH,
             hWnd,
             (HMENU)(INT_PTR)IDC_SETTINGS_SHOW_FULL_PATH,
             s ? s->hInstance : nullptr,
@@ -579,7 +830,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
             L"BUTTON",
             s ? LS_(s, IDS_SETTINGS_REMEMBER_UI_STATE).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            margin, margin + checkH + checkGap, ScaleDpi(320, dpi), checkH,
+            margin, margin + groupH + ScaleDpi(132, dpi) + checkH + checkGap, ScaleDpi(320, dpi), checkH,
             hWnd,
             (HMENU)(INT_PTR)IDC_SETTINGS_REMEMBER_UI_STATE,
             s ? s->hInstance : nullptr,
@@ -590,15 +841,88 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
                 s->userConfig.GetRememberUiState() ? BST_CHECKED : BST_UNCHECKED, 0);
         }
 
+        sws->hCustomList = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTVIEWW,
+            L"",
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+            rightX + groupPadX, margin + groupPadY, rightW - groupPadX * 2, ScaleDpi(138, dpi),
+            hWnd,
+            (HMENU)(INT_PTR)IDC_SETTINGS_CUSTOM_LIST,
+            s ? s->hInstance : nullptr,
+            nullptr);
+        SetupCustomFormatListColumns(sws->hCustomList, s);
+        RefreshCustomFormatList(sws);
+
+        HWND hExtLabel = CreateWindowExW(0, L"STATIC",
+            s ? LS_(s, IDS_SETTINGS_CUSTOM_EXTENSION).c_str() : L"",
+            WS_CHILD | WS_VISIBLE,
+            rightX + groupPadX, margin + ScaleDpi(170, dpi), ScaleDpi(56, dpi), checkH,
+            hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
+        sws->hCustomExt = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+            rightX + groupPadX + ScaleDpi(58, dpi), margin + ScaleDpi(168, dpi), ScaleDpi(86, dpi), checkH,
+            hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_CUSTOM_EXT, s ? s->hInstance : nullptr, nullptr);
+
+        HWND hParserLabel = CreateWindowExW(0, L"STATIC",
+            s ? LS_(s, IDS_SETTINGS_CUSTOM_PARSER).c_str() : L"",
+            WS_CHILD | WS_VISIBLE,
+            rightX + groupPadX + ScaleDpi(154, dpi), margin + ScaleDpi(170, dpi), ScaleDpi(56, dpi), checkH,
+            hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
+        sws->hCustomParser = CreateWindowExW(0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+            rightX + groupPadX + ScaleDpi(210, dpi), margin + ScaleDpi(168, dpi), ScaleDpi(78, dpi), ScaleDpi(120, dpi),
+            hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_CUSTOM_PARSER, s ? s->hInstance : nullptr, nullptr);
+        if (sws->hCustomParser) {
+            SendMessageW(sws->hCustomParser, CB_ADDSTRING, 0, (LPARAM)L"zip");
+            SendMessageW(sws->hCustomParser, CB_ADDSTRING, 0, (LPARAM)L"rar");
+            SendMessageW(sws->hCustomParser, CB_ADDSTRING, 0, (LPARAM)L"7z");
+            SendMessageW(sws->hCustomParser, CB_SETCURSEL, 0, 0);
+        }
+
+        HWND hAdd = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_ADD).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            rightX + groupPadX, margin + ScaleDpi(210, dpi), ScaleDpi(82, dpi), checkH,
+            hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_CUSTOM_ADD, s ? s->hInstance : nullptr, nullptr);
+        HWND hDelete = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_DELETE).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            rightX + groupPadX + ScaleDpi(92, dpi), margin + ScaleDpi(210, dpi), ScaleDpi(82, dpi), checkH,
+            hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_CUSTOM_DELETE, s ? s->hInstance : nullptr, nullptr);
+
+        HWND hOk = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_OK).c_str() : L"OK",
+            WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            rightX + rightW - ScaleDpi(180, dpi), margin + ScaleDpi(284, dpi), ScaleDpi(82, dpi), checkH,
+            hWnd, (HMENU)(INT_PTR)IDOK, s ? s->hInstance : nullptr, nullptr);
+        HWND hCancel = CreateWindowExW(0, L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_CANCEL).c_str() : L"Cancel",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            rightX + rightW - ScaleDpi(90, dpi), margin + ScaleDpi(284, dpi), ScaleDpi(82, dpi), checkH,
+            hWnd, (HMENU)(INT_PTR)IDCANCEL, s ? s->hInstance : nullptr, nullptr);
+
         NONCLIENTMETRICSW ncm{};
         ncm.cbSize = sizeof(ncm);
         if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
             sws->hFont = CreateFontIndirectW(&ncm.lfMessageFont);
-            if (sws->hFont && sws->hCheckFullPath) {
-                SendMessageW(sws->hCheckFullPath, WM_SETFONT, (WPARAM)sws->hFont, TRUE);
-            }
-            if (sws->hFont && sws->hCheckRememberUiState) {
-                SendMessageW(sws->hCheckRememberUiState, WM_SETFONT, (WPARAM)sws->hFont, TRUE);
+            if (sws->hFont) {
+                HWND controls[] = {
+                    hDefaultGroup, hKnownGroup, hCustomGroup,
+                    GetDlgItem(hWnd, IDC_SETTINGS_DEFAULT_ZIP),
+                    GetDlgItem(hWnd, IDC_SETTINGS_DEFAULT_RAR),
+                    GetDlgItem(hWnd, IDC_SETTINGS_DEFAULT_7Z),
+                    GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_APK),
+                    GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_IPA),
+                    GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_JAR),
+                    GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_WAR),
+                    sws->hCheckFullPath, sws->hCheckRememberUiState,
+                    sws->hCustomList, hExtLabel, sws->hCustomExt,
+                    hParserLabel, sws->hCustomParser, hAdd, hDelete, hOk, hCancel
+                };
+                for (HWND hCtrl : controls) {
+                    if (hCtrl) SendMessageW(hCtrl, WM_SETFONT, (WPARAM)sws->hFont, TRUE);
+                }
             }
         }
         return 0;
@@ -606,12 +930,22 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
 
     switch (msg) {
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_SETTINGS_SHOW_FULL_PATH && HIWORD(wParam) == BN_CLICKED) {
-            ApplyShowArchiveFullPathSetting(hWnd, sws);
+        if (LOWORD(wParam) == IDC_SETTINGS_CUSTOM_ADD && HIWORD(wParam) == BN_CLICKED) {
+            AddCustomFormat(hWnd, sws);
             return 0;
         }
-        if (LOWORD(wParam) == IDC_SETTINGS_REMEMBER_UI_STATE && HIWORD(wParam) == BN_CLICKED) {
-            ApplyRememberUiStateSetting(hWnd, sws);
+        if (LOWORD(wParam) == IDC_SETTINGS_CUSTOM_DELETE && HIWORD(wParam) == BN_CLICKED) {
+            DeleteSelectedCustomFormat(sws);
+            return 0;
+        }
+        if (LOWORD(wParam) == IDOK && HIWORD(wParam) == BN_CLICKED) {
+            if (ApplyFormatSettings(hWnd, sws)) {
+                DestroyWindow(hWnd);
+            }
+            return 0;
+        }
+        if (LOWORD(wParam) == IDCANCEL && HIWORD(wParam) == BN_CLICKED) {
+            DestroyWindow(hWnd);
             return 0;
         }
         break;
@@ -655,8 +989,8 @@ static void ShowSettingsPanel(HWND hOwner, MainWindowState* s) {
     RegisterSettingsClass(s->hInstance);
 
     const UINT dpi = GetWindowDpi(hOwner);
-    const int width = ScaleDpi(360, dpi);
-    const int height = ScaleDpi(170, dpi);
+    const int width = ScaleDpi(730, dpi);
+    const int height = ScaleDpi(370, dpi);
 
     RECT ownerRc{};
     GetWindowRect(hOwner, &ownerRc);
@@ -1407,13 +1741,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             CoTaskMemFree(pidl);
             std::wstring destDir = destBuf;
+            std::wstring parserType = s->userConfig.GetParserForPath(archivePath);
 
             // 后台线程异步解压，完成后 PostMessage 通知 UI
-            TrackAsyncThread(s, std::thread([hWnd, s, archivePath, entryPathA, destDir]() {
+            TrackAsyncThread(s, std::thread([hWnd, s, archivePath, entryPathA, destDir, parserType]() {
                 auto* res = new ExtractResult();
                 res->destDir = destDir;
                 std::unique_ptr<EveryZip::IArchiveParser> parser =
-                    EveryZip::CreateArchiveParserForPath(archivePath);
+                    EveryZip::CreateArchiveParserByType(parserType);
                 std::string err;
                 if (!parser) {
                     res->success = false;

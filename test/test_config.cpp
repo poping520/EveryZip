@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <string>
 #include <cmath>
+#include <algorithm>
 #include <windows.h>
 
 #include "advconfig.h"
@@ -610,6 +611,92 @@ TEST(TestUserConfigResetListColumnWidths)
     DeleteFileW(path);
 }
 
+TEST(TestUserConfigArchiveFormatDefaults)
+{
+    const wchar_t* path = L"test_user_config_archive_defaults.cfg";
+    DeleteFileW(path);
+
+    UserConfig config;
+    std::wstring err;
+    ASSERT_TRUE(config.Load(path, &err));
+
+    const auto& rules = config.GetArchiveFormatRules();
+    ASSERT_EQ(rules.size(), size_t(7));
+    ASSERT_EQ(config.GetParserForExtension(L".zip"), L"zip");
+    ASSERT_EQ(config.GetParserForExtension(L".rar"), L"rar");
+    ASSERT_EQ(config.GetParserForExtension(L".7z"), L"7z");
+    ASSERT_EQ(config.GetParserForExtension(L".apk"), L"");
+    ASSERT_EQ(config.GetParserForExtension(L".ipa"), L"");
+    ASSERT_EQ(config.GetParserForExtension(L".jar"), L"");
+    ASSERT_EQ(config.GetParserForExtension(L".war"), L"");
+
+    const auto& exts = config.GetArchiveExtensions();
+    ASSERT_EQ(exts.size(), size_t(3));
+    ASSERT_EQ(exts[0], L".zip");
+    ASSERT_EQ(exts[1], L".rar");
+    ASSERT_EQ(exts[2], L".7z");
+
+    Parser parser;
+    ASSERT_TRUE(parser.LoadFile(path, &err));
+    ASSERT_TRUE(parser.Get(L"archive_formats").IsDict());
+    const auto& groups = parser.Get(L"archive_formats").AsDict();
+    ASSERT_TRUE(groups.at(L"default").IsList());
+    ASSERT_TRUE(groups.at(L"known_aliases").IsList());
+    ASSERT_TRUE(groups.at(L"custom").IsList());
+    ASSERT_EQ(groups.at(L"known_aliases").AsList().size(), size_t(4));
+
+    DeleteFileW(path);
+}
+
+TEST(TestUserConfigArchiveFormatRoundTrip)
+{
+    const wchar_t* path = L"test_user_config_archive_roundtrip.cfg";
+    DeleteFileW(path);
+
+    {
+        UserConfig config;
+        std::wstring err;
+        ASSERT_TRUE(config.Load(path, &err));
+
+        std::vector<UserConfig::ArchiveFormatRule> rules = config.GetArchiveFormatRules();
+        for (auto& rule : rules) {
+            if (rule.extension == L".apk") rule.enabled = true;
+            if (rule.extension == L".zip") rule.enabled = false;
+        }
+        rules.push_back({ L".foo", L"rar", true, L"custom" });
+        config.SetArchiveFormatRules(rules);
+        ASSERT_TRUE(config.Save(&err));
+    }
+
+    {
+        UserConfig config;
+        std::wstring err;
+        ASSERT_TRUE(config.Load(path, &err));
+
+        ASSERT_EQ(config.GetParserForExtension(L".zip"), L"");
+        ASSERT_EQ(config.GetParserForExtension(L".apk"), L"zip");
+        ASSERT_EQ(config.GetParserForExtension(L".foo"), L"rar");
+
+        const auto& exts = config.GetArchiveExtensions();
+        ASSERT_TRUE(std::find(exts.begin(), exts.end(), L".apk") != exts.end());
+        ASSERT_TRUE(std::find(exts.begin(), exts.end(), L".foo") != exts.end());
+        ASSERT_TRUE(std::find(exts.begin(), exts.end(), L".zip") == exts.end());
+    }
+
+    DeleteFileW(path);
+}
+
+TEST(TestUserConfigCustomArchiveExtensionValidation)
+{
+    ASSERT_EQ(UserConfig::NormalizeArchiveExtension(L" foo "), L".foo");
+    ASSERT_TRUE(UserConfig::IsValidCustomArchiveExtension(L".foo"));
+    ASSERT_TRUE(UserConfig::IsValidCustomArchiveExtension(L"bar"));
+    ASSERT_FALSE(UserConfig::IsValidCustomArchiveExtension(L""));
+    ASSERT_FALSE(UserConfig::IsValidCustomArchiveExtension(L"."));
+    ASSERT_FALSE(UserConfig::IsValidCustomArchiveExtension(L".bad/name"));
+    ASSERT_FALSE(UserConfig::IsValidCustomArchiveExtension(L".bad.name"));
+}
+
 // ============================================================================
 // main
 // ============================================================================
@@ -667,6 +754,9 @@ int main()
     RUN_TEST(TestUserConfigUiStateDefaultsAndRoundTrip);
     RUN_TEST(TestUserConfigInvalidColumnWidthsFallback);
     RUN_TEST(TestUserConfigResetListColumnWidths);
+    RUN_TEST(TestUserConfigArchiveFormatDefaults);
+    RUN_TEST(TestUserConfigArchiveFormatRoundTrip);
+    RUN_TEST(TestUserConfigCustomArchiveExtensionValidation);
 
     printf("\n=== All tests passed! ===\n");
     return 0;

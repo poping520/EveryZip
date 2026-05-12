@@ -8,6 +8,13 @@
 
 class UserConfig {
 public:
+    struct ArchiveFormatRule {
+        std::wstring extension;
+        std::wstring parser;
+        bool enabled = false;
+        std::wstring group;
+    };
+
     struct WindowPlacementConfig {
         int left = 0;
         int top = 0;
@@ -45,6 +52,12 @@ public:
      */
     const std::vector<std::wstring>& GetArchiveExtensions() const;
 
+    const std::vector<ArchiveFormatRule>& GetArchiveFormatRules() const;
+
+    std::wstring GetParserForExtension(const std::wstring& extension) const;
+
+    std::wstring GetParserForPath(const std::wstring& path) const;
+
     /**
      * 获取限定扫描的盘符列表（例如 {L'G'}）。为空时扫描所有 NTFS 盘。
      * @return 当前扫描盘符列表的只读引用。
@@ -70,6 +83,12 @@ public:
      * @param exts 新的扩展名列表。
      */
     void SetArchiveExtensions(const std::vector<std::wstring>& exts);
+
+    void SetArchiveFormatRules(const std::vector<ArchiveFormatRule>& rules);
+
+    static std::wstring NormalizeArchiveExtension(const std::wstring& ext);
+
+    static bool IsValidCustomArchiveExtension(const std::wstring& ext);
 
     /**
      * 设置限定扫描的盘符列表。为空时扫描所有 NTFS 盘。
@@ -104,8 +123,11 @@ private:
     /** 将成员变量同步回底层解析器。 */
     void SyncToParser();
 
+    void SyncArchiveExtensionsFromFormatRules();
+
     std::wstring configPath_;
     std::vector<std::wstring> archiveExtensions_;
+    std::vector<ArchiveFormatRule> archiveFormatRules_;
     std::vector<wchar_t> scanDriveLetters_;
     bool showArchiveFullPath_ = false;
     bool rememberUiState_ = true;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <cwchar>
 #include <sstream>
 
 #include "../logger.h"
@@ -13,6 +14,7 @@ using namespace AdvConfig;
 // ============================================================================
 
 static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
+static const wchar_t* kKeyArchiveFormats = L"archive_formats";
 static const wchar_t* kKeyScanDrives = L"scan_drives";
 static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
 static const wchar_t* kKeyRememberUiState = L"remember_ui_state";
@@ -25,6 +27,16 @@ static const std::vector<std::wstring> kDefaultArchiveExtensions = {
     L".zip",
     L".rar",
     L".7z"
+};
+
+static const std::vector<UserConfig::ArchiveFormatRule> kBuiltInArchiveFormatRules = {
+    { L".zip", L"zip", true,  L"default" },
+    { L".rar", L"rar", true,  L"default" },
+    { L".7z",  L"7z",  true,  L"default" },
+    { L".apk", L"zip", false, L"known_aliases" },
+    { L".ipa", L"zip", false, L"known_aliases" },
+    { L".jar", L"zip", false, L"known_aliases" },
+    { L".war", L"zip", false, L"known_aliases" }
 };
 
 // 测试阶段默认只扫描 G 盘；配置为空列表时扫描所有 NTFS 盘。
@@ -43,9 +55,11 @@ static const std::vector<int> kDefaultListColumnWidths = {
 
 UserConfig::UserConfig()
     : archiveExtensions_(kDefaultArchiveExtensions),
+      archiveFormatRules_(kBuiltInArchiveFormatRules),
       scanDriveLetters_(kDefaultScanDriveLetters),
       listColumnWidths_(kDefaultListColumnWidths)
 {
+    SyncArchiveExtensionsFromFormatRules();
 }
 
 UserConfig::~UserConfig() = default;
@@ -55,17 +69,17 @@ static bool HasExtension(const std::vector<std::wstring>& exts, const std::wstri
     return std::find(exts.begin(), exts.end(), ext) != exts.end();
 }
 
-static bool EnsureDefaultExtensions(std::vector<std::wstring>* exts)
+static bool IsValidParserName(const std::wstring& parser)
 {
-    if (!exts) return false;
-    if (!exts->empty()) return false;
+    return parser == L"zip" || parser == L"rar" || parser == L"7z";
+}
 
-    for (const auto& ext : kDefaultArchiveExtensions) {
-        if (!HasExtension(*exts, ext)) {
-            exts->push_back(ext);
-        }
+static bool IsBuiltInArchiveExtension(const std::wstring& ext)
+{
+    for (const auto& rule : kBuiltInArchiveFormatRules) {
+        if (rule.extension == ext) return true;
     }
-    return true;
+    return false;
 }
 
 static wchar_t NormalizeDriveLetter(const std::wstring& drive)
@@ -87,6 +101,31 @@ static bool HasDriveLetter(const std::vector<wchar_t>& drives, wchar_t drive)
 const std::vector<std::wstring>& UserConfig::GetArchiveExtensions() const
 {
     return archiveExtensions_;
+}
+
+const std::vector<UserConfig::ArchiveFormatRule>& UserConfig::GetArchiveFormatRules() const
+{
+    return archiveFormatRules_;
+}
+
+std::wstring UserConfig::GetParserForExtension(const std::wstring& extension) const
+{
+    const std::wstring normalized = NormalizeArchiveExtension(extension);
+    if (normalized.empty()) return {};
+
+    for (const auto& rule : archiveFormatRules_) {
+        if (rule.enabled && rule.extension == normalized) {
+            return rule.parser;
+        }
+    }
+    return {};
+}
+
+std::wstring UserConfig::GetParserForPath(const std::wstring& path) const
+{
+    const size_t dotPos = path.find_last_of(L'.');
+    if (dotPos == std::wstring::npos) return {};
+    return GetParserForExtension(path.substr(dotPos));
 }
 
 const std::vector<wchar_t>& UserConfig::GetScanDriveLetters() const
@@ -121,8 +160,102 @@ const std::vector<int>& UserConfig::GetDefaultListColumnWidths()
 
 void UserConfig::SetArchiveExtensions(const std::vector<std::wstring>& exts)
 {
-    archiveExtensions_ = exts;
+    archiveFormatRules_ = kBuiltInArchiveFormatRules;
+    for (auto& rule : archiveFormatRules_) {
+        rule.enabled = false;
+    }
+
+    for (const auto& ext : exts) {
+        const std::wstring normalized = NormalizeArchiveExtension(ext);
+        if (normalized.empty()) continue;
+
+        bool matched = false;
+        for (auto& rule : archiveFormatRules_) {
+            if (rule.extension == normalized) {
+                rule.enabled = true;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched && IsValidCustomArchiveExtension(normalized)) {
+            archiveFormatRules_.push_back({ normalized, L"zip", true, L"custom" });
+        }
+    }
+
+    SyncArchiveExtensionsFromFormatRules();
     SyncToParser();
+}
+
+void UserConfig::SetArchiveFormatRules(const std::vector<ArchiveFormatRule>& rules)
+{
+    archiveFormatRules_.clear();
+
+    for (const auto& builtIn : kBuiltInArchiveFormatRules) {
+        ArchiveFormatRule rule = builtIn;
+        for (const auto& candidate : rules) {
+            const std::wstring ext = NormalizeArchiveExtension(candidate.extension);
+            if (ext == builtIn.extension) {
+                rule.enabled = candidate.enabled;
+                break;
+            }
+        }
+        archiveFormatRules_.push_back(std::move(rule));
+    }
+
+    for (const auto& candidate : rules) {
+        const std::wstring ext = NormalizeArchiveExtension(candidate.extension);
+        if (!IsValidCustomArchiveExtension(ext) || IsBuiltInArchiveExtension(ext)) {
+            continue;
+        }
+
+        std::wstring parser = candidate.parser;
+        std::transform(parser.begin(), parser.end(), parser.begin(), std::towlower);
+        if (!IsValidParserName(parser)) {
+            parser = L"zip";
+        }
+
+        bool exists = false;
+        for (const auto& rule : archiveFormatRules_) {
+            if (rule.extension == ext) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            archiveFormatRules_.push_back({ ext, parser, candidate.enabled, L"custom" });
+        }
+    }
+
+    SyncArchiveExtensionsFromFormatRules();
+    SyncToParser();
+}
+
+std::wstring UserConfig::NormalizeArchiveExtension(const std::wstring& ext)
+{
+    std::wstring out = ext;
+    const size_t first = out.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return {};
+    const size_t last = out.find_last_not_of(L" \t\r\n");
+    out = out.substr(first, last - first + 1);
+
+    if (!out.empty() && out[0] != L'.') {
+        out.insert(out.begin(), L'.');
+    }
+    std::transform(out.begin(), out.end(), out.begin(), std::towlower);
+    return out;
+}
+
+bool UserConfig::IsValidCustomArchiveExtension(const std::wstring& ext)
+{
+    const std::wstring normalized = NormalizeArchiveExtension(ext);
+    if (normalized.size() < 2) return false;
+
+    static constexpr const wchar_t* kInvalidChars = L"<>:\"/\\|?*";
+    for (wchar_t ch : normalized) {
+        if (wcschr(kInvalidChars, ch)) return false;
+        if (ch < 32) return false;
+    }
+    return normalized.find(L'.', 1) == std::wstring::npos;
 }
 
 void UserConfig::SetScanDriveLetters(const std::vector<wchar_t>& drives)
@@ -173,54 +306,69 @@ void UserConfig::ResetListColumnWidths()
     SyncToParser();
 }
 
+static void ApplyConfiguredRule(const AdvConfig::Value& value,
+                                const std::wstring& group,
+                                std::vector<UserConfig::ArchiveFormatRule>* rules)
+{
+    if (!value.IsDict() || !rules) return;
+
+    const auto& dict = value.AsDict();
+    auto extIt = dict.find(L"extension");
+    auto parserIt = dict.find(L"parser");
+    auto enabledIt = dict.find(L"enabled");
+    if (extIt == dict.end() || !extIt->second.IsString()) return;
+
+    const std::wstring ext = UserConfig::NormalizeArchiveExtension(extIt->second.AsString());
+    if (ext.empty()) return;
+
+    std::wstring parser = L"zip";
+    if (parserIt != dict.end() && parserIt->second.IsString()) {
+        parser = parserIt->second.AsString();
+        std::transform(parser.begin(), parser.end(), parser.begin(), std::towlower);
+    }
+    if (!IsValidParserName(parser)) {
+        parser = L"zip";
+    }
+
+    bool enabled = false;
+    if (enabledIt != dict.end() && enabledIt->second.IsBool()) {
+        enabled = enabledIt->second.AsBool(false);
+    }
+
+    for (auto& rule : *rules) {
+        if (rule.extension == ext) {
+            rule.enabled = enabled;
+            if (rule.group == L"custom") {
+                rule.parser = parser;
+            }
+            return;
+        }
+    }
+
+    if (group == L"custom" && UserConfig::IsValidCustomArchiveExtension(ext) && !IsBuiltInArchiveExtension(ext)) {
+        rules->push_back({ ext, parser, enabled, L"custom" });
+    }
+}
+
 void UserConfig::SyncFromParser()
 {
-    bool parsedConfig = false;
     configMigrated_ = false;
 
-    const Value& val = parser_.Get(kKeyArchiveExtensions);
-    if (val.IsList()) {
-        parsedConfig = true;
-        archiveExtensions_.clear();
-        for (const auto& item : val.AsList()) {
-            if (!item.IsString()) continue;
-            std::wstring wext = item.AsString();
-            if (!wext.empty() && wext[0] != L'.') {
-                wext = L"." + wext;
+    archiveFormatRules_ = kBuiltInArchiveFormatRules;
+    const Value& formats = parser_.Get(kKeyArchiveFormats);
+    if (formats.IsDict()) {
+        const auto& groups = formats.AsDict();
+        for (const auto& groupName : { L"default", L"known_aliases", L"custom" }) {
+            auto it = groups.find(groupName);
+            if (it == groups.end() || !it->second.IsList()) continue;
+            for (const auto& item : it->second.AsList()) {
+                ApplyConfiguredRule(item, groupName, &archiveFormatRules_);
             }
-            std::transform(wext.begin(), wext.end(), wext.begin(), std::towlower);
-            archiveExtensions_.push_back(std::move(wext));
         }
-        if (archiveExtensions_.empty()) {
-            archiveExtensions_ = kDefaultArchiveExtensions;
-        }
-    } else if (val.IsString()) {
-        parsedConfig = true;
-        // 兼容旧格式：逗号分隔
-        archiveExtensions_.clear();
-        std::wistringstream extStream(val.AsString());
-        std::wstring ext;
-        while (std::getline(extStream, ext, L',')) {
-            size_t s = ext.find_first_not_of(L" \t");
-            size_t e = ext.find_last_not_of(L" \t");
-            if (s == std::wstring::npos) continue;
-            ext = ext.substr(s, e - s + 1);
-            if (ext.empty()) continue;
-            if (ext[0] != L'.') {
-                ext = L"." + ext;
-            }
-            std::transform(ext.begin(), ext.end(), ext.begin(), std::towlower);
-            archiveExtensions_.push_back(std::move(ext));
-        }
-        if (archiveExtensions_.empty()) {
-            archiveExtensions_ = kDefaultArchiveExtensions;
-        }
-    }
-
-    if (parsedConfig && EnsureDefaultExtensions(&archiveExtensions_)) {
-        SyncToParser();
+    } else {
         configMigrated_ = true;
     }
+    SyncArchiveExtensionsFromFormatRules();
 
     const Value& scanDrives = parser_.Get(kKeyScanDrives);
     if (scanDrives.IsList()) {
@@ -330,8 +478,49 @@ void UserConfig::SyncFromParser()
     }
 }
 
+void UserConfig::SyncArchiveExtensionsFromFormatRules()
+{
+    archiveExtensions_.clear();
+    for (const auto& rule : archiveFormatRules_) {
+        if (rule.enabled && !HasExtension(archiveExtensions_, rule.extension)) {
+            archiveExtensions_.push_back(rule.extension);
+        }
+    }
+}
+
+static AdvConfig::Value RuleToConfigValue(const UserConfig::ArchiveFormatRule& rule)
+{
+    Value::Dict dict;
+    dict[L"enabled"] = Value(rule.enabled);
+    dict[L"extension"] = Value(rule.extension);
+    dict[L"parser"] = Value(rule.parser);
+    return Value(std::move(dict));
+}
+
 void UserConfig::SyncToParser()
 {
+    SyncArchiveExtensionsFromFormatRules();
+
+    Value::Dict formatGroups;
+    Value::List defaultRules;
+    Value::List knownRules;
+    Value::List customRules;
+
+    for (const auto& rule : archiveFormatRules_) {
+        if (rule.group == L"default") {
+            defaultRules.push_back(RuleToConfigValue(rule));
+        } else if (rule.group == L"known_aliases") {
+            knownRules.push_back(RuleToConfigValue(rule));
+        } else if (rule.group == L"custom") {
+            customRules.push_back(RuleToConfigValue(rule));
+        }
+    }
+
+    formatGroups[L"default"] = Value(std::move(defaultRules));
+    formatGroups[L"known_aliases"] = Value(std::move(knownRules));
+    formatGroups[L"custom"] = Value(std::move(customRules));
+    parser_.Set(kKeyArchiveFormats, Value(std::move(formatGroups)));
+
     Value::List list;
     for (const auto& ext : archiveExtensions_) {
         list.push_back(Value(ext));
@@ -377,7 +566,8 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
     if (!parser_.LoadFile(configPath, &parseErr)) {
         // 文件不存在时创建默认配置
         LOG_INFO(L"Config file not found, creating default: %s", configPath.c_str());
-        archiveExtensions_ = kDefaultArchiveExtensions;
+        archiveFormatRules_ = kBuiltInArchiveFormatRules;
+        SyncArchiveExtensionsFromFormatRules();
         scanDriveLetters_ = kDefaultScanDriveLetters;
         showArchiveFullPath_ = false;
         rememberUiState_ = true;

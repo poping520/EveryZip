@@ -106,7 +106,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         }
     }
     state.indexer.SetDbPath(dbPath);
-    state.indexer.SetArchiveExtensions(state.userConfig.GetArchiveExtensions());
+    state.indexer.SetArchiveFormatRules(state.userConfig.GetArchiveFormatRules());
     state.indexer.SetScanDriveLetters(state.userConfig.GetScanDriveLetters());
     state.showArchiveFullPath = state.userConfig.GetShowArchiveFullPath();
     state.rowCache.SetDbPath(dbPath);

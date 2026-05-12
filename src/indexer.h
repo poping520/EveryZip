@@ -10,6 +10,7 @@
 
 #include "database.h"
 #include "file_scanner.h"
+#include "config/user_config.h"
 
 class Indexer {
 public:
@@ -32,6 +33,8 @@ public:
      * @param exts 需要识别为归档文件的扩展名列表。
      */
     void SetArchiveExtensions(const std::vector<std::wstring>& exts);
+
+    void SetArchiveFormatRules(const std::vector<UserConfig::ArchiveFormatRule>& rules);
 
     /**
      * 设置限定扫描和监控的盘符列表。为空时扫描所有 NTFS 盘。
@@ -73,7 +76,7 @@ private:
      * @param db 已打开的数据库连接。
      * @param a 待解析的归档文件记录。
      */
-    static void ParseAndStoreArchive(Database& db, const ArchiveFile_t& a);
+    static void ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const std::wstring& parserType);
 
     /**
      * 获取所有需要监控的 NTFS 盘符列表。
@@ -83,6 +86,7 @@ private:
 
     std::wstring dbPath_;
     std::vector<std::wstring> archiveExtensions_ = { L".zip", L".7z", L".rar" };
+    std::vector<UserConfig::ArchiveFormatRule> archiveFormatRules_;
     std::vector<wchar_t> scanDriveLetters_;
     std::atomic_bool cancel_{ false };
     std::atomic_bool running_{ false };

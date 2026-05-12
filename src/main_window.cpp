@@ -1092,6 +1092,22 @@ static LRESULT CALLBACK ResultsListProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
     case WM_VSCROLL:
     case WM_KEYDOWN:
         HideArchiveTooltip(s);
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            UINT commandId = 0;
+            if (wParam == 'C') {
+                commandId = IDM_CTX_COPY_ARCHIVE;
+            } else if (wParam == 'N') {
+                commandId = IDM_CTX_COPY_NAME;
+            } else if (wParam == 'P') {
+                commandId = IDM_CTX_COPY_ENTRY_PATH;
+            }
+            if (hParent && ListView_GetNextItem(hWnd, -1, LVNI_SELECTED) >= 0) {
+                if (commandId != 0) {
+                    PostMessageW(hParent, WM_COMMAND, MAKEWPARAM(commandId, 0), 0);
+                    return 0;
+                }
+            }
+        }
         break;
     case WM_DESTROY:
         HideArchiveTooltip(s);
@@ -1625,22 +1641,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // 构建右键菜单
                 HMENU hMenu = CreatePopupMenu();
                 if (!hMenu) return 0;
+                std::wstring openFolderText = LS_(s, IDS_CTX_OPEN_FOLDER) + L"(&I)";
                 AppendMenuW(hMenu, MF_STRING, IDM_CTX_OPEN_FOLDER,
-                    LS_(s, IDS_CTX_OPEN_FOLDER).c_str());
+                    openFolderText.c_str());
+                std::wstring openArchiveText = LS_(s, IDS_CTX_OPEN_ARCHIVE) + L"(&O)";
                 AppendMenuW(hMenu, MF_STRING, IDM_CTX_OPEN_ARCHIVE,
-                    LS_(s, IDS_CTX_OPEN_ARCHIVE).c_str());
+                    openArchiveText.c_str());
+                std::wstring extractText = LS_(s, IDS_CTX_EXTRACT) + L"(&E)";
                 AppendMenuW(hMenu, MF_STRING, IDM_CTX_EXTRACT,
-                    LS_(s, IDS_CTX_EXTRACT).c_str());
+                    extractText.c_str());
                 AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_NAME,
-                    LS_(s, IDS_CTX_COPY_NAME).c_str());
-                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_ENTRY_PATH,
-                    LS_(s, IDS_CTX_COPY_ENTRY_PATH).c_str());
+                std::wstring copyArchiveText = LS_(s, IDS_CTX_COPY_ARCHIVE) + L"(&C)";
                 AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_ARCHIVE,
-                    LS_(s, IDS_CTX_COPY_ARCHIVE).c_str());
+                    copyArchiveText.c_str());
+                std::wstring copyNameText = LS_(s, IDS_CTX_COPY_NAME) + L"(&N)";
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_NAME,
+                    copyNameText.c_str());
+                std::wstring copyEntryPathText = LS_(s, IDS_CTX_COPY_ENTRY_PATH) + L"(&P)";
+                AppendMenuW(hMenu, MF_STRING, IDM_CTX_COPY_ENTRY_PATH,
+                    copyEntryPathText.c_str());
                 AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                std::wstring propertiesText = LS_(s, IDS_CTX_PROPERTIES) + L"(&R)";
                 AppendMenuW(hMenu, MF_STRING, IDM_CTX_PROPERTIES,
-                    LS_(s, IDS_CTX_PROPERTIES).c_str());
+                    propertiesText.c_str());
 
                 // 使用鼠标位置弹出菜单
                 POINT pt{};

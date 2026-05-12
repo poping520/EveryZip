@@ -57,6 +57,26 @@ static bool IsSavedWindowRectUsable(const UserConfig::WindowPlacementConfig& pla
     return IntersectRect(&intersection, &rc, &mi.rcWork) != FALSE;
 }
 
+static void CenterWindowOnPrimaryWorkArea(int width, int height, int* outX, int* outY) {
+    if (!outX || !outY) return;
+
+    POINT origin{ 0, 0 };
+    HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!monitor || !GetMonitorInfoW(monitor, &mi)) {
+        *outX = CW_USEDEFAULT;
+        *outY = CW_USEDEFAULT;
+        return;
+    }
+
+    const int workWidth = mi.rcWork.right - mi.rcWork.left;
+    const int workHeight = mi.rcWork.bottom - mi.rcWork.top;
+    *outX = mi.rcWork.left + max(0, (workWidth - width) / 2);
+    *outY = mi.rcWork.top + max(0, (workHeight - height) / 2);
+}
+
 // ══════════════════════════════════════════════════════════════
 //  程序入口
 // ══════════════════════════════════════════════════════════════
@@ -128,11 +148,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         return 1;
     }
 
-    int windowX = CW_USEDEFAULT;
-    int windowY = CW_USEDEFAULT;
     int windowWidth = 1100;
     int windowHeight = 620;
+    int windowX = CW_USEDEFAULT;
+    int windowY = CW_USEDEFAULT;
     int initialShowCmd = nCmdShow;
+    CenterWindowOnPrimaryWorkArea(windowWidth, windowHeight, &windowX, &windowY);
 
     if (state.userConfig.GetRememberUiState()) {
         const auto& placement = state.userConfig.GetWindowPlacement();

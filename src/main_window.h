@@ -73,6 +73,7 @@ struct MainWindowState {
     std::atomic<int64_t> cachedArchiveCount{ 0 };
     std::atomic<int64_t> parseDoneCount{ 0 };
     std::atomic<int64_t> parseTotalCount{ 0 };
+    std::atomic<int> pendingRowLoads{ 0 };
 
     // 模块
     IconCache iconCache;

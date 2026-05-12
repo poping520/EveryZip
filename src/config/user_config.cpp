@@ -18,6 +18,7 @@ static const wchar_t* kKeyArchiveFormats = L"archive_formats";
 static const wchar_t* kKeyScanDrives = L"scan_drives";
 static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
 static const wchar_t* kKeyRememberUiState = L"remember_ui_state";
+static const wchar_t* kKeyStartupScanConfirmed = L"startup_scan_confirmed";
 static const wchar_t* kKeyWindowRect = L"window_rect";
 static const wchar_t* kKeyWindowMaximized = L"window_maximized";
 static const wchar_t* kKeyListColumnWidths = L"list_column_widths";
@@ -141,6 +142,11 @@ bool UserConfig::GetShowArchiveFullPath() const
 bool UserConfig::GetRememberUiState() const
 {
     return rememberUiState_;
+}
+
+bool UserConfig::GetStartupScanConfirmed() const
+{
+    return startupScanConfirmed_;
 }
 
 const UserConfig::WindowPlacementConfig& UserConfig::GetWindowPlacement() const
@@ -283,6 +289,12 @@ void UserConfig::SetRememberUiState(bool remember)
     SyncToParser();
 }
 
+void UserConfig::SetStartupScanConfirmed(bool confirmed)
+{
+    startupScanConfirmed_ = confirmed;
+    SyncToParser();
+}
+
 void UserConfig::SetWindowPlacement(const WindowPlacementConfig& placement)
 {
     windowPlacement_ = placement;
@@ -419,6 +431,14 @@ void UserConfig::SyncFromParser()
         configMigrated_ = true;
     }
 
+    const Value& startupScanConfirmed = parser_.Get(kKeyStartupScanConfirmed);
+    if (startupScanConfirmed.IsBool()) {
+        startupScanConfirmed_ = startupScanConfirmed.AsBool(false);
+    } else {
+        startupScanConfirmed_ = false;
+        configMigrated_ = true;
+    }
+
     const Value& windowRect = parser_.Get(kKeyWindowRect);
     if (windowRect.IsDict()) {
         const auto& dict = windowRect.AsDict();
@@ -536,6 +556,7 @@ void UserConfig::SyncToParser()
     parser_.Set(kKeyShowArchiveFullPath, Value(showArchiveFullPath_));
 
     parser_.Set(kKeyRememberUiState, Value(rememberUiState_));
+    parser_.Set(kKeyStartupScanConfirmed, Value(startupScanConfirmed_));
     parser_.Remove(L"window_left");
     parser_.Remove(L"window_top");
     parser_.Remove(L"window_right");
@@ -571,6 +592,7 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         scanDriveLetters_ = kDefaultScanDriveLetters;
         showArchiveFullPath_ = false;
         rememberUiState_ = true;
+        startupScanConfirmed_ = false;
         windowPlacement_ = WindowPlacementConfig{};
         listColumnWidths_ = kDefaultListColumnWidths;
         SyncToParser();

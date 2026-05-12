@@ -308,9 +308,10 @@ static bool IsSubItemTextTruncated(HWND hList, MainWindowState* s, int item, int
     return measured && sz.cx > availableWidth;
 }
 
-static void ShowSettingsPanel(HWND hOwner, MainWindowState* s);
+static void ShowSettingsPanel(HWND hOwner, MainWindowState* s, bool restartIndexerOnApply = true);
 static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s);
 static void UpdateStatusBar(MainWindowState* s);
+static void StartInitialIndexingAfterConsent(HWND hWnd, MainWindowState* s);
 
 // 创建主窗口菜单栏
 static HMENU CreateMainMenu(MainWindowState* s) {
@@ -461,6 +462,7 @@ static bool SaveUiState(HWND hWnd, MainWindowState* s) {
 struct SettingsWindowState {
     HWND owner = nullptr;
     MainWindowState* mainState = nullptr;
+    bool restartIndexerOnApply = true;
     HWND hCheckFullPath = nullptr;
     HWND hCheckRememberUiState = nullptr;
     HWND hCustomList = nullptr;
@@ -732,14 +734,16 @@ static bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
         return false;
     }
 
-    s->parseDoneCount.store(0);
-    s->parseTotalCount.store(0);
-    s->indexer.Stop();
-    s->indexer.SetArchiveFormatRules(s->userConfig.GetArchiveFormatRules());
-    s->rowCache.Clear();
-    LoadRowsFromDbAndRefreshAsync(sws->owner, s);
-    s->indexer.Start(sws->owner);
-    UpdateStatusBar(s);
+    if (sws->restartIndexerOnApply) {
+        s->parseDoneCount.store(0);
+        s->parseTotalCount.store(0);
+        s->indexer.Stop();
+        s->indexer.SetArchiveFormatRules(s->userConfig.GetArchiveFormatRules());
+        s->rowCache.Clear();
+        LoadRowsFromDbAndRefreshAsync(sws->owner, s);
+        s->indexer.Start(sws->owner);
+        UpdateStatusBar(s);
+    }
     return true;
 }
 
@@ -983,7 +987,7 @@ static void RegisterSettingsClass(HINSTANCE hInstance) {
     registered = true;
 }
 
-static void ShowSettingsPanel(HWND hOwner, MainWindowState* s) {
+static void ShowSettingsPanel(HWND hOwner, MainWindowState* s, bool restartIndexerOnApply) {
     if (!s) return;
 
     RegisterSettingsClass(s->hInstance);
@@ -1000,6 +1004,7 @@ static void ShowSettingsPanel(HWND hOwner, MainWindowState* s) {
     SettingsWindowState sws{};
     sws.owner = hOwner;
     sws.mainState = s;
+    sws.restartIndexerOnApply = restartIndexerOnApply;
 
     HWND hDlg = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
@@ -1124,6 +1129,8 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
     int sortCol = s->sortColumn;
     bool sortAsc = s->sortAscending;
     uint64_t generation = ++s->loadGeneration;
+    s->pendingRowLoads.fetch_add(1);
+    UpdateStatusBar(s);
 
     TrackAsyncThread(s, std::thread([hWnd, s, filter = std::move(filter), dbPath = std::move(dbPath), sortCol, sortAsc, generation]() {
         auto* result = new AsyncLoadResult();
@@ -1134,6 +1141,7 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
         if (!db.Open(dbPath, &err)) {
             LOG_WARN(L"Database::Open failed: %s", err.c_str());
             if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
+                s->pendingRowLoads.fetch_sub(1);
                 delete result;
             }
             return;
@@ -1145,6 +1153,7 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
         if (!db.QueryEntryIds(filter, sortCol, sortAsc, &result->rowIds, &err)) {
             LOG_WARN(L"QueryEntryIds failed: %s", err.c_str());
             if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
+                s->pendingRowLoads.fetch_sub(1);
                 delete result;
             }
             return;
@@ -1154,12 +1163,85 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
         result->archiveCount = db.GetArchiveCount();
 
         if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
+            s->pendingRowLoads.fetch_sub(1);
             delete result;
         }
     }));
 }
 
 // 更新底部状态栏（显示索引状态、文件数量和归档文件数量）
+static bool SaveStartupScanConfirmed(MainWindowState* s) {
+    if (!s) return false;
+    s->userConfig.SetStartupScanConfirmed(true);
+    std::wstring err;
+    if (!s->userConfig.Save(&err)) {
+        std::wstring msg = LS_(s, IDS_SETTINGS_SAVE_FAILED);
+        if (!err.empty()) msg += L"\n" + err;
+        HWND hWnd = s->hStatusBar ? GetParent(s->hStatusBar) : nullptr;
+        MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+        return false;
+    }
+    return true;
+}
+
+static void StartInitialIndexingAfterConsent(HWND hWnd, MainWindowState* s) {
+    if (!s) return;
+    s->parseDoneCount.store(0);
+    s->parseTotalCount.store(0);
+    s->indexer.EnsureDatabaseReady();
+    s->rowCache.Clear();
+    LoadRowsFromDbAndRefreshAsync(hWnd, s);
+    s->indexer.SetArchiveFormatRules(s->userConfig.GetArchiveFormatRules());
+    s->indexer.Start(hWnd);
+    UpdateStatusBar(s);
+}
+
+static void ShowStartupScanPrompt(HWND hWnd, MainWindowState* s) {
+    if (!s || s->userConfig.GetStartupScanConfirmed()) return;
+
+    const std::wstring okText = LS_(s, IDS_STARTUP_SCAN_OK);
+    const std::wstring settingsText = LS_(s, IDS_STARTUP_SCAN_SETTINGS);
+    TASKDIALOG_BUTTON buttons[] = {
+        { IDOK, okText.c_str() },
+        { IDC_SETTINGS_CUSTOM_ADD, settingsText.c_str() },
+    };
+
+    const std::wstring title = LS_(s, IDS_STARTUP_SCAN_TITLE);
+    const std::wstring content = LS_(s, IDS_STARTUP_SCAN_TEXT);
+    TASKDIALOGCONFIG cfg{};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = hWnd;
+    cfg.hInstance = s->hInstance;
+    cfg.dwFlags = TDF_SIZE_TO_CONTENT;
+    cfg.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    cfg.pszWindowTitle = title.c_str();
+    cfg.pszMainInstruction = title.c_str();
+    cfg.pszContent = content.c_str();
+    cfg.cButtons = _countof(buttons);
+    cfg.pButtons = buttons;
+    cfg.nDefaultButton = IDOK;
+
+    int pressed = IDCANCEL;
+    HRESULT hr = TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+    if (FAILED(hr)) {
+        pressed = MessageBoxW(hWnd, content.c_str(), title.c_str(), MB_OKCANCEL | MB_ICONINFORMATION);
+    }
+
+    if (pressed == IDOK) {
+        if (SaveStartupScanConfirmed(s)) {
+            StartInitialIndexingAfterConsent(hWnd, s);
+        }
+        return;
+    }
+
+    if (pressed == IDC_SETTINGS_CUSTOM_ADD) {
+        ShowSettingsPanel(hWnd, s, false);
+        if (SaveStartupScanConfirmed(s)) {
+            StartInitialIndexingAfterConsent(hWnd, s);
+        }
+    }
+}
+
 static void UpdateStatusBar(MainWindowState* s) {
     if (!s->hStatusBar) return;
     HWND hWnd = GetParent(s->hStatusBar);
@@ -1180,11 +1262,18 @@ static void UpdateStatusBar(MainWindowState* s) {
     std::wstring fileCountStr = AddThousandsSeparator(std::to_wstring(fileCount));
     std::wstring archiveCountStr = AddThousandsSeparator(std::to_wstring((long long)archiveCount));
 
-    bool running = s->indexer.IsRunning();
+    const Indexer::Stage indexerStage = s->indexer.GetStage();
+    const bool indexerBusy =
+        indexerStage == Indexer::Stage::InitialScanning ||
+        indexerStage == Indexer::Stage::SyncingDatabase ||
+        indexerStage == Indexer::Stage::ParsingArchives ||
+        indexerStage == Indexer::Stage::Stopping;
+    const bool rowsLoading = s->pendingRowLoads.load() > 0;
     const int64_t parseDone = s->parseDoneCount.load();
     const int64_t parseTotal = s->parseTotalCount.load();
-    const bool hasParseProgress = parseTotal > 0 && (running || parseDone < parseTotal);
-    const bool showSpinner = running || hasParseProgress;
+    const bool parsing = indexerStage == Indexer::Stage::ParsingArchives;
+    const bool hasParseProgress = parsing && parseTotal > 0;
+    const bool showSpinner = indexerBusy || rowsLoading;
 
     // 控制 Spinner 的显示/隐藏，并定位到状态栏右侧
     if (s->hProgress) {
@@ -1215,9 +1304,20 @@ static void UpdateStatusBar(MainWindowState* s) {
     if (hasParseProgress) {
         const int64_t clampedDone = min(parseDone, parseTotal);
         const int percent = parseTotal > 0 ? (int)((clampedDone * 100) / parseTotal) : 0;
-        rightText = std::to_wstring((long long)clampedDone) + L"/" +
+        rightText = LS_(s, IDS_STATUS_PARSING) + L" " +
+                    std::to_wstring((long long)clampedDone) + L"/" +
                     std::to_wstring((long long)parseTotal) + L"  " +
                     std::to_wstring(percent) + L"%";
+    } else if (parsing) {
+        rightText = LS_(s, IDS_STATUS_PARSING);
+    } else if (indexerStage == Indexer::Stage::InitialScanning) {
+        rightText = LS_(s, IDS_STATUS_SCANNING);
+    } else if (indexerStage == Indexer::Stage::SyncingDatabase) {
+        rightText = LS_(s, IDS_STATUS_UPDATING_INDEX);
+    } else if (rowsLoading) {
+        rightText = LS_(s, IDS_STATUS_REFRESHING_LIST);
+    } else if (indexerStage == Indexer::Stage::Stopping) {
+        rightText = LS_(s, IDS_STATUS_PROCESSING);
     }
 
     SendMessageW(s->hStatusBar, SB_SETTEXTW, 0, (LPARAM)leftText.c_str());
@@ -1574,14 +1674,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SetTimer(hWnd, IDT_STATUSBAR_TIMER, 200, nullptr);
         UpdateStatusBar(s);
 
-        s->indexer.EnsureDatabaseReady();
-        // 异步加载数据库数据，避免阻塞 UI 线程
-        LoadRowsFromDbAndRefreshAsync(hWnd, s);
-
-        s->indexer.Start(hWnd);
-
         // 创建系统托盘图标
         AddTrayIcon(hWnd, IDI_TRAY_ICON, WM_APP_TRAY);
+        if (s->userConfig.GetStartupScanConfirmed()) {
+            StartInitialIndexingAfterConsent(hWnd, s);
+        } else {
+            s->indexer.EnsureDatabaseReady();
+            LoadRowsFromDbAndRefreshAsync(hWnd, s);
+            PostMessageW(hWnd, WM_APP_STARTUP_SCAN_PROMPT, 0, 0);
+        }
         return 0;
     }
 
@@ -1660,6 +1761,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         case IDM_VIEW_STOP:
             s->indexer.Stop();
+            UpdateStatusBar(s);
             return 0;
         case IDM_SEARCH_FIND:
             LoadRowsFromDbAndRefreshAsync(hWnd, s);
@@ -1854,9 +1956,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP_ROWS_READY: {
         // 后台线程查询完成，交换 rowid 列表到 UI 线程
         auto* result = (AsyncLoadResult*)lParam;
+        s->pendingRowLoads.fetch_sub(1);
         if (result) {
             if (s->shuttingDown.load() || result->generation != s->loadGeneration.load()) {
                 delete result;
+                UpdateStatusBar(s);
                 return 0;
             }
             {
@@ -1878,6 +1982,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_APP_UPDATE_STATUSBAR:
         UpdateStatusBar(s);
+        return 0;
+
+    case WM_APP_STARTUP_SCAN_PROMPT:
+        ShowStartupScanPrompt(hWnd, s);
         return 0;
 
     case WM_APP_PARSE_PROGRESS:

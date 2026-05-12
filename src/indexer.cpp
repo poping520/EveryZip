@@ -236,11 +236,13 @@ static void PostParseProgress(HWND hWnd, size_t done, size_t total) {
 
 void Indexer::Stop() {
     LOG_INFO(L"StopIndexing requested");
+    stage_.store((int)Stage::Stopping);
     cancel_.store(true);
     if (thread_.joinable()) {
         thread_.join();
     }
     running_.store(false);
+    stage_.store((int)Stage::IdleMonitoring);
     LOG_INFO(L"StopIndexing done");
 }
 
@@ -249,6 +251,7 @@ void Indexer::Start(HWND hWnd) {
     Stop();
     cancel_.store(false);
     running_.store(true);
+    stage_.store((int)Stage::InitialScanning);
 
     thread_ = std::thread([this, hWnd]() {
         FileScanner scanner;
@@ -262,6 +265,7 @@ void Indexer::Start(HWND hWnd) {
         }
 
         if (!cancel_.load() && scanOk) {
+            stage_.store((int)Stage::SyncingDatabase);
             Database db;
             if (!db.Open(dbPath_, &err)) {
                 LOG_WARN(L"Database::Open failed: %s", err.c_str());
@@ -356,6 +360,7 @@ void Indexer::Start(HWND hWnd) {
                     const size_t parseTotal = toParse.size();
                     size_t parseDone = 0;
                     if (!cancel_.load() && parseTotal > 0) {
+                        stage_.store((int)Stage::ParsingArchives);
                         PostParseProgress(hWnd, 0, parseTotal);
                     }
                     for (const auto& a : toParse) {
@@ -363,6 +368,9 @@ void Indexer::Start(HWND hWnd) {
                         ParseAndStoreArchive(db, a, GetParserTypeForPath(a.filePath, archiveFormatRules_));
                         ++parseDone;
                         PostParseProgress(hWnd, parseDone, parseTotal);
+                    }
+                    if (!cancel_.load()) {
+                        stage_.store((int)Stage::SyncingDatabase);
                     }
 
                     if (reparseSevenZip && !cancel_.load()) {
@@ -391,6 +399,7 @@ void Indexer::Start(HWND hWnd) {
 
         // 标记初始索引完成，通知 UI 刷新
         running_.store(false);
+        stage_.store((int)Stage::IdleMonitoring);
         PostMessageW(hWnd, WM_APP_DB_REFRESH, 0, 0);
         PostMessageW(hWnd, WM_APP_INDEX_DONE, 0, 0);
 
@@ -531,9 +540,11 @@ void Indexer::Start(HWND hWnd) {
 
                         // 重新解析归档文件内容
                         LOG_INFO(L"Monitor: Re-parsing archive: %s", fullPath.c_str());
+                        stage_.store((int)Stage::ParsingArchives);
                         PostParseProgress(hWnd, 0, 1);
                         ParseAndStoreArchive(monDb, af, GetParserTypeForPath(af.filePath, archiveFormatRules_));
                         PostParseProgress(hWnd, 1, 1);
+                        stage_.store((int)Stage::IdleMonitoring);
                         anyChanged = true;
                     }
                 }
@@ -555,5 +566,6 @@ void Indexer::Start(HWND hWnd) {
         }
 
         LOG_INFO(L"USN Journal monitoring loop exited");
+        stage_.store((int)Stage::IdleMonitoring);
     });
 }

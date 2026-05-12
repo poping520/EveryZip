@@ -489,6 +489,7 @@ TEST(TestUserConfigUiStateDefaultsAndRoundTrip)
         std::wstring err;
         ASSERT_TRUE(config.Load(path, &err));
         ASSERT_TRUE(config.GetRememberUiState());
+        ASSERT_FALSE(config.GetStartupScanConfirmed());
 
         const auto& defaultWidths = config.GetListColumnWidths();
         ASSERT_EQ(defaultWidths.size(), size_t(6));
@@ -507,6 +508,7 @@ TEST(TestUserConfigUiStateDefaultsAndRoundTrip)
         placement.maximized = true;
         config.SetWindowPlacement(placement);
         config.SetRememberUiState(false);
+        config.SetStartupScanConfirmed(true);
         config.SetListColumnWidths({ 111, 222, 333, 444, 555, 666 });
         ASSERT_TRUE(config.Save(&err));
 
@@ -529,6 +531,7 @@ TEST(TestUserConfigUiStateDefaultsAndRoundTrip)
         std::wstring err;
         ASSERT_TRUE(config.Load(path, &err));
         ASSERT_FALSE(config.GetRememberUiState());
+        ASSERT_TRUE(config.GetStartupScanConfirmed());
 
         const auto& placement = config.GetWindowPlacement();
         ASSERT_EQ(placement.left, 10);

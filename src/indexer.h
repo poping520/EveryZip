@@ -14,6 +14,14 @@
 
 class Indexer {
 public:
+    enum class Stage {
+        IdleMonitoring = 0,
+        InitialScanning,
+        SyncingDatabase,
+        ParsingArchives,
+        Stopping,
+    };
+
     /** 构造索引器对象。 */
     Indexer();
     /** 析构索引器并停止后台线程。 */
@@ -62,6 +70,7 @@ public:
      * @return 后台索引线程运行中返回 true，否则返回 false。
      */
     bool IsRunning() const { return running_.load(); }
+    Stage GetStage() const { return static_cast<Stage>(stage_.load()); }
 
     /**
      * 提升进程权限（用于 USN Journal 扫描需要的 SeManageVolume / SeBackup）。
@@ -90,5 +99,6 @@ private:
     std::vector<wchar_t> scanDriveLetters_;
     std::atomic_bool cancel_{ false };
     std::atomic_bool running_{ false };
+    std::atomic<int> stage_{ (int)Stage::IdleMonitoring };
     std::thread thread_;
 };

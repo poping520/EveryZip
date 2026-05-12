@@ -72,6 +72,8 @@ public:
 
     bool GetRememberUiState() const;
 
+    bool GetStartupScanConfirmed() const;
+
     const WindowPlacementConfig& GetWindowPlacement() const;
 
     const std::vector<int>& GetListColumnWidths() const;
@@ -104,6 +106,8 @@ public:
 
     void SetRememberUiState(bool remember);
 
+    void SetStartupScanConfirmed(bool confirmed);
+
     void SetWindowPlacement(const WindowPlacementConfig& placement);
 
     void SetListColumnWidths(const std::vector<int>& widths);
@@ -131,6 +135,7 @@ private:
     std::vector<wchar_t> scanDriveLetters_;
     bool showArchiveFullPath_ = false;
     bool rememberUiState_ = true;
+    bool startupScanConfirmed_ = false;
     WindowPlacementConfig windowPlacement_;
     std::vector<int> listColumnWidths_;
     AdvConfig::Parser parser_;

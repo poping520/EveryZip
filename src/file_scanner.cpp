@@ -224,7 +224,7 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
                 std::wstring fullPath;
                 if (FileScanner::GetFileInfoByRefNumber(hVol, rec->FileReferenceNumber, &fileSize, &modifyTime, &fullPath)) {
                     af.fileSize = fileSize;
-                    af.modifyTime = modifyTime;
+                    af.modifiedTime = modifyTime;
                     af.filePath = std::move(fullPath);
                 }
 

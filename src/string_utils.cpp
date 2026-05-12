@@ -76,6 +76,42 @@ std::wstring FormatSizeULongLong(ULONGLONG v) {
     }
 }
 
+uint64_t LocalTmToFileTimeValue(const std::tm& t) {
+    const int year = t.tm_year + 1900;
+    const int month = t.tm_mon + 1;
+    if (year <= 1900 || month < 1 || month > 12 || t.tm_mday < 1 || t.tm_mday > 31) {
+        return 0;
+    }
+
+    SYSTEMTIME localSt{};
+    localSt.wYear = static_cast<WORD>(year);
+    localSt.wMonth = static_cast<WORD>(month);
+    localSt.wDay = static_cast<WORD>(t.tm_mday);
+    localSt.wHour = static_cast<WORD>(t.tm_hour);
+    localSt.wMinute = static_cast<WORD>(t.tm_min);
+    localSt.wSecond = static_cast<WORD>(t.tm_sec);
+
+    SYSTEMTIME utcSt{};
+    if (!TzSpecificLocalTimeToSystemTime(nullptr, &localSt, &utcSt)) {
+        return 0;
+    }
+
+    FILETIME ft{};
+    if (!SystemTimeToFileTime(&utcSt, &ft)) {
+        return 0;
+    }
+
+    ULARGE_INTEGER ui{};
+    ui.LowPart = ft.dwLowDateTime;
+    ui.HighPart = ft.dwHighDateTime;
+    return ui.QuadPart;
+}
+
+std::wstring FormatFileTimeValueLocal(uint64_t v) {
+    if (v == 0) return L"";
+    return FormatFileTimeLocal(U64ToFileTime(v));
+}
+
 std::wstring FormatFileTimeLocal(const FILETIME& ftUtc) {
     FILETIME ftLocal{};
     SYSTEMTIME st{};
@@ -83,7 +119,8 @@ std::wstring FormatFileTimeLocal(const FILETIME& ftUtc) {
     if (!FileTimeToSystemTime(&ftLocal, &st)) return L"";
 
     wchar_t buf[64]{};
-    swprintf_s(buf, L"%04u/%u/%u %02u:%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+    swprintf_s(buf, L"%04u/%02u/%02u %02u:%02u:%02u",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     return buf;
 }
 

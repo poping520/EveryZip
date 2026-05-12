@@ -66,8 +66,8 @@ bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
     }
 
     const char* sql =
-        "INSERT INTO entries (archive_id, entry_path, entry_raw_path, compressed_size, uncompressed_size) "
-        "VALUES (?, ?, ?, ?, ?)";
+        "INSERT INTO entries (archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time) "
+        "VALUES (?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -82,7 +82,8 @@ bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
     sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressed_size);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.uncompressed_size);
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.original_size);
+    sqlite3_bind_int64(stmt, 6, (sqlite3_int64)e.modifiedTime);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -106,8 +107,8 @@ bool Database::InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, st
     }
 
     const char* sql =
-        "INSERT INTO entries (archive_id, entry_path, entry_raw_path, compressed_size, uncompressed_size) "
-        "VALUES (?, ?, ?, ?, ?)";
+        "INSERT INTO entries (archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time) "
+        "VALUES (?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -130,7 +131,8 @@ bool Database::InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, st
         sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressed_size);
-        sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.uncompressed_size);
+        sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.original_size);
+        sqlite3_bind_int64(stmt, 6, (sqlite3_int64)e.modifiedTime);
 
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE)
@@ -179,11 +181,11 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
     const bool hasFilter = !filter.empty();
 
     const char* sql = hasFilter
-                          ? "SELECT a.file_path, e.entry_path, e.compressed_size, e.uncompressed_size "
+                          ? "SELECT a.file_path, e.entry_path, e.compressed_size, e.original_size, e.modified_time "
                            "FROM entries e JOIN archives a ON e.archive_id = a.id "
                            "WHERE e.entry_path LIKE '%' || ? || '%' "
                            "ORDER BY e.id DESC;"
-                          : "SELECT a.file_path, e.entry_path, e.compressed_size, e.uncompressed_size "
+                          : "SELECT a.file_path, e.entry_path, e.compressed_size, e.original_size, e.modified_time "
                            "FROM entries e JOIN archives a ON e.archive_id = a.id ORDER BY e.id DESC;";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -214,7 +216,8 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
         if (ep) e.entryPath = Utf8ToWString(ep);
 
         e.compressed_size = (std::int64_t)sqlite3_column_int64(stmt, 2);
-        e.uncompressed_size = (std::uint64_t)sqlite3_column_int64(stmt, 3);
+        e.original_size = (std::uint64_t)sqlite3_column_int64(stmt, 3);
+        e.modifiedTime = (std::uint64_t)sqlite3_column_int64(stmt, 4);
 
         out->push_back(std::move(e));
     }
@@ -250,7 +253,8 @@ bool Database::CreateEntriesTable(std::wstring* err)
                 entry_path TEXT NOT NULL,
                 entry_raw_path BLOB,
                 compressed_size INTEGER NOT NULL,
-                uncompressed_size INTEGER NOT NULL
+                original_size INTEGER NOT NULL,
+                modified_time INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_entries_archive_id ON entries(archive_id);
         )";
@@ -265,6 +269,9 @@ bool Database::CreateEntriesTable(std::wstring* err)
     }
     char* alterErr = nullptr;
     sqlite3_exec(db_, "ALTER TABLE entries ADD COLUMN entry_raw_path BLOB", nullptr, nullptr, &alterErr);
+    if (alterErr) sqlite3_free(alterErr);
+    alterErr = nullptr;
+    sqlite3_exec(db_, "ALTER TABLE entries ADD COLUMN modified_time INTEGER NOT NULL DEFAULT 0", nullptr, nullptr, &alterErr);
     if (alterErr) sqlite3_free(alterErr);
     return true;
 }
@@ -366,9 +373,9 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
     const bool hasFilter = !filter.empty();
 
     const char* sql = hasFilter
-                          ? "SELECT drive_letter, file_name, file_path, file_size, modify_time, usn, file_ref_number, parent_file_ref_number FROM archives "
+                          ? "SELECT drive_letter, file_name, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number FROM archives "
                            "WHERE file_name LIKE '%' || ? || '%' OR file_path LIKE '%' || ? || '%' ORDER BY id DESC;"
-                          : "SELECT drive_letter, file_name, file_path, file_size, modify_time, usn, file_ref_number, parent_file_ref_number FROM archives ORDER BY id DESC;";
+                          : "SELECT drive_letter, file_name, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number FROM archives ORDER BY id DESC;";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK || !stmt)
@@ -401,7 +408,7 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
         if (path) f.filePath = Utf8ToWString(path);
 
         f.fileSize = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
-        f.modifyTime = static_cast<uint64_t>(sqlite3_column_int64(stmt, 4));
+        f.modifiedTime = static_cast<uint64_t>(sqlite3_column_int64(stmt, 4));
         f.usn = static_cast<USN>(sqlite3_column_int64(stmt, 5));
         f.fileRefNumber = static_cast<DWORDLONG>(sqlite3_column_int64(stmt, 6));
         f.parentFileRefNumber = static_cast<DWORDLONG>(sqlite3_column_int64(stmt, 7));
@@ -648,7 +655,7 @@ bool Database::QueryArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumb
 {
     if (!db_ || !out) return false;
 
-    const char* sql = "SELECT drive_letter, file_name, file_path, file_size, modify_time, usn, file_ref_number, parent_file_ref_number "
+    const char* sql = "SELECT drive_letter, file_name, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number "
                       "FROM archives WHERE drive_letter = ? AND file_ref_number = ?";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -668,7 +675,7 @@ bool Database::QueryArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumb
         if (name) out->fileName = Utf8ToWString(name);
         if (path) out->filePath = Utf8ToWString(path);
         out->fileSize = (uint64_t)sqlite3_column_int64(stmt, 3);
-        out->modifyTime = (uint64_t)sqlite3_column_int64(stmt, 4);
+        out->modifiedTime = (uint64_t)sqlite3_column_int64(stmt, 4);
         out->usn = (USN)sqlite3_column_int64(stmt, 5);
         out->fileRefNumber = (DWORDLONG)sqlite3_column_int64(stmt, 6);
         out->parentFileRefNumber = (DWORDLONG)sqlite3_column_int64(stmt, 7);
@@ -697,7 +704,7 @@ bool Database::CreateArchivesTable(std::wstring* err)
                 file_name TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
-                modify_time INTEGER NOT NULL,
+                modified_time INTEGER NOT NULL,
                 UNIQUE(drive_letter, file_ref_number)
             );
             CREATE INDEX IF NOT EXISTS idx_drive_letter ON archives(drive_letter);
@@ -721,7 +728,7 @@ bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
 {
     const char* sql = R"(
             INSERT INTO archives
-            (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modify_time)
+            (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modified_time)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(drive_letter, file_ref_number) DO UPDATE SET
                 parent_file_ref_number=excluded.parent_file_ref_number,
@@ -729,7 +736,7 @@ bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
                 file_name=excluded.file_name,
                 file_path=excluded.file_path,
                 file_size=excluded.file_size,
-                modify_time=excluded.modify_time
+                modified_time=excluded.modified_time
         )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -750,7 +757,7 @@ bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
     sqlite3_bind_text(stmt, 5, nameUtf8.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 7, af.fileSize);
-    sqlite3_bind_int64(stmt, 8, af.modifyTime);
+    sqlite3_bind_int64(stmt, 8, af.modifiedTime);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -781,7 +788,7 @@ bool Database::InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std:
 
     const char* sql = R"(
         INSERT INTO archives
-        (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modify_time)
+        (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modified_time)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(drive_letter, file_ref_number) DO UPDATE SET
             parent_file_ref_number=excluded.parent_file_ref_number,
@@ -789,7 +796,7 @@ bool Database::InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std:
             file_name=excluded.file_name,
             file_path=excluded.file_path,
             file_size=excluded.file_size,
-            modify_time=excluded.modify_time
+            modified_time=excluded.modified_time
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -818,7 +825,7 @@ bool Database::InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std:
         sqlite3_bind_text(stmt, 5, nameUtf8.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 6, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 7, af.fileSize);
-        sqlite3_bind_int64(stmt, 8, af.modifyTime);
+        sqlite3_bind_int64(stmt, 8, af.modifiedTime);
 
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE)
@@ -947,7 +954,8 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
     case 1: orderCol = "a.file_path"; needJoin = true; break;
     case 2: orderCol = "e.entry_path"; break;
     case 3: orderCol = "e.compressed_size"; compressedSizeSort = true; break;
-    case 4: orderCol = "e.uncompressed_size"; break;
+    case 4: orderCol = "e.original_size"; break;
+    case 5: orderCol = "e.modified_time"; break;
     default: orderCol = "e.id"; break;
     }
     const char* orderDir = sortAsc ? "ASC" : "DESC";
@@ -1002,7 +1010,7 @@ bool Database::QueryEntryById(int64_t rowId, ArchiveEntry_t* out)
 {
     if (!db_ || !out) return false;
 
-    const char* sql = "SELECT a.file_path, e.entry_path, e.entry_raw_path, e.compressed_size, e.uncompressed_size "
+    const char* sql = "SELECT a.file_path, e.entry_path, e.entry_raw_path, e.compressed_size, e.original_size, e.modified_time "
                       "FROM entries e JOIN archives a ON e.archive_id = a.id WHERE e.id = ?";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -1022,7 +1030,8 @@ bool Database::QueryEntryById(int64_t rowId, ArchiveEntry_t* out)
             out->entryRawPath.assign((const char*)raw, rawBytes);
         }
         out->compressed_size = (int64_t)sqlite3_column_int64(stmt, 3);
-        out->uncompressed_size = (uint64_t)sqlite3_column_int64(stmt, 4);
+        out->original_size = (uint64_t)sqlite3_column_int64(stmt, 4);
+        out->modifiedTime = (uint64_t)sqlite3_column_int64(stmt, 5);
         found = true;
     }
     sqlite3_finalize(stmt);

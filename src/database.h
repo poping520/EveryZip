@@ -8,18 +8,41 @@
 struct sqlite3;
 
 /**
- * table: configs
- * ┌──────┬───────┐
- * │ key  │ value │
- * └──────┴───────┘
+ * Current database schema.
  *
- * table: archives
- * ┌──────────┬────────┬────────┬────────┐
- * │ xxxx     │ xxxx   │ xxxx   │ xxxx   │
- * └──────────┴────────┴────────┴────────┘
+ * configs
+ *   key   TEXT PRIMARY KEY
+ *   value TEXT NOT NULL
  *
- * table: files
+ * archives
+ *   id                     INTEGER PRIMARY KEY
+ *   drive_letter           TEXT NOT NULL
+ *   file_ref_number        INTEGER NOT NULL
+ *   parent_file_ref_number INTEGER NOT NULL
+ *   usn                    INTEGER NOT NULL
+ *   file_name              TEXT NOT NULL
+ *   file_path              TEXT NOT NULL
+ *   file_size              INTEGER NOT NULL
+ *   modified_time          INTEGER NOT NULL
+ *   UNIQUE(drive_letter, file_ref_number)
  *
+ * archives indexes
+ *   idx_drive_letter       ON archives(drive_letter)
+ *   idx_usn                ON archives(usn)
+ *   idx_file_name          ON archives(file_name)
+ *   idx_archives_file_path ON archives(file_path)
+ *
+ * entries
+ *   id              INTEGER PRIMARY KEY
+ *   archive_id      INTEGER NOT NULL
+ *   entry_path      TEXT NOT NULL
+ *   entry_raw_path  BLOB
+ *   compressed_size INTEGER NOT NULL
+ *   original_size   INTEGER NOT NULL
+ *   modified_time   INTEGER NOT NULL DEFAULT 0
+ *
+ * entries indexes
+ *   idx_entries_archive_id ON entries(archive_id)
  */
 class Database
 {

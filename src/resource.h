@@ -52,6 +52,7 @@
 #define IDS_COL_PATH            2032
 #define IDS_COL_COMPRESSED_SIZE 2033
 #define IDS_COL_ORIGINAL_SIZE   2034
+#define IDS_COL_MODIFIED_TIME   2035
 // 排序箭头
 #define IDS_SORT_ASC            2040
 #define IDS_SORT_DESC           2041

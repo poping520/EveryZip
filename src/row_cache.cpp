@@ -52,7 +52,8 @@ const CachedRow* RowCache::Get(int64_t rowId) {
     cr.entryPath = entry.entryPath;
     cr.entryRawPath = entry.entryRawPath;
     cr.sizeStr = entry.compressed_size < 0 ? L"-" : FormatSizeULongLong((ULONGLONG)entry.compressed_size);
-    cr.origSizeStr = FormatSizeULongLong((ULONGLONG)entry.uncompressed_size);
+    cr.origSizeStr = FormatSizeULongLong((ULONGLONG)entry.original_size);
+    cr.modifiedTimeStr = FormatFileTimeValueLocal(entry.modifiedTime);
     cr.iconIndex = iconCache_ ? iconCache_->GetFileIconIndex(cr.name) : 0;
 
     // 插入缓存并维护 LRU

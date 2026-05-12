@@ -18,7 +18,7 @@
 - 文件名 (file_name)
 - 文件大小 (file_size)
 - 创建时间 (create_time)
-- 修改时间 (modify_time)
+- 修改时间 (modified_time)
 - 文件属性 (attributes)
 - USN 序列号 (usn) - 用于增量更新
 

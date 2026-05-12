@@ -17,7 +17,7 @@ struct ArchiveFile_t
     // 文件大小
     uint64_t fileSize = 0;
     // 文件修改时间
-    uint64_t modifyTime = 0;
+    uint64_t modifiedTime = 0;
     // FileReferenceNumber
     DWORDLONG fileRefNumber = 0;
     // ParentFileReferenceNumber
@@ -45,5 +45,6 @@ struct ArchiveEntry_t
     std::wstring entryPath;
     std::string entryRawPath;
     std::int64_t compressed_size = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小
-    std::uint64_t uncompressed_size = 0;
+    std::uint64_t original_size = 0;
+    std::uint64_t modifiedTime = 0;
 };

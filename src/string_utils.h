@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <shlwapi.h>
 
+#include <cstdint>
+#include <ctime>
 #include <cwctype>
 #include <string>
 
@@ -47,6 +49,8 @@ std::wstring AddThousandsSeparator(const std::wstring& num);
  * @return 格式化后的大小字符串。
  */
 std::wstring FormatSizeULongLong(ULONGLONG v);
+uint64_t LocalTmToFileTimeValue(const std::tm& t);
+std::wstring FormatFileTimeValueLocal(uint64_t v);
 /**
  * 将 UTC FILETIME 转换为本地时间文本。
  * @param ftUtc UTC 时区下的 FILETIME 时间值。

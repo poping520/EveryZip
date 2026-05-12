@@ -72,21 +72,13 @@ static std::int64_t CombineSize(unsigned int low, unsigned int high) {
 static void FillModifiedTime(unsigned int dosTime, std::tm* out) {
     if (!out || dosTime == 0) return;
 
-    FILETIME localFt{};
-    FILETIME utcFt{};
-    const WORD fatTime = static_cast<WORD>(dosTime & 0xffffu);
-    const WORD fatDate = static_cast<WORD>((dosTime >> 16) & 0xffffu);
-    SYSTEMTIME st{};
-    if (DosDateTimeToFileTime(fatDate, fatTime, &localFt) &&
-        LocalFileTimeToFileTime(&localFt, &utcFt) &&
-        FileTimeToSystemTime(&utcFt, &st)) {
-        out->tm_sec = st.wSecond;
-        out->tm_min = st.wMinute;
-        out->tm_hour = st.wHour;
-        out->tm_mday = st.wDay;
-        out->tm_mon = st.wMonth - 1;
-        out->tm_year = st.wYear - 1900;
-    }
+    const int month = static_cast<int>((dosTime >> 21) & 0x0fu);
+    out->tm_sec = static_cast<int>((dosTime & 0x1fu) * 2u);
+    out->tm_min = static_cast<int>((dosTime >> 5) & 0x3fu);
+    out->tm_hour = static_cast<int>((dosTime >> 11) & 0x1fu);
+    out->tm_mday = static_cast<int>((dosTime >> 16) & 0x1fu);
+    out->tm_mon = month - 1;
+    out->tm_year = static_cast<int>(((dosTime >> 25) & 0x7fu) + 80u);
 }
 
 static bool OpenRarHandle(const std::wstring& archivePath,

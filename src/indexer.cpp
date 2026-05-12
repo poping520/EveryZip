@@ -132,7 +132,8 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a) {
         out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
         out.entryRawPath = e.name;
         out.compressed_size = e.compressed_size;
-        out.uncompressed_size = e.uncompressed_size;
+        out.original_size = e.uncompressed_size;
+        out.modifiedTime = LocalTmToFileTimeValue(e.modified_time);
         entries.push_back(std::move(out));
     }
 
@@ -278,7 +279,7 @@ void Indexer::Start(HWND hWnd) {
                         it->second.seen = true;
                         const auto& prev = it->second.file;
                         const bool changed = (cur.usn != prev.usn) ||
-                                             (cur.modifyTime != prev.modifyTime) ||
+                                             (cur.modifiedTime != prev.modifiedTime) ||
                                              (cur.fileSize != prev.fileSize) ||
                                              (cur.filePath != prev.filePath) ||
                                              (reparseSevenZip && IsSevenZipPath(cur.filePath));
@@ -486,7 +487,7 @@ void Indexer::Start(HWND hWnd) {
                         af.fileName = cr.fileName;
                         af.filePath = fullPath;
                         af.fileSize = fileSize;
-                        af.modifyTime = modifyTime;
+                        af.modifiedTime = modifyTime;
                         af.fileRefNumber = cr.fileRefNumber;
                         af.parentFileRefNumber = cr.parentFileRefNumber;
                         af.usn = cr.usn;

@@ -130,7 +130,7 @@ public:
                            uint64_t fileSize, const FILETIME& modifyTime) {
         const char* sql = R"(
             INSERT OR REPLACE INTO files
-            (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modify_time)
+            (drive_letter, file_ref_number, parent_file_ref_number, usn, file_name, file_path, file_size, modified_time)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         )";
 
@@ -229,7 +229,7 @@ private:
                 file_name TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
-                modify_time TEXT NOT NULL,
+                modified_time TEXT NOT NULL,
                 UNIQUE(drive_letter, file_ref_number)
             );
             CREATE INDEX IF NOT EXISTS idx_drive_letter ON files(drive_letter);

@@ -374,6 +374,13 @@ static void SetupListColumns(MainWindowState* s) {
     col.cx = 100;
     col.iSubItem = 4;
     ListView_InsertColumn(hList, 4, &col);
+
+    col.fmt = LVCFMT_LEFT;
+    std::wstring colModifiedTime = LS_(s, IDS_COL_MODIFIED_TIME);
+    col.pszText = const_cast<LPWSTR>(colModifiedTime.c_str());
+    col.cx = 140;
+    col.iSubItem = 5;
+    ListView_InsertColumn(hList, 5, &col);
 }
 
 // 刷新 ListView 显示内容（虚拟列表模式：只需设置条目数量）
@@ -557,10 +564,10 @@ static void ShowSettingsPanel(HWND hOwner, MainWindowState* s) {
 static void UpdateColumnHeaders(MainWindowState* s) {
     static const UINT colIds[] = {
         IDS_COL_NAME, IDS_COL_ARCHIVE, IDS_COL_PATH,
-        IDS_COL_COMPRESSED_SIZE, IDS_COL_ORIGINAL_SIZE
+        IDS_COL_COMPRESSED_SIZE, IDS_COL_ORIGINAL_SIZE, IDS_COL_MODIFIED_TIME
     };
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         std::wstring text = LS_(s, colIds[i]);
         if (i == s->sortColumn) {
             text += s->sortAscending ? LS_(s, IDS_SORT_ASC) : LS_(s, IDS_SORT_DESC);
@@ -1429,6 +1436,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     case 2: src = &cr->entryPath; break;
                     case 3: src = &cr->sizeStr; break;
                     case 4: src = &cr->origSizeStr; break;
+                    case 5: src = &cr->modifiedTimeStr; break;
                     }
                     if (src) {
                         wcsncpy_s(buf, src->c_str(), _TRUNCATE);

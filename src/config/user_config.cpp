@@ -15,6 +15,10 @@ using namespace AdvConfig;
 static const wchar_t* kKeyArchiveExtensions = L"archive_extensions";
 static const wchar_t* kKeyScanDrives = L"scan_drives";
 static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
+static const wchar_t* kKeyRememberUiState = L"remember_ui_state";
+static const wchar_t* kKeyWindowRect = L"window_rect";
+static const wchar_t* kKeyWindowMaximized = L"window_maximized";
+static const wchar_t* kKeyListColumnWidths = L"list_column_widths";
 
 // 默认归档扩展名
 static const std::vector<std::wstring> kDefaultArchiveExtensions = {
@@ -28,9 +32,19 @@ static const std::vector<wchar_t> kDefaultScanDriveLetters = {
     // L'G'
 };
 
+static const std::vector<int> kDefaultListColumnWidths = {
+    210,
+    210,
+    280,
+    100,
+    100,
+    140
+};
+
 UserConfig::UserConfig()
     : archiveExtensions_(kDefaultArchiveExtensions),
-      scanDriveLetters_(kDefaultScanDriveLetters)
+      scanDriveLetters_(kDefaultScanDriveLetters),
+      listColumnWidths_(kDefaultListColumnWidths)
 {
 }
 
@@ -85,6 +99,26 @@ bool UserConfig::GetShowArchiveFullPath() const
     return showArchiveFullPath_;
 }
 
+bool UserConfig::GetRememberUiState() const
+{
+    return rememberUiState_;
+}
+
+const UserConfig::WindowPlacementConfig& UserConfig::GetWindowPlacement() const
+{
+    return windowPlacement_;
+}
+
+const std::vector<int>& UserConfig::GetListColumnWidths() const
+{
+    return listColumnWidths_;
+}
+
+const std::vector<int>& UserConfig::GetDefaultListColumnWidths()
+{
+    return kDefaultListColumnWidths;
+}
+
 void UserConfig::SetArchiveExtensions(const std::vector<std::wstring>& exts)
 {
     archiveExtensions_ = exts;
@@ -107,6 +141,35 @@ void UserConfig::SetScanDriveLetters(const std::vector<wchar_t>& drives)
 void UserConfig::SetShowArchiveFullPath(bool showFullPath)
 {
     showArchiveFullPath_ = showFullPath;
+    SyncToParser();
+}
+
+void UserConfig::SetRememberUiState(bool remember)
+{
+    rememberUiState_ = remember;
+    SyncToParser();
+}
+
+void UserConfig::SetWindowPlacement(const WindowPlacementConfig& placement)
+{
+    windowPlacement_ = placement;
+    SyncToParser();
+}
+
+void UserConfig::SetListColumnWidths(const std::vector<int>& widths)
+{
+    if (widths.size() == kDefaultListColumnWidths.size() &&
+        std::all_of(widths.begin(), widths.end(), [](int width) { return width > 0; })) {
+        listColumnWidths_ = widths;
+    } else {
+        listColumnWidths_ = kDefaultListColumnWidths;
+    }
+    SyncToParser();
+}
+
+void UserConfig::ResetListColumnWidths()
+{
+    listColumnWidths_ = kDefaultListColumnWidths;
     SyncToParser();
 }
 
@@ -199,6 +262,72 @@ void UserConfig::SyncFromParser()
         SyncToParser();
         configMigrated_ = true;
     }
+
+    const Value& rememberUiState = parser_.Get(kKeyRememberUiState);
+    if (rememberUiState.IsBool()) {
+        rememberUiState_ = rememberUiState.AsBool(true);
+    } else {
+        rememberUiState_ = true;
+        configMigrated_ = true;
+    }
+
+    const Value& windowRect = parser_.Get(kKeyWindowRect);
+    if (windowRect.IsDict()) {
+        const auto& dict = windowRect.AsDict();
+        auto leftIt = dict.find(L"left");
+        auto topIt = dict.find(L"top");
+        auto rightIt = dict.find(L"right");
+        auto bottomIt = dict.find(L"bottom");
+        if (leftIt != dict.end() && leftIt->second.IsInt() &&
+            topIt != dict.end() && topIt->second.IsInt() &&
+            rightIt != dict.end() && rightIt->second.IsInt() &&
+            bottomIt != dict.end() && bottomIt->second.IsInt()) {
+            windowPlacement_.left = static_cast<int>(leftIt->second.AsInt());
+            windowPlacement_.top = static_cast<int>(topIt->second.AsInt());
+            windowPlacement_.right = static_cast<int>(rightIt->second.AsInt());
+            windowPlacement_.bottom = static_cast<int>(bottomIt->second.AsInt());
+        } else {
+            windowPlacement_ = WindowPlacementConfig{};
+            configMigrated_ = true;
+        }
+    } else {
+        windowPlacement_ = WindowPlacementConfig{};
+        configMigrated_ = true;
+    }
+
+    const Value& windowMaximized = parser_.Get(kKeyWindowMaximized);
+    if (windowMaximized.IsBool()) {
+        windowPlacement_.maximized = windowMaximized.AsBool(false);
+    } else {
+        windowPlacement_.maximized = false;
+        configMigrated_ = true;
+    }
+
+    const Value& listColumnWidths = parser_.Get(kKeyListColumnWidths);
+    bool validColumnWidths = false;
+    if (listColumnWidths.IsList() && listColumnWidths.AsList().size() == kDefaultListColumnWidths.size()) {
+        std::vector<int> widths;
+        widths.reserve(kDefaultListColumnWidths.size());
+        validColumnWidths = true;
+        for (const auto& item : listColumnWidths.AsList()) {
+            if (!item.IsInt() || item.AsInt() <= 0) {
+                validColumnWidths = false;
+                break;
+            }
+            widths.push_back(static_cast<int>(item.AsInt()));
+        }
+        if (validColumnWidths) {
+            listColumnWidths_ = std::move(widths);
+        }
+    }
+    if (!validColumnWidths) {
+        listColumnWidths_ = kDefaultListColumnWidths;
+        configMigrated_ = true;
+    }
+
+    if (configMigrated_) {
+        SyncToParser();
+    }
 }
 
 void UserConfig::SyncToParser()
@@ -216,6 +345,27 @@ void UserConfig::SyncToParser()
     parser_.Set(kKeyScanDrives, Value(std::move(driveList)));
 
     parser_.Set(kKeyShowArchiveFullPath, Value(showArchiveFullPath_));
+
+    parser_.Set(kKeyRememberUiState, Value(rememberUiState_));
+    parser_.Remove(L"window_left");
+    parser_.Remove(L"window_top");
+    parser_.Remove(L"window_right");
+    parser_.Remove(L"window_bottom");
+
+    Value::Dict windowRect;
+    windowRect[L"left"] = Value(static_cast<int64_t>(windowPlacement_.left));
+    windowRect[L"top"] = Value(static_cast<int64_t>(windowPlacement_.top));
+    windowRect[L"right"] = Value(static_cast<int64_t>(windowPlacement_.right));
+    windowRect[L"bottom"] = Value(static_cast<int64_t>(windowPlacement_.bottom));
+    parser_.Set(kKeyWindowRect, Value(std::move(windowRect)));
+
+    parser_.Set(kKeyWindowMaximized, Value(windowPlacement_.maximized));
+
+    Value::List columnWidths;
+    for (int width : listColumnWidths_) {
+        columnWidths.push_back(Value(static_cast<int64_t>(width)));
+    }
+    parser_.Set(kKeyListColumnWidths, Value(std::move(columnWidths)));
 }
 
 bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
@@ -230,6 +380,9 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         archiveExtensions_ = kDefaultArchiveExtensions;
         scanDriveLetters_ = kDefaultScanDriveLetters;
         showArchiveFullPath_ = false;
+        rememberUiState_ = true;
+        windowPlacement_ = WindowPlacementConfig{};
+        listColumnWidths_ = kDefaultListColumnWidths;
         SyncToParser();
         return Save(err);
     }

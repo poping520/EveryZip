@@ -49,6 +49,8 @@ STRINGTABLE
     IDS_SETTINGS_TITLE,     "选项"
     IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH,"显示归档文件全路径"
     IDS_SETTINGS_SAVE_FAILED,"保存设置失败"
+    IDS_SETTINGS_REMEMBER_UI_STATE,"记住窗口位置和列宽"
+    IDS_SETTINGS_RESET_LAYOUT,"重置列宽"
     // 右键菜单
     IDS_CTX_OPEN_FOLDER,    "打开所在文件夹"
     IDS_CTX_PROPERTIES,     "属性"
@@ -104,6 +106,8 @@ STRINGTABLE
     IDS_SETTINGS_TITLE,     "Options"
     IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH,"Show full archive path"
     IDS_SETTINGS_SAVE_FAILED,"Failed to save settings"
+    IDS_SETTINGS_REMEMBER_UI_STATE,"Remember window position and column widths"
+    IDS_SETTINGS_RESET_LAYOUT,"Reset Column Widths"
     // Context menu
     IDS_CTX_OPEN_FOLDER,    "Open Containing Folder"
     IDS_CTX_PROPERTIES,     "Properties"

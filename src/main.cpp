@@ -30,6 +30,33 @@ static void EnsureCommonControls() {
     InitCommonControlsEx(&icc);
 }
 
+static bool IsSavedWindowRectUsable(const UserConfig::WindowPlacementConfig& placement) {
+    RECT rc{
+        placement.left,
+        placement.top,
+        placement.right,
+        placement.bottom
+    };
+
+    if (rc.right <= rc.left || rc.bottom <= rc.top) {
+        return false;
+    }
+
+    HMONITOR monitor = MonitorFromRect(&rc, MONITOR_DEFAULTTONULL);
+    if (!monitor) {
+        return false;
+    }
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(monitor, &mi)) {
+        return false;
+    }
+
+    RECT intersection{};
+    return IntersectRect(&intersection, &rc, &mi.rcWork) != FALSE;
+}
+
 // ══════════════════════════════════════════════════════════════
 //  程序入口
 // ══════════════════════════════════════════════════════════════
@@ -101,13 +128,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         return 1;
     }
 
+    int windowX = CW_USEDEFAULT;
+    int windowY = CW_USEDEFAULT;
+    int windowWidth = 1100;
+    int windowHeight = 620;
+    int initialShowCmd = nCmdShow;
+
+    if (state.userConfig.GetRememberUiState()) {
+        const auto& placement = state.userConfig.GetWindowPlacement();
+        if (IsSavedWindowRectUsable(placement)) {
+            windowX = placement.left;
+            windowY = placement.top;
+            windowWidth = placement.right - placement.left;
+            windowHeight = placement.bottom - placement.top;
+            if (placement.maximized) {
+                initialShowCmd = SW_SHOWMAXIMIZED;
+            }
+        }
+    }
+
     HWND hWnd = CreateWindowExW(
         0,
         kAppClassName,
         kAppTitle,
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        1100, 620,
+        windowX, windowY,
+        windowWidth, windowHeight,
         nullptr,
         nullptr,
         hInstance,
@@ -119,7 +165,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         return 1;
     }
 
-    ShowWindow(hWnd, nCmdShow);
+    ShowWindow(hWnd, initialShowCmd);
     UpdateWindow(hWnd);
 
     // 主消息循环

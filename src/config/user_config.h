@@ -8,6 +8,14 @@
 
 class UserConfig {
 public:
+    struct WindowPlacementConfig {
+        int left = 0;
+        int top = 0;
+        int right = 0;
+        int bottom = 0;
+        bool maximized = false;
+    };
+
     /** 构造用户配置对象并填充默认配置值。 */
     UserConfig();
     /** 析构用户配置对象。 */
@@ -49,6 +57,14 @@ public:
      */
     bool GetShowArchiveFullPath() const;
 
+    bool GetRememberUiState() const;
+
+    const WindowPlacementConfig& GetWindowPlacement() const;
+
+    const std::vector<int>& GetListColumnWidths() const;
+
+    static const std::vector<int>& GetDefaultListColumnWidths();
+
     /**
      * 设置归档扩展名列表。
      * @param exts 新的扩展名列表。
@@ -67,6 +83,14 @@ public:
      */
     void SetShowArchiveFullPath(bool showFullPath);
 
+    void SetRememberUiState(bool remember);
+
+    void SetWindowPlacement(const WindowPlacementConfig& placement);
+
+    void SetListColumnWidths(const std::vector<int>& widths);
+
+    void ResetListColumnWidths();
+
     /**
      * 获取配置文件路径。
      * @return 当前配置文件路径的只读引用。
@@ -84,6 +108,9 @@ private:
     std::vector<std::wstring> archiveExtensions_;
     std::vector<wchar_t> scanDriveLetters_;
     bool showArchiveFullPath_ = false;
+    bool rememberUiState_ = true;
+    WindowPlacementConfig windowPlacement_;
+    std::vector<int> listColumnWidths_;
     AdvConfig::Parser parser_;
     bool configMigrated_ = false;
 };

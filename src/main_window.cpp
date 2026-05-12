@@ -32,6 +32,7 @@ std::wstring LS(HINSTANCE hInstance, UINT id) {
 static constexpr wchar_t kSpinnerClass[] = L"EveryZipSpinner";
 static constexpr wchar_t kSettingsClass[] = L"EveryZipSettingsWindow";
 static constexpr int IDC_SETTINGS_SHOW_FULL_PATH = 3001;
+static constexpr int IDC_SETTINGS_REMEMBER_UI_STATE = 3002;
 
 // Spinner 窗口过程：自绘旋转圆弧动画
 static LRESULT CALLBACK SpinnerWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -306,6 +307,7 @@ static HMENU CreateMainMenu(MainWindowState* s) {
 
     HMENU hSettings = CreatePopupMenu();
     AppendMenuW(hSettings, MF_STRING, IDM_TOOLS_OPTIONS, LS_(s, IDS_MENU_TOOLS_OPTIONS).c_str());
+    AppendMenuW(hSettings, MF_STRING, IDM_SETTINGS_RESET_LAYOUT, LS_(s, IDS_SETTINGS_RESET_LAYOUT).c_str());
 
     HMENU hAbout = CreatePopupMenu();
     AppendMenuW(hAbout, MF_STRING, IDM_HELP_ABOUT,     LS_(s, IDS_MENU_HELP_ABOUT).c_str());
@@ -339,23 +341,35 @@ static void SetupListColumns(MainWindowState* s) {
     LVCOLUMNW col{};
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 
+    int widths[] = { 210, 210, 280, 100, 100, 140 };
+    if (s->userConfig.GetRememberUiState()) {
+        const auto& savedWidths = s->userConfig.GetListColumnWidths();
+        if (savedWidths.size() == 6) {
+            for (int i = 0; i < 6; ++i) {
+                if (savedWidths[i] > 0) {
+                    widths[i] = savedWidths[i];
+                }
+            }
+        }
+    }
+
     std::wstring colName = LS_(s, IDS_COL_NAME);
     col.pszText = const_cast<LPWSTR>(colName.c_str());
-    col.cx = 200;
+    col.cx = widths[0];
     col.iSubItem = 0;
     ListView_InsertColumn(hList, 0, &col);
 
     // 归档文件路径列
     std::wstring colArchive = LS_(s, IDS_COL_ARCHIVE);
     col.pszText = const_cast<LPWSTR>(colArchive.c_str());
-    col.cx = 280;
+    col.cx = widths[1];
     col.iSubItem = 1;
     ListView_InsertColumn(hList, 1, &col);
 
     // 归档内部文件路径列
     std::wstring colPath = LS_(s, IDS_COL_PATH);
     col.pszText = const_cast<LPWSTR>(colPath.c_str());
-    col.cx = 280;
+    col.cx = widths[2];
     col.iSubItem = 2;
     ListView_InsertColumn(hList, 2, &col);
 
@@ -364,21 +378,21 @@ static void SetupListColumns(MainWindowState* s) {
     col.fmt = LVCFMT_RIGHT;
     std::wstring colCompSize = LS_(s, IDS_COL_COMPRESSED_SIZE);
     col.pszText = const_cast<LPWSTR>(colCompSize.c_str());
-    col.cx = 100;
+    col.cx = widths[3];
     col.iSubItem = 3;
     ListView_InsertColumn(hList, 3, &col);
 
     // 原始大小列（右对齐）
     std::wstring colOrigSize = LS_(s, IDS_COL_ORIGINAL_SIZE);
     col.pszText = const_cast<LPWSTR>(colOrigSize.c_str());
-    col.cx = 100;
+    col.cx = widths[4];
     col.iSubItem = 4;
     ListView_InsertColumn(hList, 4, &col);
 
     col.fmt = LVCFMT_LEFT;
     std::wstring colModifiedTime = LS_(s, IDS_COL_MODIFIED_TIME);
     col.pszText = const_cast<LPWSTR>(colModifiedTime.c_str());
-    col.cx = 140;
+    col.cx = widths[5];
     col.iSubItem = 5;
     ListView_InsertColumn(hList, 5, &col);
 }
@@ -394,10 +408,47 @@ static void RefreshList(MainWindowState* s) {
     InvalidateRect(s->hList, nullptr, TRUE);
 }
 
+static bool SaveUiState(HWND hWnd, MainWindowState* s) {
+    if (!hWnd || !s || !s->userConfig.GetRememberUiState()) {
+        return true;
+    }
+
+    if (IsWindowVisible(hWnd)) {
+        WINDOWPLACEMENT wp{};
+        wp.length = sizeof(wp);
+        if (GetWindowPlacement(hWnd, &wp)) {
+            UserConfig::WindowPlacementConfig placement{};
+            placement.left = wp.rcNormalPosition.left;
+            placement.top = wp.rcNormalPosition.top;
+            placement.right = wp.rcNormalPosition.right;
+            placement.bottom = wp.rcNormalPosition.bottom;
+            placement.maximized = IsZoomed(hWnd) || wp.showCmd == SW_SHOWMAXIMIZED;
+            s->userConfig.SetWindowPlacement(placement);
+        }
+    }
+
+    if (s->hList) {
+        std::vector<int> widths;
+        widths.reserve(6);
+        for (int i = 0; i < 6; ++i) {
+            widths.push_back(ListView_GetColumnWidth(s->hList, i));
+        }
+        s->userConfig.SetListColumnWidths(widths);
+    }
+
+    std::wstring err;
+    if (!s->userConfig.Save(&err)) {
+        LOG_WARN(L"Save UI state failed: %s", err.c_str());
+        return false;
+    }
+    return true;
+}
+
 struct SettingsWindowState {
     HWND owner = nullptr;
     MainWindowState* mainState = nullptr;
     HWND hCheckFullPath = nullptr;
+    HWND hCheckRememberUiState = nullptr;
     HFONT hFont = nullptr;
 };
 
@@ -428,6 +479,72 @@ static void ApplyShowArchiveFullPathSetting(HWND hWnd, SettingsWindowState* sws)
     RefreshList(s);
 }
 
+static void ApplyRememberUiStateSetting(HWND hWnd, SettingsWindowState* sws) {
+    if (!sws || !sws->mainState || !sws->hCheckRememberUiState) return;
+
+    MainWindowState* s = sws->mainState;
+    const bool checked = SendMessageW(sws->hCheckRememberUiState, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool previous = s->userConfig.GetRememberUiState();
+    if (checked == previous) return;
+
+    s->userConfig.SetRememberUiState(checked);
+
+    bool saved = false;
+    std::wstring err;
+    if (checked) {
+        saved = SaveUiState(sws->owner, s);
+    } else {
+        saved = s->userConfig.Save(&err);
+    }
+
+    if (!saved) {
+        s->userConfig.SetRememberUiState(previous);
+        SendMessageW(sws->hCheckRememberUiState, BM_SETCHECK, previous ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        std::wstring msg = LS_(s, IDS_SETTINGS_SAVE_FAILED);
+        if (!err.empty()) msg += L"\n" + err;
+        MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+    }
+}
+
+static void ResetLayoutColumns(HWND hWnd, MainWindowState* s) {
+    if (!s) return;
+
+    std::vector<int> previousWidths;
+    if (s->hList) {
+        previousWidths.reserve(6);
+        for (int i = 0; i < 6; ++i) {
+            previousWidths.push_back(ListView_GetColumnWidth(s->hList, i));
+        }
+    }
+
+    const auto& defaultWidths = UserConfig::GetDefaultListColumnWidths();
+    if (s->hList) {
+        for (int i = 0; i < 6 && i < (int)defaultWidths.size(); ++i) {
+            ListView_SetColumnWidth(s->hList, i, defaultWidths[i]);
+        }
+    }
+
+    s->userConfig.ResetListColumnWidths();
+
+    std::wstring err;
+    if (!s->userConfig.Save(&err)) {
+        if (s->hList && previousWidths.size() == 6) {
+            for (int i = 0; i < 6; ++i) {
+                ListView_SetColumnWidth(s->hList, i, previousWidths[i]);
+            }
+            s->userConfig.SetListColumnWidths(previousWidths);
+        }
+
+        std::wstring msg = LS_(s, IDS_SETTINGS_SAVE_FAILED);
+        if (!err.empty()) msg += L"\n" + err;
+        MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    RefreshList(s);
+}
+
 static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     SettingsWindowState* sws = (SettingsWindowState*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
 
@@ -440,6 +557,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
         const UINT dpi = GetWindowDpi(hWnd);
         const int margin = ScaleDpi(16, dpi);
         const int checkH = ScaleDpi(24, dpi);
+        const int checkGap = ScaleDpi(8, dpi);
 
         sws->hCheckFullPath = CreateWindowExW(
             0,
@@ -456,12 +574,31 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
             SendMessageW(sws->hCheckFullPath, BM_SETCHECK, s->showArchiveFullPath ? BST_CHECKED : BST_UNCHECKED, 0);
         }
 
+        sws->hCheckRememberUiState = CreateWindowExW(
+            0,
+            L"BUTTON",
+            s ? LS_(s, IDS_SETTINGS_REMEMBER_UI_STATE).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            margin, margin + checkH + checkGap, ScaleDpi(320, dpi), checkH,
+            hWnd,
+            (HMENU)(INT_PTR)IDC_SETTINGS_REMEMBER_UI_STATE,
+            s ? s->hInstance : nullptr,
+            nullptr);
+
+        if (sws->hCheckRememberUiState && s) {
+            SendMessageW(sws->hCheckRememberUiState, BM_SETCHECK,
+                s->userConfig.GetRememberUiState() ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
+
         NONCLIENTMETRICSW ncm{};
         ncm.cbSize = sizeof(ncm);
         if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
             sws->hFont = CreateFontIndirectW(&ncm.lfMessageFont);
             if (sws->hFont && sws->hCheckFullPath) {
                 SendMessageW(sws->hCheckFullPath, WM_SETFONT, (WPARAM)sws->hFont, TRUE);
+            }
+            if (sws->hFont && sws->hCheckRememberUiState) {
+                SendMessageW(sws->hCheckRememberUiState, WM_SETFONT, (WPARAM)sws->hFont, TRUE);
             }
         }
         return 0;
@@ -471,6 +608,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
     case WM_COMMAND:
         if (LOWORD(wParam) == IDC_SETTINGS_SHOW_FULL_PATH && HIWORD(wParam) == BN_CLICKED) {
             ApplyShowArchiveFullPathSetting(hWnd, sws);
+            return 0;
+        }
+        if (LOWORD(wParam) == IDC_SETTINGS_REMEMBER_UI_STATE && HIWORD(wParam) == BN_CLICKED) {
+            ApplyRememberUiStateSetting(hWnd, sws);
             return 0;
         }
         break;
@@ -515,7 +656,7 @@ static void ShowSettingsPanel(HWND hOwner, MainWindowState* s) {
 
     const UINT dpi = GetWindowDpi(hOwner);
     const int width = ScaleDpi(360, dpi);
-    const int height = ScaleDpi(130, dpi);
+    const int height = ScaleDpi(170, dpi);
 
     RECT ownerRc{};
     GetWindowRect(hOwner, &ownerRc);
@@ -1097,9 +1238,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CLOSE:
         // 关闭窗口只是隐藏到托盘，不退出程序
         if (!s->forceQuit) {
+            SaveUiState(hWnd, s);
             ShowWindow(hWnd, SW_HIDE);
             return 0;
         }
+        SaveUiState(hWnd, s);
         // g_forceQuit=true 时落入 DefWindowProc 触发 WM_DESTROY
         break;
 
@@ -1173,6 +1316,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         case IDM_TOOLS_OPTIONS:
             ShowSettingsPanel(hWnd, s);
+            return 0;
+        case IDM_SETTINGS_RESET_LAYOUT:
+            ResetLayoutColumns(hWnd, s);
             return 0;
         case IDM_HELP_ABOUT:
             MessageBoxW(hWnd, LS_(s, IDS_ABOUT_TEXT).c_str(), LS_(s, IDS_ABOUT_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
@@ -1391,6 +1537,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_NOTIFY: { // ListView 通知：双击事件 + NM_CUSTOMDRAW 自绘（关键词加粗）
         LPNMHDR hdr = (LPNMHDR)lParam;
+        HWND hHeader = s->hList ? ListView_GetHeader(s->hList) : nullptr;
+        if (hdr && hHeader && hdr->hwndFrom == hHeader) {
+            if (hdr->code == HDN_ENDTRACKW || hdr->code == HDN_ENDTRACKA ||
+                hdr->code == HDN_ITEMCHANGEDW || hdr->code == HDN_ITEMCHANGEDA) {
+                SaveUiState(hWnd, s);
+                return 0;
+            }
+        }
         if (hdr && hdr->hwndFrom == s->hList) {
             // LVN_GETDISPINFO: 虚拟列表回调，按需从缓存/数据库获取行数据
             if (hdr->code == LVN_GETDISPINFOW) {
@@ -1621,6 +1775,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_DESTROY: // 窗口销毁：移除托盘图标、停止索引、关闭数据库、释放字体资源
         LOG_INFO(L"WM_DESTROY");
+        SaveUiState(hWnd, s);
         s->shuttingDown.store(true);
         ++s->loadGeneration;
         RemoveTrayIcon();

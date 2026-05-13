@@ -6,6 +6,7 @@
 #include "parser/archive_parser_factory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cwctype>
 #include <memory>
 #include <unordered_map>
@@ -259,10 +260,14 @@ void Indexer::Start(HWND hWnd) {
         scanner.SetScanDriveLetters(scanDriveLetters_);
         std::vector<ArchiveFile_t> scanned;
         std::wstring err;
+        const auto scanStart = std::chrono::steady_clock::now();
         const bool scanOk = scanner.Scan(&scanned, &err, &cancel_);
+        const auto scanElapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - scanStart).count();
         if (!scanOk) {
             LOG_WARN(L"FileScanner::Scan failed: %s", err.c_str());
         }
+        LOG_INFO(L"Initial archive scan completed in %.3f s", scanElapsed);
 
         if (!cancel_.load() && scanOk) {
             stage_.store((int)Stage::SyncingDatabase);
@@ -359,6 +364,7 @@ void Indexer::Start(HWND hWnd) {
 
                     const size_t parseTotal = toParse.size();
                     size_t parseDone = 0;
+                    const auto parseStart = std::chrono::steady_clock::now();
                     if (!cancel_.load() && parseTotal > 0) {
                         stage_.store((int)Stage::ParsingArchives);
                         PostParseProgress(hWnd, 0, parseTotal);
@@ -369,6 +375,9 @@ void Indexer::Start(HWND hWnd) {
                         ++parseDone;
                         PostParseProgress(hWnd, parseDone, parseTotal);
                     }
+                    const auto parseElapsed = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - parseStart).count();
+                    LOG_INFO(L"Initial archive parsing completed in %.3f s", parseElapsed);
                     if (!cancel_.load()) {
                         stage_.store((int)Stage::SyncingDatabase);
                     }

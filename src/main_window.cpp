@@ -1060,13 +1060,43 @@ static void UpdateColumnHeaders(MainWindowState* s) {
     }
 }
 
-static void UpdateStatusBarParts(HWND hWnd, MainWindowState* s) {
+static int MeasureWindowTextWidth(HWND hWnd, const std::wstring& text) {
+    if (!hWnd || text.empty()) return 0;
+
+    HDC hdc = GetDC(hWnd);
+    if (!hdc) return 0;
+
+    HFONT hFont = (HFONT)SendMessageW(hWnd, WM_GETFONT, 0, 0);
+    HFONT hOld = hFont ? (HFONT)SelectObject(hdc, hFont) : nullptr;
+
+    SIZE size{};
+    GetTextExtentPoint32W(hdc, text.c_str(), (int)text.size(), &size);
+
+    if (hOld) SelectObject(hdc, hOld);
+    ReleaseDC(hWnd, hdc);
+    return size.cx;
+}
+
+static void UpdateStatusBarParts(HWND hWnd, MainWindowState* s,
+                                 const std::wstring& rightText = std::wstring(),
+                                 bool reserveSpinner = false) {
     if (!s || !s->hStatusBar) return;
 
     RECT rc{};
     GetClientRect(hWnd, &rc);
     const UINT dpi = GetWindowDpi(hWnd);
-    const int rightWidth = ScaleDpi(140, dpi);
+    int rightWidth = ScaleDpi(140, dpi);
+    if (!rightText.empty()) {
+        RECT sbRect{};
+        GetClientRect(s->hStatusBar, &sbRect);
+        const int spinnerReserve = reserveSpinner
+            ? max(0, sbRect.bottom - sbRect.top) + ScaleDpi(8, dpi)
+            : 0;
+        rightWidth = max(ScaleDpi(56, dpi),
+                         MeasureWindowTextWidth(s->hStatusBar, rightText) +
+                         ScaleDpi(24, dpi) + spinnerReserve);
+    }
+
     int parts[2] = {
         max(0, rc.right - rightWidth),
         -1
@@ -1245,9 +1275,6 @@ static void ShowStartupScanPrompt(HWND hWnd, MainWindowState* s) {
 static void UpdateStatusBar(MainWindowState* s) {
     if (!s->hStatusBar) return;
     HWND hWnd = GetParent(s->hStatusBar);
-    if (hWnd) {
-        UpdateStatusBarParts(hWnd, s);
-    }
 
     int fileCount = 0;
     {
@@ -1318,6 +1345,10 @@ static void UpdateStatusBar(MainWindowState* s) {
         rightText = LS_(s, IDS_STATUS_REFRESHING_LIST);
     } else if (indexerStage == Indexer::Stage::Stopping) {
         rightText = LS_(s, IDS_STATUS_PROCESSING);
+    }
+
+    if (hWnd) {
+        UpdateStatusBarParts(hWnd, s, rightText, showSpinner);
     }
 
     SendMessageW(s->hStatusBar, SB_SETTEXTW, 0, (LPARAM)leftText.c_str());

@@ -26,7 +26,7 @@ static constexpr wchar_t kAppTitle[] = L"EveryZip";
 static void EnsureCommonControls() {
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS;
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_LINK_CLASS;
     InitCommonControlsEx(&icc);
 }
 

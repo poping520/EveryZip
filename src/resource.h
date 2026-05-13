@@ -22,42 +22,42 @@
 #define IDT_LIST_RETRY      2003
 #define IDI_APP_ICON      10
 
-#define IDI_TRAY_ICON     1         // 托盘图标 ID
-#define IDM_TRAY_SHOW     170       // 托盘菜单：显示窗口
-#define IDM_TRAY_EXIT     171       // 托盘菜单：退出程序
+#define IDI_TRAY_ICON     1         // tray icon id
+#define IDM_TRAY_SHOW     170       // tray menu: show window
+#define IDM_TRAY_EXIT     171       // tray menu: exit app
 
-#define IDM_CTX_OPEN_FOLDER     180  // 右键菜单：打开归档文件所在文件夹
-#define IDM_CTX_PROPERTIES      181  // 右键菜单：显示归档文件属性
-#define IDM_CTX_COPY_NAME       182  // 右键菜单：复制文件名
-#define IDM_CTX_COPY_ENTRY_PATH 183  // 右键菜单：复制条目相对路径
-#define IDM_CTX_COPY_ARCHIVE    184  // 右键菜单：复制归档文件路径
-#define IDM_CTX_EXTRACT         185  // 右键菜单：解压到自定义目录
-#define IDM_CTX_OPEN_ARCHIVE    186  // 右键菜单：打开归档文件
+#define IDM_CTX_OPEN_FOLDER     180  // context menu: open containing folder
+#define IDM_CTX_PROPERTIES      181  // context menu: show file properties
+#define IDM_CTX_COPY_NAME       182  // context menu: copy file name
+#define IDM_CTX_COPY_ENTRY_PATH 183  // context menu: copy entry path
+#define IDM_CTX_COPY_ARCHIVE    184  // context menu: copy archive path
+#define IDM_CTX_EXTRACT         185  // context menu: extract to folder
+#define IDM_CTX_OPEN_ARCHIVE    186  // context menu: open archive file
 
-// ── 多语言字符串 ID ──
-// 菜单栏
+// Localized string ids
+// Menu bar
 #define IDS_MENU_FILE           2001
 #define IDS_MENU_SETTINGS       2008
 #define IDS_MENU_HELP           2009
-// 菜单项
+// Menu items
 #define IDS_MENU_FILE_EXIT      2010
 #define IDS_MENU_TOOLS_OPTIONS  2016
 #define IDS_MENU_HELP_ABOUT     2017
 #define IDS_MENU_CHECK_UPDATE   2018
-// 托盘菜单
+// Tray menu
 #define IDS_TRAY_SHOW           2020
 #define IDS_TRAY_EXIT           2021
-// ListView 列头
+// ListView columns
 #define IDS_COL_NAME            2030
 #define IDS_COL_ARCHIVE         2031
 #define IDS_COL_PATH            2032
 #define IDS_COL_COMPRESSED_SIZE 2033
 #define IDS_COL_ORIGINAL_SIZE   2034
 #define IDS_COL_MODIFIED_TIME   2035
-// 排序箭头
+// Sort arrows
 #define IDS_SORT_ASC            2040
 #define IDS_SORT_DESC           2041
-// 状态栏
+// Status bar
 #define IDS_STATUS_PROCESSING   2050
 #define IDS_STATUS_READY        2051
 #define IDS_STATUS_FILE_COUNT   2052
@@ -66,7 +66,7 @@
 #define IDS_STATUS_UPDATING_INDEX 2055
 #define IDS_STATUS_PARSING      2056
 #define IDS_STATUS_REFRESHING_LIST 2057
-// 对话框
+// Dialogs
 #define IDS_ABOUT_TITLE         2060
 #define IDS_ABOUT_TEXT          2061
 #define IDS_ERROR               2062
@@ -77,7 +77,7 @@
 #define IDS_SETTINGS_REMEMBER_UI_STATE 2067
 #define IDS_SETTINGS_RESET_LAYOUT 2068
 #define IDS_SETTINGS_FORMATS_TITLE 2069
-// 右键菜单
+// Context menu
 #define IDS_CTX_OPEN_FOLDER     2070
 #define IDS_CTX_PROPERTIES      2071
 #define IDS_CTX_COPY_NAME       2072
@@ -112,7 +112,7 @@
 #define WM_APP_INDEX_DONE (WM_APP + 2)
 #define WM_APP_DB_REFRESH (WM_APP + 3)
 #define WM_APP_UPDATE_STATUSBAR (WM_APP + 4)
-#define WM_APP_ROWS_READY (WM_APP + 5)  // 异步加载完成，wParam=0, lParam=AsyncLoadResult*
-#define WM_APP_TRAY       (WM_APP + 6)  // 托盘图标回调消息
-#define WM_APP_EXTRACT_DONE (WM_APP + 7) // 解压完成，wParam=1成功/0失败，lParam=ExtractResult*
-#define WM_APP_PARSE_PROGRESS (WM_APP + 8) // 解析进度，wParam=已完成数，lParam=总数
+#define WM_APP_ROWS_READY (WM_APP + 5)  // async rows ready, lParam=AsyncLoadResult*
+#define WM_APP_TRAY       (WM_APP + 6)  // tray icon callback
+#define WM_APP_EXTRACT_DONE (WM_APP + 7) // extract done, lParam=ExtractResult*
+#define WM_APP_PARSE_PROGRESS (WM_APP + 8) // parse progress

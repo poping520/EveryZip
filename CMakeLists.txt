@@ -21,6 +21,8 @@ add_executable(EveryZip WIN32
         src/window/window_utils.h
         src/string_utils.h
         src/string_utils.cpp
+        src/window/license_text.h
+        src/window/license_text.cpp
         src/tray_icon.h
         src/tray_icon.cpp
         src/icon_cache.h

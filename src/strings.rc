@@ -4,6 +4,12 @@
 // 嵌入应用程序 manifest（DPI 感知 + UAC + ComCtl32 v6）
 1 RT_MANIFEST "app.manifest"
 IDI_APP_ICON ICON "../art/icon.ico"
+IDR_LICENSE_PROJECT RCDATA "../LICENSE"
+IDR_LICENSE_ZLIB RCDATA "../external/zlib/LICENSE"
+IDR_LICENSE_MINIZIP RCDATA "../external/zlib/contrib/minizip/MiniZip64_info.txt"
+IDR_LICENSE_7ZIP RCDATA "../external/7zip/DOC/License.txt"
+IDR_LICENSE_7ZIP_LGPL RCDATA "../external/7zip/DOC/copying.txt"
+IDR_LICENSE_UNRAR RCDATA "../external/unrar/license.txt"
 
  #pragma code_page(65001)
 
@@ -92,6 +98,8 @@ STRINGTABLE
     IDS_ABOUT_VERSION,      "版本 1.0.0"
     IDS_ABOUT_SUMMARY,      "轻量的压缩文件索引与检索工具"
     IDS_SETTINGS_UI_TITLE,  "界面"
+    IDS_ABOUT_LICENSE,      "许可证"
+    IDS_LICENSE_TITLE,      "许可证"
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -179,4 +187,6 @@ STRINGTABLE
     IDS_ABOUT_VERSION,      "Version 1.0.0"
     IDS_ABOUT_SUMMARY,      "Lightweight archive indexing and search tool"
     IDS_SETTINGS_UI_TITLE,  "Interface"
+    IDS_ABOUT_LICENSE,      "Licenses"
+    IDS_LICENSE_TITLE,      "Licenses"
 }

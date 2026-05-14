@@ -22,6 +22,32 @@ static bool EndsWithSlash(const std::string& s) {
     return c == '/' || c == '\\';
 }
 
+static std::uint64_t LocalTmToFileTimeValue(const std::tm& t) {
+    const int year = t.tm_year + 1900;
+    const int month = t.tm_mon + 1;
+    if (year <= 1900 || month < 1 || month > 12 || t.tm_mday < 1 || t.tm_mday > 31) {
+        return 0;
+    }
+
+    SYSTEMTIME localSt{};
+    localSt.wYear = static_cast<WORD>(year);
+    localSt.wMonth = static_cast<WORD>(month);
+    localSt.wDay = static_cast<WORD>(t.tm_mday);
+    localSt.wHour = static_cast<WORD>(t.tm_hour);
+    localSt.wMinute = static_cast<WORD>(t.tm_min);
+    localSt.wSecond = static_cast<WORD>(t.tm_sec);
+
+    FILETIME localFt{};
+    FILETIME utcFt{};
+    if (!SystemTimeToFileTime(&localSt, &localFt)) return 0;
+    if (!LocalFileTimeToFileTime(&localFt, &utcFt)) return 0;
+
+    ULARGE_INTEGER ui{};
+    ui.LowPart = utcFt.dwLowDateTime;
+    ui.HighPart = utcFt.dwHighDateTime;
+    return ui.QuadPart;
+}
+
  // 将归档条目名称转换为宽字符串。
  // isUtf8=true 时严格按 UTF-8 解码；为 false 时按系统代码页（CP_ACP/GBK）解码。
  // 参数：s - 原始窄字符串名称；isUtf8 - ZIP 条目的 UTF-8 标志位（flag bit 11）是否置位。
@@ -124,7 +150,7 @@ std::wstring ZipArchiveParser::ArchivePath() const {
     return archive_path_;
 }
 
-bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) {
+bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) {
     if (!out_entries) {
         if (error) *error = "out_entries is null";
         return false;
@@ -151,15 +177,12 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
         }
 
         const bool isUtf8 = (info.flag & 0x800) != 0;
-        ArchiveEntry e;
-        e.name = name;
-        e.name_w = ToWideBestEffort(name, isUtf8);
-        e.is_directory = EndsWithSlash(name);
+        ArchiveEntry_t e;
+        e.entryRawPath = name;
+        e.entryPath = ToWideBestEffort(name, isUtf8);
+        e.isDirectory = EndsWithSlash(name);
         e.compressed_size = (std::int64_t)info.compressed_size;
-        e.uncompressed_size = (std::uint64_t)info.uncompressed_size;
-        e.crc32 = (std::uint32_t)info.crc;
-        e.compression_method = (std::uint32_t)info.compression_method;
-        e.external_attributes = (std::uint32_t)info.external_fa;
+        e.original_size = (std::uint64_t)info.uncompressed_size;
 
         std::tm t{};
         t.tm_sec = info.tmu_date.tm_sec;
@@ -168,7 +191,7 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
         t.tm_mday = info.tmu_date.tm_mday;
         t.tm_mon = info.tmu_date.tm_mon;
         t.tm_year = info.tmu_date.tm_year - 1900;
-        e.modified_time = t;
+        e.modifiedTime = LocalTmToFileTimeValue(t);
 
         out_entries->push_back(std::move(e));
 

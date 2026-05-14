@@ -21,7 +21,7 @@ public:
     bool IsOpen() const override;
     std::wstring ArchivePath() const override;
 
-    bool ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) override;
+    bool ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) override;
 
     bool ExtractEntry(const std::string& entry_path,
                       const std::wstring& dest_dir,

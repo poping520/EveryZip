@@ -23,11 +23,11 @@ int main(int argc, char* argv[]) {
     std::string err;
     parser.Open(testFile, &err);
 
-    std::vector<EveryZip::ArchiveEntry> entries;
+    std::vector<ArchiveEntry_t> entries;
     parser.ListEntries(&entries, &err);
 
     for (const auto& entry : entries) {
-        std::cerr << entry.name << "\n";
+        std::cerr << entry.entryRawPath << "\n";
     }
 
     parser.Close();

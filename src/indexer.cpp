@@ -143,7 +143,7 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const s
         return;
     }
 
-    std::vector<EveryZip::ArchiveEntry> parsed;
+    std::vector<ArchiveEntry_t> parsed;
     if (!parserPtr->ListEntries(&parsed, &perr)) {
         LOG_WARN(L"ArchiveParser::ListEntries failed (%s): %s",
                  a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
@@ -162,15 +162,15 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const s
     std::vector<ArchiveEntry_t> entries;
     entries.reserve(parsed.size());
     for (const auto& e : parsed) {
-        if (e.is_directory) continue;
+        if (e.isDirectory) continue;
 
         ArchiveEntry_t out;
         out.archiveId = archiveId;
-        out.entryPath = e.name_w.empty() ? Utf8ToWString(e.name.c_str()) : e.name_w;
-        out.entryRawPath = e.name;
+        out.entryPath = e.entryPath.empty() ? Utf8ToWString(e.entryRawPath.c_str()) : e.entryPath;
+        out.entryRawPath = e.entryRawPath;
         out.compressed_size = e.compressed_size;
-        out.original_size = e.uncompressed_size;
-        out.modifiedTime = LocalTmToFileTimeValue(e.modified_time);
+        out.original_size = e.original_size;
+        out.modifiedTime = e.modifiedTime;
         entries.push_back(std::move(out));
     }
 

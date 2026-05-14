@@ -8,6 +8,8 @@
 #include <cstring>
 #include <ctime>
 
+#include "../string_utils.h"
+
 namespace EveryZip {
 
 // 将宽字符串转换为 UTF-8 窄字符串
@@ -19,16 +21,6 @@ static std::string WStringToUtf8(const std::wstring& w) {
     std::string out(n, '\0');
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
                         out.data(), n, nullptr, nullptr);
-    return out;
-}
-
-// 将 UTF-8 窄字符串转为宽字符串
-static std::wstring Utf8ToWString(const char* s) {
-    if (!s || !*s) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (n <= 0) return {};
-    std::wstring out(n - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, out.data(), n);
     return out;
 }
 
@@ -68,7 +60,7 @@ std::wstring LibArchiveParser::ArchivePath() const {
     return archive_path_;
 }
 
-bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) {
+bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) {
     if (!out_entries) {
         if (error) *error = "out_entries is null";
         return false;
@@ -101,19 +93,19 @@ bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
             continue;
         }
 
-        ArchiveEntry e;
-        e.name        = pathUtf8;
-        e.name_w      = Utf8ToWString(pathUtf8);
-        e.is_directory = (archive_entry_filetype(entry) == AE_IFDIR) || EndsWithSlash(pathUtf8);
+        ArchiveEntry_t e;
+        e.entryRawPath = pathUtf8;
+        e.entryPath = Utf8ToWString(pathUtf8);
+        e.isDirectory = (archive_entry_filetype(entry) == AE_IFDIR) || EndsWithSlash(pathUtf8);
 
-        e.uncompressed_size = (std::uint64_t)archive_entry_size(entry);
+        e.original_size = (std::uint64_t)archive_entry_size(entry);
         e.compressed_size   = -1; // libarchive list 模式不提供压缩后大小
 
         const struct stat* st = archive_entry_stat(entry);
         if (st) {
             std::time_t mt = st->st_mtime;
             const std::tm* tm_ptr = std::localtime(&mt);
-            if (tm_ptr) e.modified_time = *tm_ptr;
+            if (tm_ptr) e.modifiedTime = LocalTmToFileTimeValue(*tm_ptr);
         }
 
         out_entries->push_back(std::move(e));

@@ -8,6 +8,20 @@
 struct sqlite3;
 
 /**
+ * EveryZip 字符串编码/字符集约定：
+ *
+ * 1. Win32 GUI、文件系统路径、窗口文本以及所有直接调用 Win32 API 的边界，
+ *    内部统一优先使用宽字符 wchar_t / UTF-16，对应 C++ 类型通常为 std::wstring。
+ *
+ * 2. SQLite 数据库中的 TEXT 字段统一按 UTF-8 保存；写入数据库前应执行 UTF-16 -> UTF-8
+ *    转换，从数据库读取后应执行 UTF-8 -> UTF-16 转换，再交给 Win32 / GUI 层使用。
+ *
+ * 3. 不将窄字符 char 字符串视为“本地 ANSI 路径字符串”。凡是文件路径、归档路径、界面文本等
+ *    需要与 Windows Unicode API 交互的数据，都应避免依赖系统 ANSI code page。
+ *
+ * 4. 若某些归档格式或第三方库只暴露窄字符字节序列，应优先按其格式约定解码为 UTF-8；
+ *    只有在格式本身未提供稳定 Unicode 语义时，才允许在局部兼容逻辑中做额外回退处理。
+ *
  * Current database schema.
  *
  * configs

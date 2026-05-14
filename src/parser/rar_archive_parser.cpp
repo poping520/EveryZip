@@ -155,7 +155,7 @@ std::wstring RarArchiveParser::ArchivePath() const {
     return state_ ? state_->archivePath : std::wstring();
 }
 
-bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) {
+bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) {
     if (!out_entries) {
         if (error) *error = "out_entries is null";
         return false;
@@ -183,20 +183,19 @@ bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::
             return false;
         }
 
-        ArchiveEntry entry;
-        entry.name_w = header.FileNameW;
-        if (entry.name_w.empty() && header.FileName[0] != '\0') {
-            entry.name_w = Utf8ToWString(header.FileName);
+        ArchiveEntry_t entry;
+        entry.entryPath = header.FileNameW;
+        if (entry.entryPath.empty() && header.FileName[0] != '\0') {
+            entry.entryPath = Utf8ToWString(header.FileName);
         }
-        entry.name = WideToUtf8(entry.name_w);
-        entry.is_directory = (header.Flags & RHDF_DIRECTORY) != 0;
-        entry.compressed_size = entry.is_directory ? 0 : CombineSize(header.PackSize, header.PackSizeHigh);
+        entry.entryRawPath = WideToUtf8(entry.entryPath);
+        entry.isDirectory = (header.Flags & RHDF_DIRECTORY) != 0;
+        entry.compressed_size = entry.isDirectory ? 0 : CombineSize(header.PackSize, header.PackSizeHigh);
         const std::int64_t uncompressed = CombineSize(header.UnpSize, header.UnpSizeHigh);
-        entry.uncompressed_size = uncompressed < 0 ? 0 : static_cast<std::uint64_t>(uncompressed);
-        entry.crc32 = header.FileCRC;
-        entry.compression_method = header.Method;
-        entry.external_attributes = header.FileAttr;
-        FillModifiedTime(header.FileTime, &entry.modified_time);
+        entry.original_size = uncompressed < 0 ? 0 : static_cast<std::uint64_t>(uncompressed);
+        std::tm modifiedTime{};
+        FillModifiedTime(header.FileTime, &modifiedTime);
+        entry.modifiedTime = LocalTmToFileTimeValue(modifiedTime);
 
         out_entries->push_back(std::move(entry));
 

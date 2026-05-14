@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::vector<EveryZip::ArchiveEntry> entries;
+    std::vector<ArchiveEntry_t> entries;
     if (!parser.ListEntries(&entries, &err)) {
         std::cerr << "ListEntries failed: " << err << "\n";
         return 1;
@@ -33,13 +33,13 @@ int main(int argc, char* argv[]) {
 
     bool sawFile = false;
     for (const auto& entry : entries) {
-        std::cerr << entry.name
+        std::cerr << entry.entryRawPath
                   << " compressed=" << entry.compressed_size
-                  << " uncompressed=" << entry.uncompressed_size
+                  << " uncompressed=" << entry.original_size
                   << "\n";
-        if (!entry.is_directory) {
+        if (!entry.isDirectory) {
             sawFile = true;
-            if (entry.name.empty() || entry.name_w.empty()) {
+            if (entry.entryRawPath.empty() || entry.entryPath.empty()) {
                 std::cerr << "Entry name conversion failed\n";
                 return 1;
             }

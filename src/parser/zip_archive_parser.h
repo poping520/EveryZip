@@ -42,7 +42,7 @@ public:
      * @param error 可选，用于输出错误信息。
      * @return 枚举成功返回 true，否则返回 false。
      */
-    bool ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) override;
+    bool ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) override;
 
     /**
      * 将 ZIP 归档内指定条目解压到目标目录。

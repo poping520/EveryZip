@@ -214,7 +214,7 @@ std::wstring SevenZipArchiveParser::ArchivePath() const {
     return state_ ? state_->archivePath : std::wstring();
 }
 
-bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, std::string* error) {
+bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) {
     if (!out_entries) {
         if (error) *error = "out_entries is null";
         return false;
@@ -234,13 +234,13 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, 
             return false;
         }
 
-        ArchiveEntry e;
-        e.name_w = nameW;
-        e.name = WideToUtf8(nameW);
-        e.is_directory = SzArEx_IsDir(&state_->db, i) != 0;
-        e.uncompressed_size = e.is_directory ? 0 : (std::uint64_t)SzArEx_GetFileSize(&state_->db, i);
+        ArchiveEntry_t e;
+        e.entryPath = nameW;
+        e.entryRawPath = WideToUtf8(nameW);
+        e.isDirectory = SzArEx_IsDir(&state_->db, i) != 0;
+        e.original_size = e.isDirectory ? 0 : (std::uint64_t)SzArEx_GetFileSize(&state_->db, i);
         e.compressed_size = 0;
-        if (!e.is_directory) {
+        if (!e.isDirectory) {
             const UInt32 folderIndex = GetItemFolderIndex(state_->db, i);
             if (folderIndex != kNoFolder &&
                 folderIndex < filesPerFolder.size() &&
@@ -259,12 +259,14 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry>* out_entries, 
             FILETIME localFt{};
             SYSTEMTIME st{};
             if (FileTimeToLocalFileTime(&ft, &localFt) && FileTimeToSystemTime(&localFt, &st)) {
-                e.modified_time.tm_sec = st.wSecond;
-                e.modified_time.tm_min = st.wMinute;
-                e.modified_time.tm_hour = st.wHour;
-                e.modified_time.tm_mday = st.wDay;
-                e.modified_time.tm_mon = st.wMonth - 1;
-                e.modified_time.tm_year = st.wYear - 1900;
+                std::tm localTime{};
+                localTime.tm_sec = st.wSecond;
+                localTime.tm_min = st.wMinute;
+                localTime.tm_hour = st.wHour;
+                localTime.tm_mday = st.wDay;
+                localTime.tm_mon = st.wMonth - 1;
+                localTime.tm_year = st.wYear - 1900;
+                e.modifiedTime = LocalTmToFileTimeValue(localTime);
             }
         }
 

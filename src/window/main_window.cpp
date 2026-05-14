@@ -352,16 +352,12 @@ static HMENU CreateMainMenu(MainWindowState* s) {
     HMENU hFile = CreatePopupMenu();
     AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT, LS_(s, IDS_MENU_FILE_EXIT).c_str());
 
-    HMENU hSettings = CreatePopupMenu();
-    AppendMenuW(hSettings, MF_STRING, IDM_TOOLS_OPTIONS, LS_(s, IDS_MENU_TOOLS_OPTIONS).c_str());
-    AppendMenuW(hSettings, MF_STRING, IDM_SETTINGS_RESET_LAYOUT, LS_(s, IDS_SETTINGS_RESET_LAYOUT).c_str());
-
     HMENU hAbout = CreatePopupMenu();
     AppendMenuW(hAbout, MF_STRING, IDM_HELP_ABOUT,     LS_(s, IDS_MENU_HELP_ABOUT).c_str());
     AppendMenuW(hAbout, MF_STRING, IDM_CHECK_UPDATE,   LS_(s, IDS_MENU_CHECK_UPDATE).c_str());
 
     AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFile,     LS_(s, IDS_MENU_FILE).c_str());
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hSettings, LS_(s, IDS_MENU_SETTINGS).c_str());
+    AppendMenuW(hMenuBar, MF_STRING, IDM_TOOLS_OPTIONS, LS_(s, IDS_MENU_SETTINGS).c_str());
     AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hAbout,    LS_(s, IDS_MENU_HELP).c_str());
 
     return hMenuBar;
@@ -1273,9 +1269,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         case IDM_TOOLS_OPTIONS:
             ShowSettingsPanel(hWnd, s, MakeSettingsWindowCallbacks());
-            return 0;
-        case IDM_SETTINGS_RESET_LAYOUT:
-            ResetLayoutColumns(hWnd, s, MakeSettingsWindowCallbacks());
             return 0;
         case IDM_HELP_ABOUT:
             ShowAboutPanel(hWnd, s);

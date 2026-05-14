@@ -50,7 +50,7 @@ STRINGTABLE
     IDS_ABOUT_TEXT,         "EveryZip"
     IDS_ERROR,              "错误"
     IDS_DBLCLICK_PLACEHOLDER,"双击（占位功能）"
-    IDS_SETTINGS_TITLE,     "选项"
+    IDS_SETTINGS_TITLE,     "设置"
     IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH,"显示归档文件全路径"
     IDS_SETTINGS_SAVE_FAILED,"保存设置失败"
     IDS_SETTINGS_REMEMBER_UI_STATE,"记住窗口位置和列宽"
@@ -91,6 +91,7 @@ STRINGTABLE
     IDS_SETTINGS_LANGUAGE_EN_US,"English"
     IDS_ABOUT_VERSION,      "版本 1.0.0"
     IDS_ABOUT_SUMMARY,      "轻量的压缩文件索引与检索工具"
+    IDS_SETTINGS_UI_TITLE,  "界面"
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -136,7 +137,7 @@ STRINGTABLE
     IDS_ABOUT_TEXT,         "EveryZip"
     IDS_ERROR,              "Error"
     IDS_DBLCLICK_PLACEHOLDER,"Double click (placeholder)"
-    IDS_SETTINGS_TITLE,     "Options"
+    IDS_SETTINGS_TITLE,     "Settings"
     IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH,"Show full archive path"
     IDS_SETTINGS_SAVE_FAILED,"Failed to save settings"
     IDS_SETTINGS_REMEMBER_UI_STATE,"Remember window position and column widths"
@@ -177,4 +178,5 @@ STRINGTABLE
     IDS_SETTINGS_LANGUAGE_EN_US,"English"
     IDS_ABOUT_VERSION,      "Version 1.0.0"
     IDS_ABOUT_SUMMARY,      "Lightweight archive indexing and search tool"
+    IDS_SETTINGS_UI_TITLE,  "Interface"
 }

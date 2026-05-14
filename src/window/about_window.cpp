@@ -101,13 +101,12 @@ LRESULT CALLBACK LicenseWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    switch (msg) {
-    case WM_CTLCOLOREDIT:
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = (HDC)wParam;
-        SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
-        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    LRESULT ctlColorResult = 0;
+    if (HandlePlainDialogCtlColor(msg, wParam, lParam, &ctlColorResult)) {
+        return ctlColorResult;
     }
+
+    switch (msg) {
     case WM_COMMAND:
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
             DestroyWindow(hWnd);
@@ -318,12 +317,12 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
-    switch (msg) {
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = (HDC)wParam;
-        SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
-        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+    LRESULT ctlColorResult = 0;
+    if (HandlePlainDialogCtlColor(msg, wParam, lParam, &ctlColorResult)) {
+        return ctlColorResult;
     }
+
+    switch (msg) {
     case WM_COMMAND:
         if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
             DestroyWindow(hWnd);

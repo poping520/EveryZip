@@ -569,6 +569,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         ShowSettingsPage(sws, SettingsPage::Formats);
         return 0;
     }
+    LRESULT ctlColorResult = 0;
+    if (HandlePlainDialogCtlColor(msg, wParam, lParam, &ctlColorResult)) {
+        return ctlColorResult;
+    }
+
     switch (msg) {
     case WM_COMMAND:
         if (LOWORD(wParam) == IDC_SETTINGS_NAV && HIWORD(wParam) == LBN_SELCHANGE) {

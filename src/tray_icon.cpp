@@ -3,6 +3,7 @@
 #include <string>
 
 #include "window/main_window.h"
+#include "window/window_utils.h"
 #include "resource.h"
 
 static NOTIFYICONDATAW g_nid{};
@@ -23,11 +24,11 @@ void RemoveTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &g_nid);
 }
 
-void ShowTrayMenu(HWND hWnd, HINSTANCE hInstance) {
+void ShowTrayMenu(HWND hWnd, MainWindowState* s) {
     HMENU hMenu = CreatePopupMenu();
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW, LS(hInstance, IDS_TRAY_SHOW).c_str());
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_SHOW, s ? LoadStateString(s, IDS_TRAY_SHOW).c_str() : L"");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, LS(hInstance, IDS_TRAY_EXIT).c_str());
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, s ? LoadStateString(s, IDS_TRAY_EXIT).c_str() : L"");
 
     POINT pt{};
     GetCursorPos(&pt);

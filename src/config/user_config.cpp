@@ -19,6 +19,7 @@ static const wchar_t* kKeyScanDrives = L"scan_drives";
 static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
 static const wchar_t* kKeyRememberUiState = L"remember_ui_state";
 static const wchar_t* kKeyStartupScanConfirmed = L"startup_scan_confirmed";
+static const wchar_t* kKeyLanguage = L"language";
 static const wchar_t* kKeyWindowRect = L"window_rect";
 static const wchar_t* kKeyWindowMaximized = L"window_maximized";
 static const wchar_t* kKeyListColumnWidths = L"list_column_widths";
@@ -99,6 +100,28 @@ static bool HasDriveLetter(const std::vector<wchar_t>& drives, wchar_t drive)
     return std::find(drives.begin(), drives.end(), drive) != drives.end();
 }
 
+static UserConfig::LanguageMode ParseLanguageMode(const std::wstring& value)
+{
+    std::wstring normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), std::towlower);
+    if (normalized == L"zh-cn") return UserConfig::LanguageMode::ZhCN;
+    if (normalized == L"en-us") return UserConfig::LanguageMode::EnUS;
+    return UserConfig::LanguageMode::System;
+}
+
+static std::wstring LanguageModeToConfigValue(UserConfig::LanguageMode mode)
+{
+    switch (mode) {
+    case UserConfig::LanguageMode::ZhCN:
+        return L"zh-CN";
+    case UserConfig::LanguageMode::EnUS:
+        return L"en-US";
+    case UserConfig::LanguageMode::System:
+    default:
+        return L"system";
+    }
+}
+
 const std::vector<std::wstring>& UserConfig::GetArchiveExtensions() const
 {
     return archiveExtensions_;
@@ -147,6 +170,16 @@ bool UserConfig::GetRememberUiState() const
 bool UserConfig::GetStartupScanConfirmed() const
 {
     return startupScanConfirmed_;
+}
+
+UserConfig::LanguageMode UserConfig::GetLanguageMode() const
+{
+    return languageMode_;
+}
+
+std::wstring UserConfig::GetLanguageConfigValue() const
+{
+    return LanguageModeToConfigValue(languageMode_);
 }
 
 const UserConfig::WindowPlacementConfig& UserConfig::GetWindowPlacement() const
@@ -295,6 +328,12 @@ void UserConfig::SetStartupScanConfirmed(bool confirmed)
     SyncToParser();
 }
 
+void UserConfig::SetLanguageMode(LanguageMode mode)
+{
+    languageMode_ = mode;
+    SyncToParser();
+}
+
 void UserConfig::SetWindowPlacement(const WindowPlacementConfig& placement)
 {
     windowPlacement_ = placement;
@@ -439,6 +478,18 @@ void UserConfig::SyncFromParser()
         configMigrated_ = true;
     }
 
+    const Value& language = parser_.Get(kKeyLanguage);
+    if (language.IsString()) {
+        const LanguageMode parsed = ParseLanguageMode(language.AsString());
+        languageMode_ = parsed;
+        if (language.AsString() != LanguageModeToConfigValue(parsed)) {
+            configMigrated_ = true;
+        }
+    } else {
+        languageMode_ = LanguageMode::System;
+        configMigrated_ = true;
+    }
+
     const Value& windowRect = parser_.Get(kKeyWindowRect);
     if (windowRect.IsDict()) {
         const auto& dict = windowRect.AsDict();
@@ -557,6 +608,7 @@ void UserConfig::SyncToParser()
 
     parser_.Set(kKeyRememberUiState, Value(rememberUiState_));
     parser_.Set(kKeyStartupScanConfirmed, Value(startupScanConfirmed_));
+    parser_.Set(kKeyLanguage, Value(LanguageModeToConfigValue(languageMode_)));
     parser_.Remove(L"window_left");
     parser_.Remove(L"window_top");
     parser_.Remove(L"window_right");
@@ -593,6 +645,7 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         showArchiveFullPath_ = false;
         rememberUiState_ = true;
         startupScanConfirmed_ = false;
+        languageMode_ = LanguageMode::System;
         windowPlacement_ = WindowPlacementConfig{};
         listColumnWidths_ = kDefaultListColumnWidths;
         SyncToParser();

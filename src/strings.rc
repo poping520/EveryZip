@@ -85,6 +85,12 @@ STRINGTABLE
     IDS_STARTUP_SCAN_TEXT,  "EveryZip 需要扫描磁盘并解析压缩文件内容，首次处理可能需要一些时间。"
     IDS_STARTUP_SCAN_OK,    "确定"
     IDS_STARTUP_SCAN_SETTINGS,"设置文件格式"
+    IDS_SETTINGS_LANGUAGE_TITLE,"语言"
+    IDS_SETTINGS_LANGUAGE_SYSTEM,"跟随系统"
+    IDS_SETTINGS_LANGUAGE_ZH_CN,"中文（简体）"
+    IDS_SETTINGS_LANGUAGE_EN_US,"English"
+    IDS_ABOUT_VERSION,      "版本 1.0.0"
+    IDS_ABOUT_SUMMARY,      "轻量的压缩文件索引与检索工具"
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -165,4 +171,10 @@ STRINGTABLE
     IDS_STARTUP_SCAN_TEXT,  "EveryZip needs to scan disks and parse archive contents. The first pass may take some time."
     IDS_STARTUP_SCAN_OK,    "OK"
     IDS_STARTUP_SCAN_SETTINGS,"Configure Formats"
+    IDS_SETTINGS_LANGUAGE_TITLE,"Language"
+    IDS_SETTINGS_LANGUAGE_SYSTEM,"Follow system"
+    IDS_SETTINGS_LANGUAGE_ZH_CN,"中文（简体）"
+    IDS_SETTINGS_LANGUAGE_EN_US,"English"
+    IDS_ABOUT_VERSION,      "Version 1.0.0"
+    IDS_ABOUT_SUMMARY,      "Lightweight archive indexing and search tool"
 }

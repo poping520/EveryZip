@@ -7,6 +7,7 @@ struct SettingsWindowCallbacks {
     void (*refreshList)(MainWindowState* s) = nullptr;
     void (*loadRowsFromDbAndRefreshAsync)(HWND hWnd, MainWindowState* s) = nullptr;
     void (*updateStatusBar)(MainWindowState* s) = nullptr;
+    void (*refreshLocalizedMainWindow)(HWND hWnd, MainWindowState* s) = nullptr;
 };
 
 void ShowSettingsPanel(HWND hOwner,

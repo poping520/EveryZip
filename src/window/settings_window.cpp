@@ -23,6 +23,7 @@ constexpr int IDC_SETTINGS_CUSTOM_EXT = 3031;
 constexpr int IDC_SETTINGS_CUSTOM_PARSER = 3032;
 constexpr int IDC_SETTINGS_CUSTOM_ADD = 3033;
 constexpr int IDC_SETTINGS_CUSTOM_DELETE = 3034;
+constexpr int IDC_SETTINGS_LANGUAGE = 3040;
 
 struct SettingsWindowState {
     HWND owner = nullptr;
@@ -34,6 +35,7 @@ struct SettingsWindowState {
     HWND hCustomList = nullptr;
     HWND hCustomExt = nullptr;
     HWND hCustomParser = nullptr;
+    HWND hLanguage = nullptr;
     std::vector<UserConfig::ArchiveFormatRule> rules;
     HFONT hFont = nullptr;
 };
@@ -59,6 +61,12 @@ void LoadRowsThroughCallback(HWND hWnd, SettingsWindowState* sws) {
 void UpdateStatusThroughCallback(SettingsWindowState* sws) {
     if (sws && sws->callbacks && sws->callbacks->updateStatusBar) {
         sws->callbacks->updateStatusBar(sws->mainState);
+    }
+}
+
+void RefreshLocalizedMainWindowThroughCallback(HWND hWnd, SettingsWindowState* sws) {
+    if (sws && sws->callbacks && sws->callbacks->refreshLocalizedMainWindow) {
+        sws->callbacks->refreshLocalizedMainWindow(hWnd, sws->mainState);
     }
 }
 
@@ -237,24 +245,41 @@ bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
     const auto previousRules = s->userConfig.GetArchiveFormatRules();
     const bool previousFullPath = s->showArchiveFullPath;
     const bool previousRemember = s->userConfig.GetRememberUiState();
+    const UserConfig::LanguageMode previousLanguage = s->userConfig.GetLanguageMode();
     const bool fullPath = sws->hCheckFullPath &&
         SendMessageW(sws->hCheckFullPath, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const bool remember = sws->hCheckRememberUiState &&
         SendMessageW(sws->hCheckRememberUiState, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    UserConfig::LanguageMode language = previousLanguage;
+    if (sws->hLanguage) {
+        const LRESULT selected = SendMessageW(sws->hLanguage, CB_GETCURSEL, 0, 0);
+        if (selected == 1) {
+            language = UserConfig::LanguageMode::ZhCN;
+        } else if (selected == 2) {
+            language = UserConfig::LanguageMode::EnUS;
+        } else {
+            language = UserConfig::LanguageMode::System;
+        }
+    }
     s->userConfig.SetArchiveFormatRules(sws->rules);
     s->showArchiveFullPath = fullPath;
     s->userConfig.SetShowArchiveFullPath(fullPath);
     s->userConfig.SetRememberUiState(remember);
+    s->userConfig.SetLanguageMode(language);
     std::wstring err;
     if (!s->userConfig.Save(&err)) {
         s->userConfig.SetArchiveFormatRules(previousRules);
         s->showArchiveFullPath = previousFullPath;
         s->userConfig.SetShowArchiveFullPath(previousFullPath);
         s->userConfig.SetRememberUiState(previousRemember);
+        s->userConfig.SetLanguageMode(previousLanguage);
         std::wstring msg = LoadStateString(s, IDS_SETTINGS_SAVE_FAILED);
         if (!err.empty()) msg += L"\n" + err;
         MessageBoxW(hWnd, msg.c_str(), LoadStateString(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
         return false;
+    }
+    if (language != previousLanguage) {
+        RefreshLocalizedMainWindowThroughCallback(sws->owner, sws);
     }
     if (sws->restartIndexerOnApply) {
         s->parseDoneCount.store(0);
@@ -295,6 +320,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
             margin, margin + groupH + ScaleDpiValue(10, dpi), groupW, ScaleDpiValue(112, dpi),
             hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
+        HWND hLanguageGroup = CreateWindowExW(0, L"BUTTON",
+            s ? LoadStateString(s, IDS_SETTINGS_LANGUAGE_TITLE).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            margin, margin + groupH + ScaleDpiValue(132, dpi), groupW, ScaleDpiValue(70, dpi),
+            hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
         HWND hCustomGroup = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_CUSTOM_FORMATS).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
@@ -324,10 +354,24 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_IPA, L".ipa");
         SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_JAR, L".jar");
         SetRuleCheckbox(hWnd, sws, IDC_SETTINGS_KNOWN_WAR, L".war");
+        sws->hLanguage = CreateWindowExW(0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+            margin + groupPadX, margin + groupH + ScaleDpiValue(132, dpi) + groupPadY,
+            ScaleDpiValue(180, dpi), ScaleDpiValue(120, dpi),
+            hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_LANGUAGE, s ? s->hInstance : nullptr, nullptr);
+        if (sws->hLanguage && s) {
+            SendMessageW(sws->hLanguage, CB_ADDSTRING, 0, (LPARAM)LoadStateString(s, IDS_SETTINGS_LANGUAGE_SYSTEM).c_str());
+            SendMessageW(sws->hLanguage, CB_ADDSTRING, 0, (LPARAM)LoadStateString(s, IDS_SETTINGS_LANGUAGE_ZH_CN).c_str());
+            SendMessageW(sws->hLanguage, CB_ADDSTRING, 0, (LPARAM)LoadStateString(s, IDS_SETTINGS_LANGUAGE_EN_US).c_str());
+            int languageIndex = 0;
+            if (s->userConfig.GetLanguageMode() == UserConfig::LanguageMode::ZhCN) languageIndex = 1;
+            else if (s->userConfig.GetLanguageMode() == UserConfig::LanguageMode::EnUS) languageIndex = 2;
+            SendMessageW(sws->hLanguage, CB_SETCURSEL, languageIndex, 0);
+        }
         sws->hCheckFullPath = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_SHOW_FULL_ARCHIVE_PATH).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            margin, margin + groupH + ScaleDpiValue(132, dpi), ScaleDpiValue(260, dpi), checkH,
+            margin, margin + groupH + ScaleDpiValue(212, dpi), ScaleDpiValue(260, dpi), checkH,
             hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_SHOW_FULL_PATH, s ? s->hInstance : nullptr, nullptr);
         if (sws->hCheckFullPath && s) {
             SendMessageW(sws->hCheckFullPath, BM_SETCHECK, s->showArchiveFullPath ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -335,7 +379,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         sws->hCheckRememberUiState = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_REMEMBER_UI_STATE).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            margin, margin + groupH + ScaleDpiValue(132, dpi) + checkH + checkGap, ScaleDpiValue(320, dpi), checkH,
+            margin, margin + groupH + ScaleDpiValue(212, dpi) + checkH + checkGap, ScaleDpiValue(320, dpi), checkH,
             hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_REMEMBER_UI_STATE, s ? s->hInstance : nullptr, nullptr);
         if (sws->hCheckRememberUiState && s) {
             SendMessageW(sws->hCheckRememberUiState, BM_SETCHECK,
@@ -384,12 +428,12 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         HWND hOk = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_OK).c_str() : L"OK",
             WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            rightX + rightW - ScaleDpiValue(180, dpi), margin + ScaleDpiValue(284, dpi), ScaleDpiValue(82, dpi), checkH,
+            rightX + rightW - ScaleDpiValue(180, dpi), margin + ScaleDpiValue(344, dpi), ScaleDpiValue(82, dpi), checkH,
             hWnd, (HMENU)(INT_PTR)IDOK, s ? s->hInstance : nullptr, nullptr);
         HWND hCancel = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_CANCEL).c_str() : L"Cancel",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            rightX + rightW - ScaleDpiValue(90, dpi), margin + ScaleDpiValue(284, dpi), ScaleDpiValue(82, dpi), checkH,
+            rightX + rightW - ScaleDpiValue(90, dpi), margin + ScaleDpiValue(344, dpi), ScaleDpiValue(82, dpi), checkH,
             hWnd, (HMENU)(INT_PTR)IDCANCEL, s ? s->hInstance : nullptr, nullptr);
         NONCLIENTMETRICSW ncm{};
         ncm.cbSize = sizeof(ncm);
@@ -397,7 +441,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             sws->hFont = CreateFontIndirectW(&ncm.lfMessageFont);
             if (sws->hFont) {
                 HWND controls[] = {
-                    hDefaultGroup, hKnownGroup, hCustomGroup,
+                    hDefaultGroup, hKnownGroup, hLanguageGroup, hCustomGroup,
                     GetDlgItem(hWnd, IDC_SETTINGS_DEFAULT_ZIP),
                     GetDlgItem(hWnd, IDC_SETTINGS_DEFAULT_RAR),
                     GetDlgItem(hWnd, IDC_SETTINGS_DEFAULT_7Z),
@@ -405,7 +449,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
                     GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_IPA),
                     GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_JAR),
                     GetDlgItem(hWnd, IDC_SETTINGS_KNOWN_WAR),
-                    sws->hCheckFullPath, sws->hCheckRememberUiState,
+                    sws->hLanguage, sws->hCheckFullPath, sws->hCheckRememberUiState,
                     sws->hCustomList, hExtLabel, sws->hCustomExt,
                     hParserLabel, sws->hCustomParser, hAdd, hDelete, hOk, hCancel
                 };
@@ -505,7 +549,7 @@ void ShowSettingsPanel(HWND hOwner,
     RegisterSettingsClass(s->hInstance);
     const UINT dpi = GetWindowDpiValue(hOwner);
     const int width = ScaleDpiValue(730, dpi);
-    const int height = ScaleDpiValue(370, dpi);
+    const int height = ScaleDpiValue(430, dpi);
     RECT ownerRc{};
     GetWindowRect(hOwner, &ownerRc);
     int x = ownerRc.left + ((ownerRc.right - ownerRc.left) - width) / 2;

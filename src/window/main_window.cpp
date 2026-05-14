@@ -18,16 +18,61 @@
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
 
-const wchar_t* S(HINSTANCE hInstance, UINT id) {
-    const wchar_t* p = nullptr;
-    int len = LoadStringW(hInstance, id, (LPWSTR)&p, 0);
-    return (len > 0 && p) ? p : L"";
+static constexpr LANGID kZhCnLangId = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
+static constexpr LANGID kEnUsLangId = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+
+static LANGID ResolveSystemLanguageId() {
+    const LANGID systemLang = GetUserDefaultUILanguage();
+    return PRIMARYLANGID(systemLang) == LANG_CHINESE ? kZhCnLangId : kEnUsLangId;
+}
+
+LANGID GetEffectiveLanguageId(const UserConfig& config) {
+    switch (config.GetLanguageMode()) {
+    case UserConfig::LanguageMode::ZhCN:
+        return kZhCnLangId;
+    case UserConfig::LanguageMode::EnUS:
+        return kEnUsLangId;
+    case UserConfig::LanguageMode::System:
+    default:
+        return ResolveSystemLanguageId();
+    }
+}
+
+static std::wstring LoadStringForLanguage(HINSTANCE hInstance, UINT id, LANGID languageId) {
+    const UINT blockId = (id >> 4) + 1;
+    HRSRC hRes = FindResourceExW(hInstance, RT_STRING, MAKEINTRESOURCEW(blockId), languageId);
+    if (!hRes) return {};
+
+    HGLOBAL hData = LoadResource(hInstance, hRes);
+    if (!hData) return {};
+
+    const wchar_t* strings = static_cast<const wchar_t*>(LockResource(hData));
+    if (!strings) return {};
+
+    const UINT index = id & 0xF;
+    for (UINT i = 0; i < index; ++i) {
+        strings += 1 + static_cast<UINT>(*strings);
+    }
+
+    const int len = *strings++;
+    return len > 0 ? std::wstring(strings, strings + len) : std::wstring();
+}
+
+std::wstring LS(HINSTANCE hInstance, UINT id, LANGID languageId) {
+    std::wstring text = LoadStringForLanguage(hInstance, id, languageId);
+    if (!text.empty()) return text;
+
+    text = LoadStringForLanguage(hInstance, id, kEnUsLangId);
+    if (!text.empty()) return text;
+
+    text = LoadStringForLanguage(hInstance, id, kZhCnLangId);
+    if (!text.empty()) return text;
+
+    return {};
 }
 
 std::wstring LS(HINSTANCE hInstance, UINT id) {
-    const wchar_t* p = nullptr;
-    int len = LoadStringW(hInstance, id, (LPWSTR)&p, 0);
-    return (len > 0 && p) ? std::wstring(p, len) : std::wstring();
+    return LS(hInstance, id, ResolveSystemLanguageId());
 }
 
 // ── Spinner 自绘窗口类名 ──
@@ -230,7 +275,7 @@ static void RecreateFonts(HWND hWnd, MainWindowState* s, UINT dpi) {
 
 // ── 内部辅助：LS 的便捷包装（从 state 获取 hInstance）──
 static std::wstring LS_(MainWindowState* s, UINT id) {
-    return LS(s->hInstance, id);
+    return LS(s->hInstance, id, GetEffectiveLanguageId(s->userConfig));
 }
 
 // 获取搜索框中的过滤文本（转小写，去除通配符 *）
@@ -298,6 +343,7 @@ static bool IsSubItemTextTruncated(HWND hList, MainWindowState* s, int item, int
 static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s);
 static void UpdateStatusBar(MainWindowState* s);
 static void StartInitialIndexingAfterConsent(HWND hWnd, MainWindowState* s);
+static void RefreshLocalizedMainWindow(HWND hWnd, MainWindowState* s);
 
 // 创建主窗口菜单栏
 static HMENU CreateMainMenu(MainWindowState* s) {
@@ -450,6 +496,7 @@ static SettingsWindowCallbacks MakeSettingsWindowCallbacks() {
     callbacks.refreshList = RefreshList;
     callbacks.loadRowsFromDbAndRefreshAsync = LoadRowsFromDbAndRefreshAsync;
     callbacks.updateStatusBar = UpdateStatusBar;
+    callbacks.refreshLocalizedMainWindow = RefreshLocalizedMainWindow;
     return callbacks;
 }
 
@@ -471,6 +518,19 @@ static void UpdateColumnHeaders(MainWindowState* s) {
         col.pszText = const_cast<LPWSTR>(text.c_str());
         ListView_SetColumn(s->hList, i, &col);
     }
+}
+
+static void RefreshLocalizedMainWindow(HWND hWnd, MainWindowState* s) {
+    if (!hWnd || !s) return;
+
+    HMENU oldMenu = GetMenu(hWnd);
+    SetMenu(hWnd, CreateMainMenu(s));
+    if (oldMenu) DestroyMenu(oldMenu);
+    DrawMenuBar(hWnd);
+
+    UpdateColumnHeaders(s);
+    UpdateStatusBar(s);
+    InvalidateRect(hWnd, nullptr, TRUE);
 }
 
 static int MeasureWindowTextWidth(HWND hWnd, const std::wstring& text) {
@@ -1679,7 +1739,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         case WM_RBUTTONUP:
             // 右键点击：显示托盘菜单
-            ShowTrayMenu(hWnd, s->hInstance);
+            ShowTrayMenu(hWnd, s);
             break;
         }
         return 0;

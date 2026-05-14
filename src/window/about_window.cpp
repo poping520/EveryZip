@@ -18,20 +18,6 @@ struct AboutWindowState {
     HICON hIcon = nullptr;
 };
 
-bool IsEnglishUi(MainWindowState* s) {
-    return s && LoadStateString(s, IDS_ABOUT_TITLE) == L"About";
-}
-
-std::wstring GetAboutVersionText(MainWindowState* s) {
-    return IsEnglishUi(s) ? L"Version 1.0.0" : L"版本 1.0.0";
-}
-
-std::wstring GetAboutSummaryText(MainWindowState* s) {
-    return IsEnglishUi(s)
-        ? L"Lightweight archive indexing and search tool"
-        : L"轻量的压缩文件索引与检索工具";
-}
-
 std::wstring GetAboutProjectUrl() {
     return L"https://github.com/poping520/EveryZip";
 }
@@ -68,14 +54,14 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             contentLeft, contentTop, contentWidth, titleH,
             hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
 
-        const std::wstring versionText = GetAboutVersionText(s);
+        const std::wstring versionText = s ? LoadStateString(s, IDS_ABOUT_VERSION) : L"";
         HWND hVersion = CreateWindowExW(0, L"STATIC",
             versionText.c_str(),
             WS_CHILD | WS_VISIBLE,
             contentLeft, contentTop + titleH, contentWidth, lineH,
             hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
 
-        const std::wstring summaryText = GetAboutSummaryText(s);
+        const std::wstring summaryText = s ? LoadStateString(s, IDS_ABOUT_SUMMARY) : L"";
         HWND hSummary = CreateWindowExW(0, L"STATIC",
             summaryText.c_str(),
             WS_CHILD | WS_VISIBLE,

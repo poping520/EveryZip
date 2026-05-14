@@ -700,6 +700,77 @@ TEST(TestUserConfigCustomArchiveExtensionValidation)
     ASSERT_FALSE(UserConfig::IsValidCustomArchiveExtension(L".bad.name"));
 }
 
+TEST(TestUserConfigLanguageDefaultsAndRoundTrip)
+{
+    const wchar_t* path = L"test_user_config_language.cfg";
+    DeleteFileW(path);
+
+    {
+        UserConfig config;
+        std::wstring err;
+        ASSERT_TRUE(config.Load(path, &err));
+        ASSERT_TRUE(config.GetLanguageMode() == UserConfig::LanguageMode::System);
+        ASSERT_EQ(config.GetLanguageConfigValue(), L"system");
+
+        config.SetLanguageMode(UserConfig::LanguageMode::ZhCN);
+        ASSERT_TRUE(config.Save(&err));
+
+        Parser parser;
+        ASSERT_TRUE(parser.LoadFile(path, &err));
+        ASSERT_EQ(parser.Get(L"language").AsString(), L"zh-CN");
+    }
+
+    {
+        UserConfig config;
+        std::wstring err;
+        ASSERT_TRUE(config.Load(path, &err));
+        ASSERT_TRUE(config.GetLanguageMode() == UserConfig::LanguageMode::ZhCN);
+
+        config.SetLanguageMode(UserConfig::LanguageMode::EnUS);
+        ASSERT_TRUE(config.Save(&err));
+    }
+
+    {
+        UserConfig config;
+        std::wstring err;
+        ASSERT_TRUE(config.Load(path, &err));
+        ASSERT_TRUE(config.GetLanguageMode() == UserConfig::LanguageMode::EnUS);
+        ASSERT_EQ(config.GetLanguageConfigValue(), L"en-US");
+    }
+
+    DeleteFileW(path);
+}
+
+TEST(TestUserConfigInvalidLanguageFallback)
+{
+    const wchar_t* path = L"test_user_config_invalid_language.cfg";
+    DeleteFileW(path);
+
+    {
+        Parser parser;
+        parser.Set(L"language", Value(L"fr-FR"));
+        std::wstring err;
+        ASSERT_TRUE(parser.SaveFile(path, &err));
+    }
+
+    {
+        UserConfig config;
+        std::wstring err;
+        ASSERT_TRUE(config.Load(path, &err));
+        ASSERT_TRUE(config.GetLanguageMode() == UserConfig::LanguageMode::System);
+        ASSERT_EQ(config.GetLanguageConfigValue(), L"system");
+    }
+
+    {
+        Parser parser;
+        std::wstring err;
+        ASSERT_TRUE(parser.LoadFile(path, &err));
+        ASSERT_EQ(parser.Get(L"language").AsString(), L"system");
+    }
+
+    DeleteFileW(path);
+}
+
 // ============================================================================
 // main
 // ============================================================================
@@ -760,6 +831,8 @@ int main()
     RUN_TEST(TestUserConfigArchiveFormatDefaults);
     RUN_TEST(TestUserConfigArchiveFormatRoundTrip);
     RUN_TEST(TestUserConfigCustomArchiveExtensionValidation);
+    RUN_TEST(TestUserConfigLanguageDefaultsAndRoundTrip);
+    RUN_TEST(TestUserConfigInvalidLanguageFallback);
 
     printf("\n=== All tests passed! ===\n");
     return 0;

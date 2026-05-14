@@ -8,6 +8,12 @@
 
 class UserConfig {
 public:
+    enum class LanguageMode {
+        System,
+        ZhCN,
+        EnUS
+    };
+
     struct ArchiveFormatRule {
         std::wstring extension;
         std::wstring parser;
@@ -74,6 +80,10 @@ public:
 
     bool GetStartupScanConfirmed() const;
 
+    LanguageMode GetLanguageMode() const;
+
+    std::wstring GetLanguageConfigValue() const;
+
     const WindowPlacementConfig& GetWindowPlacement() const;
 
     const std::vector<int>& GetListColumnWidths() const;
@@ -108,6 +118,8 @@ public:
 
     void SetStartupScanConfirmed(bool confirmed);
 
+    void SetLanguageMode(LanguageMode mode);
+
     void SetWindowPlacement(const WindowPlacementConfig& placement);
 
     void SetListColumnWidths(const std::vector<int>& widths);
@@ -136,6 +148,7 @@ private:
     bool showArchiveFullPath_ = false;
     bool rememberUiState_ = true;
     bool startupScanConfirmed_ = false;
+    LanguageMode languageMode_ = LanguageMode::System;
     WindowPlacementConfig windowPlacement_;
     std::vector<int> listColumnWidths_;
     AdvConfig::Parser parser_;

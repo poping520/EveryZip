@@ -18,5 +18,5 @@ inline int ScaleDpiValue(int px, UINT dpi) {
 }
 
 inline std::wstring LoadStateString(MainWindowState* s, UINT id) {
-    return LS(s->hInstance, id);
+    return LS(s->hInstance, id, GetEffectiveLanguageId(s->userConfig));
 }

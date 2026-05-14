@@ -52,12 +52,6 @@ public:
      */
     bool Save(std::wstring* err = nullptr) const;
 
-    /**
-     * 获取归档文件扩展名列表（例如 {L".zip", L".rar"}）。
-     * @return 当前归档扩展名列表的只读引用。
-     */
-    const std::vector<std::wstring>& GetArchiveExtensions() const;
-
     const std::vector<ArchiveFormatRule>& GetArchiveFormatRules() const;
 
     std::wstring GetParserForExtension(const std::wstring& extension) const;
@@ -89,12 +83,6 @@ public:
     const std::vector<int>& GetListColumnWidths() const;
 
     static const std::vector<int>& GetDefaultListColumnWidths();
-
-    /**
-     * 设置归档扩展名列表。
-     * @param exts 新的扩展名列表。
-     */
-    void SetArchiveExtensions(const std::vector<std::wstring>& exts);
 
     void SetArchiveFormatRules(const std::vector<ArchiveFormatRule>& rules);
 
@@ -139,10 +127,7 @@ private:
     /** 将成员变量同步回底层解析器。 */
     void SyncToParser();
 
-    void SyncArchiveExtensionsFromFormatRules();
-
     std::wstring configPath_;
-    std::vector<std::wstring> archiveExtensions_;
     std::vector<ArchiveFormatRule> archiveFormatRules_;
     std::vector<wchar_t> scanDriveLetters_;
     bool showArchiveFullPath_ = false;

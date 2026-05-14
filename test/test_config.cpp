@@ -633,14 +633,9 @@ TEST(TestUserConfigArchiveFormatDefaults)
     ASSERT_EQ(config.GetParserForExtension(L".jar"), L"");
     ASSERT_EQ(config.GetParserForExtension(L".war"), L"");
 
-    const auto& exts = config.GetArchiveExtensions();
-    ASSERT_EQ(exts.size(), size_t(3));
-    ASSERT_EQ(exts[0], L".zip");
-    ASSERT_EQ(exts[1], L".rar");
-    ASSERT_EQ(exts[2], L".7z");
-
     Parser parser;
     ASSERT_TRUE(parser.LoadFile(path, &err));
+    ASSERT_FALSE(parser.Contains(L"archive_extensions"));
     ASSERT_TRUE(parser.Get(L"archive_formats").IsDict());
     const auto& groups = parser.Get(L"archive_formats").AsDict();
     ASSERT_TRUE(groups.at(L"default").IsList());
@@ -680,10 +675,9 @@ TEST(TestUserConfigArchiveFormatRoundTrip)
         ASSERT_EQ(config.GetParserForExtension(L".apk"), L"zip");
         ASSERT_EQ(config.GetParserForExtension(L".foo"), L"rar");
 
-        const auto& exts = config.GetArchiveExtensions();
-        ASSERT_TRUE(std::find(exts.begin(), exts.end(), L".apk") != exts.end());
-        ASSERT_TRUE(std::find(exts.begin(), exts.end(), L".foo") != exts.end());
-        ASSERT_TRUE(std::find(exts.begin(), exts.end(), L".zip") == exts.end());
+        Parser parser;
+        ASSERT_TRUE(parser.LoadFile(path, &err));
+        ASSERT_FALSE(parser.Contains(L"archive_extensions"));
     }
 
     DeleteFileW(path);

@@ -225,48 +225,6 @@ void DeleteSelectedCustomFormat(SettingsWindowState* sws) {
     RefreshCustomFormatList(sws);
 }
 
-void ApplyShowArchiveFullPathSetting(HWND hWnd, SettingsWindowState* sws) {
-    if (!sws || !sws->mainState || !sws->hCheckFullPath) return;
-    MainWindowState* s = sws->mainState;
-    const bool checked = SendMessageW(sws->hCheckFullPath, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    const bool previous = s->showArchiveFullPath;
-    if (checked == previous) return;
-    s->showArchiveFullPath = checked;
-    s->userConfig.SetShowArchiveFullPath(checked);
-    std::wstring err;
-    if (!s->userConfig.Save(&err)) {
-        s->showArchiveFullPath = previous;
-        s->userConfig.SetShowArchiveFullPath(previous);
-        SendMessageW(sws->hCheckFullPath, BM_SETCHECK, previous ? BST_CHECKED : BST_UNCHECKED, 0);
-        std::wstring msg = LoadStateString(s, IDS_SETTINGS_SAVE_FAILED);
-        if (!err.empty()) msg += L"\n" + err;
-        MessageBoxW(hWnd, msg.c_str(), LoadStateString(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
-        return;
-    }
-    s->rowCache.Clear();
-    RefreshListThroughCallback(sws);
-}
-
-void ApplyRememberUiStateSetting(HWND hWnd, SettingsWindowState* sws) {
-    if (!sws || !sws->mainState || !sws->hCheckRememberUiState) return;
-    MainWindowState* s = sws->mainState;
-    const bool checked = SendMessageW(sws->hCheckRememberUiState, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    const bool previous = s->userConfig.GetRememberUiState();
-    if (checked == previous) return;
-    s->userConfig.SetRememberUiState(checked);
-    bool saved = false;
-    std::wstring err;
-    if (checked) saved = SaveUiStateThroughCallback(sws->owner, sws);
-    else saved = s->userConfig.Save(&err);
-    if (!saved) {
-        s->userConfig.SetRememberUiState(previous);
-        SendMessageW(sws->hCheckRememberUiState, BM_SETCHECK, previous ? BST_CHECKED : BST_UNCHECKED, 0);
-        std::wstring msg = LoadStateString(s, IDS_SETTINGS_SAVE_FAILED);
-        if (!err.empty()) msg += L"\n" + err;
-        MessageBoxW(hWnd, msg.c_str(), LoadStateString(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
-    }
-}
-
 void ResetLayoutColumnsFromSettings(HWND hWnd, SettingsWindowState* sws) {
     if (!sws || !sws->mainState) return;
     MainWindowState* s = sws->mainState;

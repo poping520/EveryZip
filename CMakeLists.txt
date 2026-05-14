@@ -12,8 +12,13 @@ add_executable(EveryZip WIN32
         src/resource.h
         src/strings.rc
         src/main.cpp
-        src/main_window.h
-        src/main_window.cpp
+        src/window/main_window.h
+        src/window/main_window.cpp
+        src/window/about_window.h
+        src/window/about_window.cpp
+        src/window/settings_window.h
+        src/window/settings_window.cpp
+        src/window/window_utils.h
         src/string_utils.h
         src/string_utils.cpp
         src/tray_icon.h

@@ -11,11 +11,11 @@
 #include <thread>
 #include <vector>
 
-#include "database.h"
-#include "config/user_config.h"
-#include "icon_cache.h"
-#include "indexer.h"
-#include "row_cache.h"
+#include "../database.h"
+#include "../config/user_config.h"
+#include "../icon_cache.h"
+#include "../indexer.h"
+#include "../row_cache.h"
 
 // 从 STRINGTABLE 资源加载本地化字符串（只读指针，不以 '\0' 结尾）
  // 参数：hInstance - 模块实例句柄；id - 字符串资源编号。

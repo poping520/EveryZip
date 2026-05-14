@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "main_window.h"
+#include "window/main_window.h"
 #include "resource.h"
 
 static NOTIFYICONDATAW g_nid{};

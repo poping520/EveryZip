@@ -2,7 +2,7 @@
 #include <commctrl.h>
 
 #include "logger.h"
-#include "main_window.h"
+#include "window/main_window.h"
 #include "string_utils.h"
 #include "indexer.h"
 #include "resource.h"

@@ -39,9 +39,6 @@ STRINGTABLE
     IDS_COL_COMPRESSED_SIZE,"压缩大小"
     IDS_COL_ORIGINAL_SIZE,  "原始大小"
     IDS_COL_MODIFIED_TIME,  "修改时间"
-    // 排序箭头
-    IDS_SORT_ASC,           " ▲"
-    IDS_SORT_DESC,          " ▼"
     // 状态栏
     IDS_STATUS_PROCESSING,  "正在处理"
     IDS_STATUS_READY,       "就绪"
@@ -128,9 +125,6 @@ STRINGTABLE
     IDS_COL_COMPRESSED_SIZE,"Compressed Size"
     IDS_COL_ORIGINAL_SIZE,  "Original Size"
     IDS_COL_MODIFIED_TIME,  "Modified Time"
-    // Sort arrows
-    IDS_SORT_ASC,           " \x25B2"
-    IDS_SORT_DESC,          " \x25BC"
     // Status bar
     IDS_STATUS_PROCESSING,  "Processing"
     IDS_STATUS_READY,       "Ready"

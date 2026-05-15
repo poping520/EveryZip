@@ -496,23 +496,33 @@ static SettingsWindowCallbacks MakeSettingsWindowCallbacks() {
     return callbacks;
 }
 
-// 更新 ListView 列头文本，在当前排序列后附加箭头指示符（▲/▼）
+// 更新 ListView 列头文本，并让系统绘制原生列头排序箭头。
 static void UpdateColumnHeaders(MainWindowState* s) {
     static const UINT colIds[] = {
         IDS_COL_NAME, IDS_COL_ARCHIVE, IDS_COL_PATH,
         IDS_COL_COMPRESSED_SIZE, IDS_COL_ORIGINAL_SIZE, IDS_COL_MODIFIED_TIME
     };
+    HWND hHeader = ListView_GetHeader(s->hList);
 
     for (int i = 0; i < 6; ++i) {
         std::wstring text = LS_(s, colIds[i]);
-        if (i == s->sortColumn) {
-            text += s->sortAscending ? LS_(s, IDS_SORT_ASC) : LS_(s, IDS_SORT_DESC);
-        }
 
         LVCOLUMNW col{};
         col.mask = LVCF_TEXT;
         col.pszText = const_cast<LPWSTR>(text.c_str());
         ListView_SetColumn(s->hList, i, &col);
+
+        if (hHeader) {
+            HDITEMW headerItem{};
+            headerItem.mask = HDI_FORMAT;
+            if (SendMessageW(hHeader, HDM_GETITEMW, (WPARAM)i, (LPARAM)&headerItem)) {
+                headerItem.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+                if (i == s->sortColumn) {
+                    headerItem.fmt |= s->sortAscending ? HDF_SORTUP : HDF_SORTDOWN;
+                }
+                SendMessageW(hHeader, HDM_SETITEMW, (WPARAM)i, (LPARAM)&headerItem);
+            }
+        }
     }
 }
 

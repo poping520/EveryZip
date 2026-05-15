@@ -219,15 +219,15 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         MainWindowState* s = aws ? aws->mainState : nullptr;
         const UINT dpi = GetWindowDpiValue(hWnd);
         const int margin = ScaleDpiValue(20, dpi);
-        const int iconSize = ScaleDpiValue(48, dpi);
+        const int iconSize = ScaleDpiValue(56, dpi);
         const int contentTop = margin;
-        const int contentLeft = margin + iconSize + ScaleDpiValue(16, dpi);
+        const int contentLeft = margin + iconSize + ScaleDpiValue(18, dpi);
         const int contentWidth = ScaleDpiValue(236, dpi);
-        const int lineH = ScaleDpiValue(22, dpi);
-        const int titleH = ScaleDpiValue(30, dpi);
+        const int lineH = ScaleDpiValue(24, dpi);
+        const int titleH = ScaleDpiValue(34, dpi);
         const int buttonW = ScaleDpiValue(88, dpi);
         const int buttonH = ScaleDpiValue(28, dpi);
-        const int buttonY = ScaleDpiValue(166, dpi);
+        const int buttonY = ScaleDpiValue(176, dpi);
         const int buttonGap = ScaleDpiValue(12, dpi);
         const int buttonsTotalW = buttonW * 2 + buttonGap;
         const int firstButtonX = (ScaleDpiValue(336, dpi) - buttonsTotalW) / 2;
@@ -254,7 +254,7 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HWND hSummary = CreateWindowExW(0, L"STATIC",
             summaryText.c_str(),
             WS_CHILD | WS_VISIBLE,
-            margin, contentTop + iconSize + ScaleDpiValue(16, dpi), ScaleDpiValue(300, dpi), lineH,
+            margin, contentTop + iconSize + ScaleDpiValue(18, dpi), ScaleDpiValue(300, dpi), lineH,
             hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
 
         std::wstring linkText = L"<a href=\"";
@@ -265,7 +265,7 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         HWND hLink = CreateWindowExW(0, L"SysLink", linkText.c_str(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            margin, contentTop + iconSize + ScaleDpiValue(44, dpi), ScaleDpiValue(300, dpi), lineH,
+            margin, contentTop + iconSize + ScaleDpiValue(48, dpi), ScaleDpiValue(300, dpi), lineH,
             hWnd, (HMENU)(INT_PTR)IDC_ABOUT_LINK_CTRL, s ? s->hInstance : nullptr, nullptr);
 
         HWND hOk = CreateWindowExW(0, L"BUTTON",
@@ -286,7 +286,7 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             aws->hFont = CreateFontIndirectW(&ncm.lfMessageFont);
             LOGFONTW titleLf = ncm.lfMessageFont;
             titleLf.lfWeight = FW_SEMIBOLD;
-            titleLf.lfHeight = -ScaleDpiValue(18, dpi);
+            titleLf.lfHeight = -ScaleDpiValue(22, dpi);
             aws->hTitleFont = CreateFontIndirectW(&titleLf);
         }
 
@@ -390,7 +390,7 @@ void ShowAboutPanel(HWND hOwner, MainWindowState* s) {
 
     const UINT dpi = GetWindowDpiValue(hOwner);
     const int width = ScaleDpiValue(336, dpi);
-    const int height = ScaleDpiValue(242, dpi);
+    const int height = ScaleDpiValue(252, dpi);
 
     RECT ownerRc{};
     GetWindowRect(hOwner, &ownerRc);

@@ -63,20 +63,6 @@ static std::string SzErrorToString(SRes res) {
     }
 }
 
-static std::wstring Utf16ToWide(const UInt16* src, size_t lenWithNull) {
-    if (!src || lenWithNull == 0) return {};
-    size_t len = lenWithNull;
-    if (len > 0 && src[len - 1] == 0) {
-        --len;
-    }
-    std::wstring out;
-    out.reserve(len);
-    for (size_t i = 0; i < len; ++i) {
-        out.push_back((wchar_t)src[i]);
-    }
-    return out;
-}
-
 static bool GetItemName(const CSzArEx& db, UInt32 index, std::wstring* out, std::string* error) {
     const size_t len = SzArEx_GetFileNameUtf16(&db, index, nullptr);
     if (len == 0) {
@@ -92,7 +78,7 @@ static bool GetItemName(const CSzArEx& db, UInt32 index, std::wstring* out, std:
     }
 
     if (out) {
-        *out = Utf16ToWide(name.data(), written);
+        *out = Utf16UnitsToWString(name.data(), written);
     }
     return true;
 }
@@ -235,8 +221,8 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries
         }
 
         ArchiveEntry_t e;
-        e.entryPath = nameW;
-        e.entryRawPath = WideToUtf8(nameW);
+        e.entryPathUtf8 = WideToUtf8(nameW);
+        e.entryRawPath = e.entryPathUtf8;
         e.isDirectory = SzArEx_IsDir(&state_->db, i) != 0;
         e.originalSize = e.isDirectory ? 0 : (std::uint64_t)SzArEx_GetFileSize(&state_->db, i);
         e.compressedSize = 0;

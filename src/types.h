@@ -42,7 +42,7 @@ struct ArchiveEntry_t
 {
     int64_t archiveId = 0;          // archives 表的 id（插入时使用）
     std::wstring archivePath;       // archives.file_path（查询时由 JOIN 填充）
-    std::wstring entryPath;
+    std::string entryPathUtf8;      // 规范化后的 UTF-8 条目路径（entries.entry_path）
     std::string entryRawPath;
     bool isDirectory = false;       // 解析归档时使用；目录项不写入 entries 表
     std::int64_t compressedSize = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小

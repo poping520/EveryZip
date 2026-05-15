@@ -20,6 +20,32 @@ std::string WideToUtf8(const std::wstring& w) {
     return out;
 }
 
+std::wstring MultiByteToWString(const std::string& s, UINT codepage, DWORD flags) {
+    if (s.empty()) return {};
+    const int needed = MultiByteToWideChar(codepage, flags, s.data(), (int)s.size(), nullptr, 0);
+    if (needed <= 0) return {};
+    std::wstring out;
+    out.resize((size_t)needed);
+    if (MultiByteToWideChar(codepage, flags, s.data(), (int)s.size(), out.data(), needed) <= 0) {
+        return {};
+    }
+    return out;
+}
+
+std::wstring Utf16UnitsToWString(const uint16_t* src, size_t lenWithNull) {
+    if (!src || lenWithNull == 0) return {};
+    size_t len = lenWithNull;
+    if (len > 0 && src[len - 1] == 0) {
+        --len;
+    }
+    std::wstring out;
+    out.reserve(len);
+    for (size_t i = 0; i < len; ++i) {
+        out.push_back((wchar_t)src[i]);
+    }
+    return out;
+}
+
 std::wstring Utf8ToWString(const char* s) {
     if (!s) return L"";
     const int needed = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);

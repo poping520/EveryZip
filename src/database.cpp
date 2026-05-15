@@ -64,6 +64,10 @@ bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
     {
         return false;
     }
+    if (e.entryPathUtf8.empty())
+    {
+        return false;
+    }
 
     const char* sql =
         "INSERT INTO entries (archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time) "
@@ -77,7 +81,7 @@ bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
         return false;
     }
 
-    std::string pathUtf8 = WStringToUtf8(e.entryPath);
+    const std::string& pathUtf8 = e.entryPathUtf8;
     sqlite3_bind_int64(stmt, 1, e.archiveId);
     sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
@@ -126,7 +130,15 @@ bool Database::InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, st
 
     for (const auto& e : entries)
     {
-        std::string pathUtf8 = WStringToUtf8(e.entryPath);
+        if (e.entryPathUtf8.empty())
+        {
+            sqlite3_finalize(stmt);
+            RollbackTransaction();
+            if (err) *err = L"entry_path is empty";
+            return false;
+        }
+
+        const std::string& pathUtf8 = e.entryPathUtf8;
         sqlite3_bind_int64(stmt, 1, e.archiveId);
         sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
@@ -213,7 +225,7 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
         const char* ap = (const char*)sqlite3_column_text(stmt, 0);
         const char* ep = (const char*)sqlite3_column_text(stmt, 1);
         if (ap) e.archivePath = Utf8ToWString(ap);
-        if (ep) e.entryPath = Utf8ToWString(ep);
+        if (ep) e.entryPathUtf8 = ep;
 
         e.compressedSize = (std::int64_t)sqlite3_column_int64(stmt, 2);
         e.originalSize = (std::uint64_t)sqlite3_column_int64(stmt, 3);
@@ -1023,7 +1035,7 @@ bool Database::QueryEntryById(int64_t rowId, ArchiveEntry_t* out)
         const char* ap = (const char*)sqlite3_column_text(stmt, 0);
         const char* ep = (const char*)sqlite3_column_text(stmt, 1);
         if (ap) out->archivePath = Utf8ToWString(ap);
-        if (ep) out->entryPath = Utf8ToWString(ep);
+        if (ep) out->entryPathUtf8 = ep;
         const void* raw = sqlite3_column_blob(stmt, 2);
         int rawBytes = sqlite3_column_bytes(stmt, 2);
         if (raw && rawBytes > 0) {

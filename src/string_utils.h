@@ -21,6 +21,21 @@ std::wstring ToLower(std::wstring s);
  */
 std::string WideToUtf8(const std::wstring& w);
 /**
+ * 使用指定 Windows 代码页将字节串解码为宽字符串。
+ * @param s 待解码的字节串，可包含非 UTF-8 编码内容。
+ * @param codepage Windows 代码页，例如 CP_UTF8 或 CP_ACP。
+ * @param flags 传给 MultiByteToWideChar 的标志，例如 MB_ERR_INVALID_CHARS。
+ * @return 转换后的宽字符串；转换失败或输入为空时返回空字符串。
+ */
+std::wstring MultiByteToWString(const std::string& s, UINT codepage, DWORD flags = 0);
+/**
+ * 将 UTF-16 代码单元序列转换为宽字符串。
+ * @param src UTF-16 代码单元指针，可以为 nullptr。
+ * @param lenWithNull 代码单元数量，可以包含末尾 null。
+ * @return 转换后的宽字符串；输入为空时返回空字符串。
+ */
+std::wstring Utf16UnitsToWString(const uint16_t* src, size_t lenWithNull);
+/**
  * 将 UTF-8 C 字符串解码为宽字符串。
  * @param s 指向 UTF-8 字符串的指针，可以为 nullptr。
  * @return 转换后的宽字符串；输入为空指针或转换失败时返回空字符串。

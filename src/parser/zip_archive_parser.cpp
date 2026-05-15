@@ -1,5 +1,7 @@
 #include "zip_archive_parser.h"
 
+#include "../string_utils.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -22,62 +24,41 @@ static bool EndsWithSlash(const std::string& s) {
     return c == '/' || c == '\\';
 }
 
-static std::uint64_t LocalTmToFileTimeValue(const std::tm& t) {
-    const int year = t.tm_year + 1900;
-    const int month = t.tm_mon + 1;
-    if (year <= 1900 || month < 1 || month > 12 || t.tm_mday < 1 || t.tm_mday > 31) {
-        return 0;
-    }
+struct DecodedZipPath {
+    std::string utf8;
+};
 
-    SYSTEMTIME localSt{};
-    localSt.wYear = static_cast<WORD>(year);
-    localSt.wMonth = static_cast<WORD>(month);
-    localSt.wDay = static_cast<WORD>(t.tm_mday);
-    localSt.wHour = static_cast<WORD>(t.tm_hour);
-    localSt.wMinute = static_cast<WORD>(t.tm_min);
-    localSt.wSecond = static_cast<WORD>(t.tm_sec);
-
-    FILETIME localFt{};
-    FILETIME utcFt{};
-    if (!SystemTimeToFileTime(&localSt, &localFt)) return 0;
-    if (!LocalFileTimeToFileTime(&localFt, &utcFt)) return 0;
-
-    ULARGE_INTEGER ui{};
-    ui.LowPart = utcFt.dwLowDateTime;
-    ui.HighPart = utcFt.dwHighDateTime;
-    return ui.QuadPart;
-}
-
- // 将归档条目名称转换为宽字符串。
- // isUtf8=true 时严格按 UTF-8 解码；为 false 时按系统代码页（CP_ACP/GBK）解码。
- // 参数：s - 原始窄字符串名称；isUtf8 - ZIP 条目的 UTF-8 标志位（flag bit 11）是否置位。
- // 返回値：转换后的宽字符串；失败时返回空字符串。
-static std::wstring ToWideBestEffort(const std::string& s, bool isUtf8) {
-    if (s.empty()) return std::wstring();
-
-    auto convert = [&](UINT codepage, DWORD flags) -> std::wstring {
-        const int needed = MultiByteToWideChar(codepage, flags, s.c_str(), (int)s.size(), nullptr, 0);
-        if (needed <= 0) return std::wstring();
-        std::wstring out;
-        out.resize(needed);
-        if (MultiByteToWideChar(codepage, flags, s.c_str(), (int)s.size(), out.data(), needed) <= 0) {
-            return std::wstring();
-        }
-        return out;
-    };
+// 将 ZIP 条目名称解码为用于入库的 UTF-8 字符串。
+static DecodedZipPath DecodeZipPathBestEffort(const std::string& s, bool isUtf8) {
+    DecodedZipPath result;
+    if (s.empty()) return result;
 
     if (isUtf8) {
-        // 标志位明确指定 UTF-8，直接用 UTF-8 解码
-        std::wstring w = convert(CP_UTF8, MB_ERR_INVALID_CHARS);
-        if (!w.empty()) return w;
-        // UTF-8 解码失败则回退 CP_ACP
-        return convert(CP_ACP, 0);
-    } else {
-        // 无 UTF-8 标志位：直接使用 CP_ACP（GBK/对应系统编码）
-        std::wstring w = convert(CP_ACP, 0);
-        if (!w.empty()) return w;
-        return convert(CP_UTF8, 0);
+        if (!MultiByteToWString(s, CP_UTF8, MB_ERR_INVALID_CHARS).empty()) {
+            result.utf8 = s;
+            return result;
+        }
+        result.utf8 = WideToUtf8(MultiByteToWString(s, CP_ACP));
+        return result;
     }
+
+    std::wstring wide = MultiByteToWString(s, CP_ACP);
+    if (wide.empty()) {
+        wide = MultiByteToWString(s, CP_UTF8);
+    }
+    result.utf8 = WideToUtf8(wide);
+    return result;
+}
+
+static std::wstring ToWideBestEffort(const std::string& s, bool isUtf8) {
+    if (isUtf8) {
+        std::wstring wide = MultiByteToWString(s, CP_UTF8, MB_ERR_INVALID_CHARS);
+        if (!wide.empty()) return wide;
+        return MultiByteToWString(s, CP_ACP);
+    }
+    std::wstring wide = MultiByteToWString(s, CP_ACP);
+    if (!wide.empty()) return wide;
+    return MultiByteToWString(s, CP_UTF8);
 }
 
 static bool GetCurrentFileInfoWithName(unzFile handle,
@@ -177,9 +158,11 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         }
 
         const bool isUtf8 = (info.flag & 0x800) != 0;
+        DecodedZipPath decodedPath = DecodeZipPathBestEffort(name, isUtf8);
         ArchiveEntry_t e;
         e.entryRawPath = name;
-        e.entryPath = ToWideBestEffort(name, isUtf8);
+        e.entryPathUtf8 = std::move(decodedPath.utf8);
+
         e.isDirectory = EndsWithSlash(name);
         e.compressedSize = (std::int64_t)info.compressed_size;
         e.originalSize = (std::uint64_t)info.uncompressed_size;

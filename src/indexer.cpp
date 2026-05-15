@@ -163,10 +163,14 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const s
     entries.reserve(parsed.size());
     for (const auto& e : parsed) {
         if (e.isDirectory) continue;
+        if (e.entryPathUtf8.empty()) {
+            LOG_WARN(L"Skip archive entry with empty UTF-8 path: %s", a.filePath.c_str());
+            continue;
+        }
 
         ArchiveEntry_t out;
         out.archiveId = archiveId;
-        out.entryPath = e.entryPath.empty() ? Utf8ToWString(e.entryRawPath.c_str()) : e.entryPath;
+        out.entryPathUtf8 = e.entryPathUtf8;
         out.entryRawPath = e.entryRawPath;
         out.compressedSize = e.compressedSize;
         out.originalSize = e.originalSize;

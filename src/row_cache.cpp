@@ -47,9 +47,9 @@ const CachedRow* RowCache::Get(int64_t rowId) {
 
     // 构建缓存项
     CachedRow cr;
-    cr.name = GetEntryNameFromPath(entry.entryPath);
+    cr.entryPath = Utf8ToWString(entry.entryPathUtf8.c_str());
+    cr.name = GetEntryNameFromPath(cr.entryPath);
     cr.archivePath = entry.archivePath;
-    cr.entryPath = entry.entryPath;
     cr.entryRawPath = entry.entryRawPath;
     cr.sizeStr = entry.compressedSize < 0 ? L"-" : FormatSizeULongLong((ULONGLONG)entry.compressedSize);
     cr.origSizeStr = FormatSizeULongLong((ULONGLONG)entry.originalSize);

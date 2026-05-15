@@ -184,11 +184,16 @@ bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         }
 
         ArchiveEntry_t entry;
-        entry.entryPath = header.FileNameW;
-        if (entry.entryPath.empty() && header.FileName[0] != '\0') {
-            entry.entryPath = Utf8ToWString(header.FileName);
+        // UnRAR windows 下优先使用 FileNameW
+        std::wstring fileNameW = header.FileNameW;
+
+        if (fileNameW.empty() && header.FileName[0] != '\0') {
+            fileNameW = Utf8ToWString(header.FileName);
         }
-        entry.entryRawPath = WideToUtf8(entry.entryPath);
+
+        entry.entryPathUtf8 = WideToUtf8(fileNameW);
+        entry.entryRawPath = entry.entryPathUtf8;
+
         entry.isDirectory = (header.Flags & RHDF_DIRECTORY) != 0;
         entry.compressedSize = entry.isDirectory ? 0 : CombineSize(header.PackSize, header.PackSizeHigh);
         const std::int64_t uncompressed = CombineSize(header.UnpSize, header.UnpSizeHigh);

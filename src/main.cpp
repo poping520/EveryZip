@@ -19,6 +19,8 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 static constexpr wchar_t kAppClassName[] = L"EveryZipMainWindow";
 static constexpr wchar_t kAppTitle[] = L"EveryZip";
+static constexpr int kDefaultWindowWidth = 1100;
+static constexpr int kDefaultWindowHeight = 620;
 
  // 初始化程序依赖的公共控件类，确保 ListView、状态栏和进度条可用。
  // 参数：无。
@@ -55,6 +57,37 @@ static bool IsSavedWindowRectUsable(const UserConfig::WindowPlacementConfig& pla
 
     RECT intersection{};
     return IntersectRect(&intersection, &rc, &mi.rcWork) != FALSE;
+}
+
+static UINT GetPrimaryMonitorDpi() {
+    POINT origin{ 0, 0 };
+    HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+
+    using FnGetDpiForMonitor = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    static HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    static auto fn = shcore
+        ? (FnGetDpiForMonitor)GetProcAddress(shcore, "GetDpiForMonitor")
+        : nullptr;
+    if (fn && monitor) {
+        UINT dpiX = 0;
+        UINT dpiY = 0;
+        static constexpr int kMdtEffectiveDpi = 0;
+        if (SUCCEEDED(fn(monitor, kMdtEffectiveDpi, &dpiX, &dpiY)) && dpiX > 0) {
+            return dpiX;
+        }
+    }
+
+    HDC hdc = GetDC(nullptr);
+    UINT dpi = 0;
+    if (hdc) {
+        dpi = (UINT)GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(nullptr, hdc);
+    }
+    return dpi ? dpi : 96;
+}
+
+static int ScaleDpi(int value, UINT dpi) {
+    return MulDiv(value, (int)dpi, 96);
 }
 
 static void CenterWindowOnPrimaryWorkArea(int width, int height, int* outX, int* outY) {
@@ -149,8 +182,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         return 1;
     }
 
-    int windowWidth = 1100;
-    int windowHeight = 620;
+    const UINT initialDpi = GetPrimaryMonitorDpi();
+    int windowWidth = ScaleDpi(kDefaultWindowWidth, initialDpi);
+    int windowHeight = ScaleDpi(kDefaultWindowHeight, initialDpi);
     int windowX = CW_USEDEFAULT;
     int windowY = CW_USEDEFAULT;
     int initialShowCmd = nCmdShow;

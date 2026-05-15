@@ -384,10 +384,19 @@ static void SetupListColumns(MainWindowState* s) {
     LVCOLUMNW col{};
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 
-    int widths[] = { 210, 210, 280, 100, 100, 140 };
+    const UINT dpi = GetWindowDpi(hList);
+    int widths[] = {
+        ScaleDpi(210, dpi),
+        ScaleDpi(210, dpi),
+        ScaleDpi(280, dpi),
+        ScaleDpi(100, dpi),
+        ScaleDpi(100, dpi),
+        ScaleDpi(140, dpi)
+    };
     if (s->userConfig.GetRememberUiState()) {
         const auto& savedWidths = s->userConfig.GetListColumnWidths();
-        if (savedWidths.size() == 6) {
+        const auto& defaultWidths = UserConfig::GetDefaultListColumnWidths();
+        if (savedWidths.size() == 6 && savedWidths != defaultWidths) {
             for (int i = 0; i < 6; ++i) {
                 if (savedWidths[i] > 0) {
                     widths[i] = savedWidths[i];

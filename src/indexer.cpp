@@ -7,8 +7,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cwctype>
 #include <memory>
+#include <mutex>
+#include <queue>
 #include <unordered_map>
 
 Indexer::Indexer() {
@@ -60,6 +63,17 @@ void Indexer::SetArchiveFormatRules(const std::vector<UserConfig::ArchiveFormatR
 
 void Indexer::SetScanDriveLetters(const std::vector<wchar_t>& drives) {
     scanDriveLetters_ = drives;
+}
+
+void Indexer::SetParseThreadCount(uint32_t threads) {
+    parseThreadCount_ = threads > 16 ? 16 : threads;
+}
+
+static uint32_t ResolveParseThreadCount(uint32_t configured) {
+    if (configured > 0) return configured;
+    const uint32_t hw = std::thread::hardware_concurrency();
+    if (hw == 0) return 2;
+    return std::clamp(hw / 2, 2u, 6u);
 }
 
 bool Indexer::EnsureDatabaseReady() {
@@ -128,19 +142,37 @@ static std::wstring GetParserTypeForPath(const std::wstring& path,
     return {};
 }
 
-void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const std::wstring& parserType) {
+struct ParsedArchiveResult {
+    ArchiveFile_t archive;
+    int64_t archiveId = -1;
+    bool ok = false;
+    std::vector<ArchiveEntry_t> entries;
+};
+
+static ParsedArchiveResult ParseArchiveEntriesOnly(const ArchiveFile_t& a,
+                                                   int64_t archiveId,
+                                                   const std::wstring& parserType) {
+    ParsedArchiveResult result;
+    result.archive = a;
+    result.archiveId = archiveId;
+
+    if (archiveId < 0) {
+        LOG_WARN(L"GetArchiveIdByPath failed for: %s", a.filePath.c_str());
+        return result;
+    }
+
     std::unique_ptr<EveryZip::IArchiveParser> parserPtr =
         EveryZip::CreateArchiveParserByType(parserType);
     if (!parserPtr) {
         LOG_WARN(L"No archive parser for: %s (parser=%s)", a.filePath.c_str(), parserType.c_str());
-        return;
+        return result;
     }
 
     std::string perr;
     if (!parserPtr->Open(a.filePath, &perr)) {
         LOG_WARN(L"ArchiveParser::Open failed (%s): %s",
                  a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
-        return;
+        return result;
     }
 
     std::vector<ArchiveEntry_t> parsed;
@@ -148,19 +180,11 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const s
         LOG_WARN(L"ArchiveParser::ListEntries failed (%s): %s",
                  a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
         parserPtr->Close();
-        return;
+        return result;
     }
     parserPtr->Close();
 
-    int64_t archiveId = db.GetArchiveIdByPath(a.filePath);
-    if (archiveId < 0) {
-        LOG_WARN(L"GetArchiveIdByPath failed for: %s", a.filePath.c_str());
-        return;
-    }
-
-
-    std::vector<ArchiveEntry_t> entries;
-    entries.reserve(parsed.size());
+    result.entries.reserve(parsed.size());
     for (const auto& e : parsed) {
         if (e.isDirectory) continue;
         if (e.entryPathUtf8.empty()) {
@@ -175,15 +199,23 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const s
         out.compressedSize = e.compressedSize;
         out.originalSize = e.originalSize;
         out.modifiedTime = e.modifiedTime;
-        entries.push_back(std::move(out));
+        result.entries.push_back(std::move(out));
     }
+    result.ok = true;
+    return result;
+}
+
+void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const std::wstring& parserType) {
+    int64_t archiveId = db.GetArchiveIdByPath(a.filePath);
+    ParsedArchiveResult parsed = ParseArchiveEntriesOnly(a, archiveId, parserType);
+    if (!parsed.ok) return;
 
     std::wstring entryErr;
     if (!db.DeleteEntriesByArchiveId(archiveId, &entryErr)) {
         LOG_WARN(L"DeleteEntriesByArchiveId failed: %s", entryErr.c_str());
     }
-    if (!entries.empty()) {
-        if (!db.InsertEntriesBatch(entries, &entryErr)) {
+    if (!parsed.entries.empty()) {
+        if (!db.InsertEntriesBatch(parsed.entries, &entryErr)) {
             LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
         }
     }
@@ -368,20 +400,120 @@ void Indexer::Start(HWND hWnd) {
 
                     const size_t parseTotal = toParse.size();
                     size_t parseDone = 0;
+                    size_t parsedEntryCount = 0;
                     const auto parseStart = std::chrono::steady_clock::now();
                     if (!cancel_.load() && parseTotal > 0) {
                         stage_.store((int)Stage::ParsingArchives);
                         PostParseProgress(hWnd, 0, parseTotal);
                     }
-                    for (const auto& a : toParse) {
-                        if (cancel_.load()) break;
-                        ParseAndStoreArchive(db, a, GetParserTypeForPath(a.filePath, archiveFormatRules_));
-                        ++parseDone;
-                        PostParseProgress(hWnd, parseDone, parseTotal);
+                    if (!cancel_.load() && parseTotal > 0) {
+                        std::vector<int64_t> archiveIds;
+                        archiveIds.reserve(parseTotal);
+                        for (const auto& a : toParse) {
+                            archiveIds.push_back(db.GetArchiveIdByPath(a.filePath));
+                        }
+
+                        const uint32_t resolvedParseThreads = ResolveParseThreadCount(parseThreadCount_);
+                        const size_t workerCount = std::min<size_t>(parseTotal, resolvedParseThreads);
+                        LOG_INFO(L"Initial archive parsing started: parse_threads=%u parse_total=%zu",
+                                 (unsigned)workerCount, parseTotal);
+
+                        struct ParseWorkState {
+                            std::mutex mutex;
+                            std::condition_variable cv;
+                            size_t nextIndex = 0;
+                            size_t activeWorkers = 0;
+                            std::queue<ParsedArchiveResult> ready;
+                        } work;
+                        work.activeWorkers = workerCount;
+
+                        const auto rules = archiveFormatRules_;
+                        std::vector<std::thread> workers;
+                        workers.reserve(workerCount);
+                        for (size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+                            workers.emplace_back([&]() {
+                                for (;;) {
+                                    size_t taskIndex = 0;
+                                    {
+                                        std::lock_guard<std::mutex> lock(work.mutex);
+                                        if (cancel_.load() || work.nextIndex >= parseTotal) {
+                                            break;
+                                        }
+                                        taskIndex = work.nextIndex++;
+                                    }
+
+                                    ParsedArchiveResult result =
+                                        ParseArchiveEntriesOnly(toParse[taskIndex],
+                                                                archiveIds[taskIndex],
+                                                                GetParserTypeForPath(toParse[taskIndex].filePath, rules));
+                                    {
+                                        std::lock_guard<std::mutex> lock(work.mutex);
+                                        work.ready.push(std::move(result));
+                                    }
+                                    work.cv.notify_one();
+                                }
+
+                                {
+                                    std::lock_guard<std::mutex> lock(work.mutex);
+                                    if (work.activeWorkers > 0) {
+                                        --work.activeWorkers;
+                                    }
+                                }
+                                work.cv.notify_one();
+                            });
+                        }
+
+                        for (;;) {
+                            ParsedArchiveResult result;
+                            bool hasResult = false;
+                            {
+                                std::unique_lock<std::mutex> lock(work.mutex);
+                                work.cv.wait(lock, [&]() {
+                                    return !work.ready.empty() || work.activeWorkers == 0;
+                                });
+                                if (!work.ready.empty()) {
+                                    result = std::move(work.ready.front());
+                                    work.ready.pop();
+                                    hasResult = true;
+                                } else if (work.activeWorkers == 0) {
+                                    break;
+                                }
+                            }
+
+                            if (!hasResult) continue;
+                            if (!cancel_.load() && result.ok) {
+                                std::wstring entryErr;
+                                if (!db.DeleteEntriesByArchiveId(result.archiveId, &entryErr)) {
+                                    LOG_WARN(L"DeleteEntriesByArchiveId failed: %s", entryErr.c_str());
+                                }
+                                if (!result.entries.empty()) {
+                                    parsedEntryCount += result.entries.size();
+                                    if (!db.InsertEntriesBatch(result.entries, &entryErr)) {
+                                        LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
+                                    }
+                                }
+                            }
+                            ++parseDone;
+                            PostParseProgress(hWnd, parseDone, parseTotal);
+                        }
+
+                        for (auto& worker : workers) {
+                            if (worker.joinable()) {
+                                worker.join();
+                            }
+                        }
                     }
                     const auto parseElapsed = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - parseStart).count();
-                    LOG_INFO(L"Initial archive parsing completed in %.3f s", parseElapsed);
+                    const double archivesPerSec = parseElapsed > 0.0
+                        ? static_cast<double>(parseDone) / parseElapsed
+                        : 0.0;
+                    const double entriesPerSec = parseElapsed > 0.0
+                        ? static_cast<double>(parsedEntryCount) / parseElapsed
+                        : 0.0;
+                    LOG_INFO(L"Initial archive parsing completed: parse_threads=%u parse_total=%zu parse_done=%zu entries=%zu parse_elapsed_sec=%.3f archives_per_sec=%.2f entries_per_sec=%.2f",
+                             (unsigned)(parseTotal > 0 ? std::min<size_t>(parseTotal, ResolveParseThreadCount(parseThreadCount_)) : 0),
+                             parseTotal, parseDone, parsedEntryCount, parseElapsed, archivesPerSec, entriesPerSec);
                     if (!cancel_.load()) {
                         stage_.store((int)Stage::SyncingDatabase);
                     }

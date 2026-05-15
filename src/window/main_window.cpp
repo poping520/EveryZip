@@ -701,6 +701,7 @@ static void StartInitialIndexingAfterConsent(HWND hWnd, MainWindowState* s) {
     s->rowCache.Clear();
     LoadRowsFromDbAndRefreshAsync(hWnd, s);
     s->indexer.SetArchiveFormatRules(s->userConfig.GetArchiveFormatRules());
+    s->indexer.SetParseThreadCount(s->userConfig.GetParseThreadCount());
     s->indexer.Start(hWnd);
     UpdateStatusBar(s);
 }

@@ -2,6 +2,8 @@
 
 #include "advconfig.h"
 
+#include <cstdint>
+
 // ============================================================================
 // UserConfig — 应用层配置（基于 ConfigParser）
 // ============================================================================
@@ -64,6 +66,8 @@ public:
      */
     const std::vector<wchar_t>& GetScanDriveLetters() const;
 
+    uint32_t GetParseThreadCount() const;
+
     /**
      * 获取主列表“归档文件”列是否显示完整路径。
      * @return 显示完整路径返回 true；仅显示文件名返回 false。
@@ -95,6 +99,8 @@ public:
      * @param drives 新的扫描盘符列表。
      */
     void SetScanDriveLetters(const std::vector<wchar_t>& drives);
+
+    void SetParseThreadCount(uint32_t threads);
 
     /**
      * 设置主列表“归档文件”列是否显示完整路径。
@@ -130,6 +136,7 @@ private:
     std::wstring configPath_;
     std::vector<ArchiveFormatRule> archiveFormatRules_;
     std::vector<wchar_t> scanDriveLetters_;
+    uint32_t parseThreadCount_ = 0;
     bool showArchiveFullPath_ = false;
     bool rememberUiState_ = true;
     bool startupScanConfirmed_ = false;

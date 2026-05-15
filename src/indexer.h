@@ -4,6 +4,7 @@
 #include <winioctl.h>
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +50,8 @@ public:
      * @param drives 需要扫描的盘符列表。
      */
     void SetScanDriveLetters(const std::vector<wchar_t>& drives);
+
+    void SetParseThreadCount(uint32_t threads);
 
     /**
      * 确保数据库文件存在并创建所需的表。
@@ -97,6 +100,7 @@ private:
     std::vector<std::wstring> archiveExtensions_ = { L".zip", L".7z", L".rar" };
     std::vector<UserConfig::ArchiveFormatRule> archiveFormatRules_;
     std::vector<wchar_t> scanDriveLetters_;
+    uint32_t parseThreadCount_ = 0;
     std::atomic_bool cancel_{ false };
     std::atomic_bool running_{ false };
     std::atomic<int> stage_{ (int)Stage::IdleMonitoring };

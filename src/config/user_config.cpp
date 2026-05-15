@@ -1,6 +1,7 @@
 #include "user_config.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cwctype>
 #include <cwchar>
 #include <sstream>
@@ -15,6 +16,7 @@ using namespace AdvConfig;
 
 static const wchar_t* kKeyArchiveFormats = L"archive_formats";
 static const wchar_t* kKeyScanDrives = L"scan_drives";
+static const wchar_t* kKeyParseThreads = L"parse_threads";
 static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
 static const wchar_t* kKeyRememberUiState = L"remember_ui_state";
 static const wchar_t* kKeyStartupScanConfirmed = L"startup_scan_confirmed";
@@ -46,6 +48,13 @@ static const std::vector<int> kDefaultListColumnWidths = {
     100,
     140
 };
+
+static uint32_t NormalizeParseThreadCount(int64_t value)
+{
+    if (value <= 0) return 0;
+    if (value > 16) return 16;
+    return static_cast<uint32_t>(value);
+}
 
 UserConfig::UserConfig()
     : archiveFormatRules_(kBuiltInArchiveFormatRules),
@@ -135,6 +144,11 @@ std::wstring UserConfig::GetParserForPath(const std::wstring& path) const
 const std::vector<wchar_t>& UserConfig::GetScanDriveLetters() const
 {
     return scanDriveLetters_;
+}
+
+uint32_t UserConfig::GetParseThreadCount() const
+{
+    return parseThreadCount_;
 }
 
 bool UserConfig::GetShowArchiveFullPath() const
@@ -261,6 +275,12 @@ void UserConfig::SetScanDriveLetters(const std::vector<wchar_t>& drives)
     SyncToParser();
 }
 
+void UserConfig::SetParseThreadCount(uint32_t threads)
+{
+    parseThreadCount_ = NormalizeParseThreadCount(threads);
+    SyncToParser();
+}
+
 void UserConfig::SetShowArchiveFullPath(bool showFullPath)
 {
     showArchiveFullPath_ = showFullPath;
@@ -357,6 +377,7 @@ void UserConfig::SyncFromParser()
     configMigrated_ = false;
 
     archiveFormatRules_ = kBuiltInArchiveFormatRules;
+    parseThreadCount_ = 0;
     const Value& formats = parser_.Get(kKeyArchiveFormats);
     if (formats.IsDict()) {
         const auto& groups = formats.AsDict();
@@ -399,6 +420,22 @@ void UserConfig::SyncFromParser()
     } else if (!parser_.Contains(kKeyScanDrives)) {
         scanDriveLetters_ = kDefaultScanDriveLetters;
         SyncToParser();
+        configMigrated_ = true;
+    }
+
+    const Value& parseThreads = parser_.Get(kKeyParseThreads);
+    if (parseThreads.IsInt()) {
+        const uint32_t normalized = NormalizeParseThreadCount(parseThreads.AsInt());
+        parseThreadCount_ = normalized;
+        if (parseThreads.AsInt() != static_cast<int64_t>(normalized)) {
+            configMigrated_ = true;
+        }
+    } else if (!parser_.Contains(kKeyParseThreads)) {
+        parseThreadCount_ = 0;
+        SyncToParser();
+        configMigrated_ = true;
+    } else {
+        parseThreadCount_ = 0;
         configMigrated_ = true;
     }
 
@@ -535,6 +572,8 @@ void UserConfig::SyncToParser()
     }
     parser_.Set(kKeyScanDrives, Value(std::move(driveList)));
 
+    parser_.Set(kKeyParseThreads, Value(static_cast<int64_t>(parseThreadCount_)));
+
     parser_.Set(kKeyShowArchiveFullPath, Value(showArchiveFullPath_));
 
     parser_.Set(kKeyRememberUiState, Value(rememberUiState_));
@@ -572,6 +611,7 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         LOG_INFO(L"Config file not found, creating default: %s", configPath.c_str());
         archiveFormatRules_ = kBuiltInArchiveFormatRules;
         scanDriveLetters_ = kDefaultScanDriveLetters;
+        parseThreadCount_ = 0;
         showArchiveFullPath_ = false;
         rememberUiState_ = true;
         startupScanConfirmed_ = false;

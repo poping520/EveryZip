@@ -313,6 +313,7 @@ bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
         s->parseTotalCount.store(0);
         s->indexer.Stop();
         s->indexer.SetArchiveFormatRules(s->userConfig.GetArchiveFormatRules());
+        s->indexer.SetParseThreadCount(s->userConfig.GetParseThreadCount());
         s->rowCache.Clear();
         LoadRowsThroughCallback(sws->owner, sws);
         s->indexer.Start(sws->owner);

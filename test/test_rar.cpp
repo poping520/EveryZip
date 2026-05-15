@@ -34,8 +34,8 @@ int main(int argc, char* argv[]) {
     bool sawFile = false;
     for (const auto& entry : entries) {
         std::cerr << entry.entryRawPath
-                  << " compressed=" << entry.compressed_size
-                  << " uncompressed=" << entry.original_size
+                  << " compressed=" << entry.compressedSize
+                  << " uncompressed=" << entry.originalSize
                   << "\n";
         if (!entry.isDirectory) {
             sawFile = true;
@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Entry name conversion failed\n";
                 return 1;
             }
-            if (entry.compressed_size < -1) {
+            if (entry.compressedSize < -1) {
                 std::cerr << "Invalid compressed size\n";
                 return 1;
             }

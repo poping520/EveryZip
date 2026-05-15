@@ -168,8 +168,8 @@ void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const s
         out.archiveId = archiveId;
         out.entryPath = e.entryPath.empty() ? Utf8ToWString(e.entryRawPath.c_str()) : e.entryPath;
         out.entryRawPath = e.entryRawPath;
-        out.compressed_size = e.compressed_size;
-        out.original_size = e.original_size;
+        out.compressedSize = e.compressedSize;
+        out.originalSize = e.originalSize;
         out.modifiedTime = e.modifiedTime;
         entries.push_back(std::move(out));
     }

@@ -45,7 +45,7 @@ struct ArchiveEntry_t
     std::wstring entryPath;
     std::string entryRawPath;
     bool isDirectory = false;       // 解析归档时使用；目录项不写入 entries 表
-    std::int64_t compressed_size = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小
-    std::uint64_t original_size = 0;
+    std::int64_t compressedSize = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小
+    std::uint64_t originalSize = 0;
     std::uint64_t modifiedTime = 0;
 };

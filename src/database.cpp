@@ -81,8 +81,8 @@ bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
     sqlite3_bind_int64(stmt, 1, e.archiveId);
     sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressed_size);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.original_size);
+    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressedSize);
+    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.originalSize);
     sqlite3_bind_int64(stmt, 6, (sqlite3_int64)e.modifiedTime);
 
     rc = sqlite3_step(stmt);
@@ -130,8 +130,8 @@ bool Database::InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, st
         sqlite3_bind_int64(stmt, 1, e.archiveId);
         sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressed_size);
-        sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.original_size);
+        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressedSize);
+        sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.originalSize);
         sqlite3_bind_int64(stmt, 6, (sqlite3_int64)e.modifiedTime);
 
         rc = sqlite3_step(stmt);
@@ -215,8 +215,8 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
         if (ap) e.archivePath = Utf8ToWString(ap);
         if (ep) e.entryPath = Utf8ToWString(ep);
 
-        e.compressed_size = (std::int64_t)sqlite3_column_int64(stmt, 2);
-        e.original_size = (std::uint64_t)sqlite3_column_int64(stmt, 3);
+        e.compressedSize = (std::int64_t)sqlite3_column_int64(stmt, 2);
+        e.originalSize = (std::uint64_t)sqlite3_column_int64(stmt, 3);
         e.modifiedTime = (std::uint64_t)sqlite3_column_int64(stmt, 4);
 
         out->push_back(std::move(e));
@@ -1029,8 +1029,8 @@ bool Database::QueryEntryById(int64_t rowId, ArchiveEntry_t* out)
         if (raw && rawBytes > 0) {
             out->entryRawPath.assign((const char*)raw, rawBytes);
         }
-        out->compressed_size = (int64_t)sqlite3_column_int64(stmt, 3);
-        out->original_size = (uint64_t)sqlite3_column_int64(stmt, 4);
+        out->compressedSize = (int64_t)sqlite3_column_int64(stmt, 3);
+        out->originalSize = (uint64_t)sqlite3_column_int64(stmt, 4);
         out->modifiedTime = (uint64_t)sqlite3_column_int64(stmt, 5);
         found = true;
     }

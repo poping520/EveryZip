@@ -181,8 +181,8 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         e.entryRawPath = name;
         e.entryPath = ToWideBestEffort(name, isUtf8);
         e.isDirectory = EndsWithSlash(name);
-        e.compressed_size = (std::int64_t)info.compressed_size;
-        e.original_size = (std::uint64_t)info.uncompressed_size;
+        e.compressedSize = (std::int64_t)info.compressed_size;
+        e.originalSize = (std::uint64_t)info.uncompressed_size;
 
         std::tm t{};
         t.tm_sec = info.tmu_date.tm_sec;

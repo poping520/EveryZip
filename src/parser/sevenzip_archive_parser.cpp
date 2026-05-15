@@ -238,16 +238,16 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries
         e.entryPath = nameW;
         e.entryRawPath = WideToUtf8(nameW);
         e.isDirectory = SzArEx_IsDir(&state_->db, i) != 0;
-        e.original_size = e.isDirectory ? 0 : (std::uint64_t)SzArEx_GetFileSize(&state_->db, i);
-        e.compressed_size = 0;
+        e.originalSize = e.isDirectory ? 0 : (std::uint64_t)SzArEx_GetFileSize(&state_->db, i);
+        e.compressedSize = 0;
         if (!e.isDirectory) {
             const UInt32 folderIndex = GetItemFolderIndex(state_->db, i);
             if (folderIndex != kNoFolder &&
                 folderIndex < filesPerFolder.size() &&
                 filesPerFolder[folderIndex] == 1) {
-                e.compressed_size = GetPackSizeFallback(state_->db, i);
+                e.compressedSize = GetPackSizeFallback(state_->db, i);
             } else {
-                e.compressed_size = -1;
+                e.compressedSize = -1;
             }
         }
 

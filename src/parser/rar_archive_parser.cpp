@@ -190,9 +190,9 @@ bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         }
         entry.entryRawPath = WideToUtf8(entry.entryPath);
         entry.isDirectory = (header.Flags & RHDF_DIRECTORY) != 0;
-        entry.compressed_size = entry.isDirectory ? 0 : CombineSize(header.PackSize, header.PackSizeHigh);
+        entry.compressedSize = entry.isDirectory ? 0 : CombineSize(header.PackSize, header.PackSizeHigh);
         const std::int64_t uncompressed = CombineSize(header.UnpSize, header.UnpSizeHigh);
-        entry.original_size = uncompressed < 0 ? 0 : static_cast<std::uint64_t>(uncompressed);
+        entry.originalSize = uncompressed < 0 ? 0 : static_cast<std::uint64_t>(uncompressed);
         std::tm modifiedTime{};
         FillModifiedTime(header.FileTime, &modifiedTime);
         entry.modifiedTime = LocalTmToFileTimeValue(modifiedTime);

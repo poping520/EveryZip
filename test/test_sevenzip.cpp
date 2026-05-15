@@ -34,8 +34,8 @@ int main(int argc, char* argv[]) {
     bool sawFile = false;
     for (const auto& entry : entries) {
         std::cerr << entry.entryRawPath
-                  << " compressed=" << entry.compressed_size
-                  << " uncompressed=" << entry.original_size
+                  << " compressed=" << entry.compressedSize
+                  << " uncompressed=" << entry.originalSize
                   << "\n";
         if (!entry.isDirectory) {
             sawFile = true;

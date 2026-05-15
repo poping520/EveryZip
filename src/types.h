@@ -43,6 +43,8 @@ struct ArchiveEntry_t
     int64_t archiveId = 0;          // archives 表的 id（插入时使用）
     std::wstring archivePath;       // archives.file_path（查询时由 JOIN 填充）
     std::string entryPathUtf8;      // 规范化后的 UTF-8 条目路径（entries.entry_path）
+    // 仅当归档格式提供的原始条目路径不是 UTF-8、且解压定位必须使用原始字节时才设置。
+    // 为空表示 parser 可直接使用 entryPathUtf8 定位条目，数据库中对应 entries.entry_raw_path 为 NULL。
     std::string entryRawPath;
     bool isDirectory = false;       // 解析归档时使用；目录项不写入 entries 表
     std::int64_t compressedSize = 0;   // -1 表示该格式无法提供可靠的逐文件压缩大小

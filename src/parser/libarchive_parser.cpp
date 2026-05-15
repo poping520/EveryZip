@@ -94,7 +94,6 @@ bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         }
 
         ArchiveEntry_t e;
-        e.entryRawPath = pathUtf8;
         e.entryPathUtf8 = pathUtf8;
         e.isDirectory = (archive_entry_filetype(entry) == AE_IFDIR) || EndsWithSlash(pathUtf8);
 

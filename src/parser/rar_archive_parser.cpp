@@ -60,6 +60,14 @@ static std::string NormalizePathUtf8(std::string path) {
     return path;
 }
 
+static std::wstring DecodeRarNarrowNameBestEffort(const char* name) {
+    if (!name || name[0] == '\0') return {};
+
+    std::wstring wide = MultiByteToWString(name, CP_UTF8, MB_ERR_INVALID_CHARS);
+    if (!wide.empty()) return wide;
+    return MultiByteToWString(name, CP_ACP);
+}
+
 static std::int64_t CombineSize(unsigned int low, unsigned int high) {
     const std::uint64_t value = (static_cast<std::uint64_t>(high) << 32) |
                                 static_cast<std::uint64_t>(low);
@@ -186,13 +194,16 @@ bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         ArchiveEntry_t entry;
         // UnRAR windows 下优先使用 FileNameW
         std::wstring fileNameW = header.FileNameW;
+        const bool usedWideName = !fileNameW.empty();
 
         if (fileNameW.empty() && header.FileName[0] != '\0') {
-            fileNameW = Utf8ToWString(header.FileName);
+            fileNameW = DecodeRarNarrowNameBestEffort(header.FileName);
         }
 
         entry.entryPathUtf8 = WideToUtf8(fileNameW);
-        entry.entryRawPath = entry.entryPathUtf8;
+        if (!usedWideName && header.FileName[0] != '\0' && header.FileName != entry.entryPathUtf8) {
+            entry.entryRawPath = header.FileName;
+        }
 
         entry.isDirectory = (header.Flags & RHDF_DIRECTORY) != 0;
         entry.compressedSize = entry.isDirectory ? 0 : CombineSize(header.PackSize, header.PackSizeHigh);
@@ -245,11 +256,15 @@ bool RarArchiveParser::ExtractEntry(const std::string& entry_path,
 
         std::wstring nameW = header.FileNameW;
         if (nameW.empty() && header.FileName[0] != '\0') {
-            nameW = Utf8ToWString(header.FileName);
+            nameW = DecodeRarNarrowNameBestEffort(header.FileName);
         }
         const std::string current = NormalizePathUtf8(WideToUtf8(nameW));
+        std::string currentRaw;
+        if (header.FileNameW[0] == L'\0' && header.FileName[0] != '\0' && header.FileName != WideToUtf8(nameW)) {
+            currentRaw = NormalizePathUtf8(header.FileName);
+        }
 
-        if (current == target) {
+        if (current == target || (!currentRaw.empty() && currentRaw == target)) {
             if ((header.Flags & RHDF_ENCRYPTED) != 0) {
                 RARCloseArchive(handle);
                 if (error) *error = "password protected RAR entries are not supported";

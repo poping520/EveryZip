@@ -222,7 +222,6 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries
 
         ArchiveEntry_t e;
         e.entryPathUtf8 = WideToUtf8(nameW);
-        e.entryRawPath = e.entryPathUtf8;
         e.isDirectory = SzArEx_IsDir(&state_->db, i) != 0;
         e.originalSize = e.isDirectory ? 0 : (std::uint64_t)SzArEx_GetFileSize(&state_->db, i);
         e.compressedSize = 0;

@@ -33,13 +33,13 @@ int main(int argc, char* argv[]) {
 
     bool sawFile = false;
     for (const auto& entry : entries) {
-        std::cerr << entry.entryRawPath
+        std::cerr << entry.entryPathUtf8
                   << " compressed=" << entry.compressedSize
                   << " uncompressed=" << entry.originalSize
                   << "\n";
         if (!entry.isDirectory) {
             sawFile = true;
-            if (entry.entryRawPath.empty() || entry.entryPathUtf8.empty()) {
+            if (entry.entryPathUtf8.empty()) {
                 std::cerr << "Entry name conversion failed\n";
                 return 1;
             }

@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
     parser.ListEntries(&entries, &err);
 
     for (const auto& entry : entries) {
-        std::cerr << entry.entryRawPath << "\n";
+        std::cerr << entry.entryPathUtf8 << "\n";
     }
 
     parser.Close();

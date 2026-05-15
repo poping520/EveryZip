@@ -45,7 +45,7 @@ public:
 
     /**
      * 将归档内指定条目解压到目标目录。
-     * @param entry_path 归档内原始条目路径（与 ArchiveEntry_t::entryRawPath 一致）。
+     * @param entry_path 归档内条目定位路径：优先传 ArchiveEntry_t::entryRawPath，为空时传 entryPathUtf8。
      * @param dest_dir   解压目标目录路径（宽字符），目录须已存在或由实现自动创建。
      * @param error      可选，用于输出错误信息。
      * @return 解压成功返回 true，否则返回 false。

@@ -160,8 +160,10 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         const bool isUtf8 = (info.flag & 0x800) != 0;
         DecodedZipPath decodedPath = DecodeZipPathBestEffort(name, isUtf8);
         ArchiveEntry_t e;
-        e.entryRawPath = name;
         e.entryPathUtf8 = std::move(decodedPath.utf8);
+        if (name != e.entryPathUtf8) {
+            e.entryRawPath = name;
+        }
 
         e.isDirectory = EndsWithSlash(name);
         e.compressedSize = (std::int64_t)info.compressed_size;

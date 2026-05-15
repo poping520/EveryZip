@@ -84,7 +84,11 @@ bool Database::InsertOrUpdateEntry(const ArchiveEntry_t& e)
     const std::string& pathUtf8 = e.entryPathUtf8;
     sqlite3_bind_int64(stmt, 1, e.archiveId);
     sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
+    if (e.entryRawPath.empty()) {
+        sqlite3_bind_null(stmt, 3);
+    } else {
+        sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
+    }
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressedSize);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.originalSize);
     sqlite3_bind_int64(stmt, 6, (sqlite3_int64)e.modifiedTime);
@@ -141,7 +145,11 @@ bool Database::InsertEntriesBatch(const std::vector<ArchiveEntry_t>& entries, st
         const std::string& pathUtf8 = e.entryPathUtf8;
         sqlite3_bind_int64(stmt, 1, e.archiveId);
         sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
+        if (e.entryRawPath.empty()) {
+            sqlite3_bind_null(stmt, 3);
+        } else {
+            sqlite3_bind_blob(stmt, 3, e.entryRawPath.data(), (int)e.entryRawPath.size(), SQLITE_TRANSIENT);
+        }
         sqlite3_bind_int64(stmt, 4, (sqlite3_int64)e.compressedSize);
         sqlite3_bind_int64(stmt, 5, (sqlite3_int64)e.originalSize);
         sqlite3_bind_int64(stmt, 6, (sqlite3_int64)e.modifiedTime);

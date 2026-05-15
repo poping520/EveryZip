@@ -10,8 +10,6 @@ struct ArchiveFile_t
 {
     // 盘符
     std::wstring driveLetter;
-    // 文件名称
-    std::wstring fileName;
     // 文件路径
     std::wstring filePath;
     // 文件大小

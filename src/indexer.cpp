@@ -542,7 +542,6 @@ void Indexer::Start(HWND hWnd) {
                         // 更新 archives 表
                         ArchiveFile_t af;
                         af.driveLetter = std::wstring(1, dl);
-                        af.fileName = cr.fileName;
                         af.filePath = fullPath;
                         af.fileSize = fileSize;
                         af.modifiedTime = modifyTime;

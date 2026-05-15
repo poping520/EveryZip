@@ -34,7 +34,6 @@ struct sqlite3;
  *   file_ref_number        INTEGER NOT NULL
  *   parent_file_ref_number INTEGER NOT NULL
  *   usn                    INTEGER NOT NULL
- *   file_name              TEXT NOT NULL
  *   file_path              TEXT NOT NULL
  *   file_size              INTEGER NOT NULL
  *   modified_time          INTEGER NOT NULL
@@ -43,7 +42,6 @@ struct sqlite3;
  * archives indexes
  *   idx_drive_letter       ON archives(drive_letter)
  *   idx_usn                ON archives(usn)
- *   idx_file_name          ON archives(file_name)
  *   idx_archives_file_path ON archives(file_path)
  *
  * entries

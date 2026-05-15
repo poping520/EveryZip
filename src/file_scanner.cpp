@@ -214,7 +214,6 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
             if (HasTargetExt(fileName, fileNameLen, extensions)) {
                 ArchiveFile_t af;
                 af.driveLetter = std::wstring(1, driveLetter);
-                af.fileName.assign(fileName, fileNameLen);
                 af.fileRefNumber = rec->FileReferenceNumber;
                 af.parentFileRefNumber = rec->ParentFileReferenceNumber;
                 af.usn = rec->Usn;

@@ -246,7 +246,7 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         std::wstring versionText = s ? LoadStateString(s, IDS_ABOUT_VERSION) : L"";
         wchar_t versionBuf[128]{};
-        swprintf_s(versionBuf, versionText.c_str(), EVERYZIP_VERSION_WSTRING);
+        swprintf_s(versionBuf, versionText.c_str(), EveryZip::AppVersionWString().c_str());
         versionText = versionBuf;
         HWND hVersion = CreateWindowExW(0, L"STATIC",
             versionText.c_str(),

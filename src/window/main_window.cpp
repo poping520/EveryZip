@@ -842,7 +842,7 @@ static void StartUpdateDownload(HWND hWnd, MainWindowState* s, const EveryZip::R
 }
 
 static void ShowUpdateAvailableDialog(HWND hWnd, MainWindowState* s, const EveryZip::ReleaseInfo& release) {
-    std::wstring currentVersion = EVERYZIP_VERSION_WSTRING;
+    std::wstring currentVersion = EveryZip::AppVersionWString();
     std::wstring latestVersion = EveryZip::AppVersionToString(release.version);
     std::wstring releaseName = release.name.empty() ? release.tagName : release.name;
     std::wstring body = ShortReleaseBody(release.body);

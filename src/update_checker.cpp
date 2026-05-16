@@ -94,7 +94,8 @@ bool ReadUrlToString(const std::wstring& url, std::string* response, std::wstrin
     std::wstring path;
     if (!CrackUrl(url, &parts, &host, &path, errorMessage)) return false;
 
-    HINTERNET hSession = WinHttpOpen(L"EveryZip/" EVERYZIP_VERSION_WSTRING,
+    const std::wstring userAgent = L"EveryZip/" + AppVersionWString();
+    HINTERNET hSession = WinHttpOpen(userAgent.c_str(),
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
         if (errorMessage) *errorMessage = LastErrorMessage(L"Open HTTP session failed");
@@ -176,7 +177,8 @@ bool DownloadUrlToFile(const std::wstring& url, const std::wstring& tempPath,
     std::wstring path;
     if (!CrackUrl(url, &parts, &host, &path, errorMessage)) return false;
 
-    HINTERNET hSession = WinHttpOpen(L"EveryZip/" EVERYZIP_VERSION_WSTRING,
+    const std::wstring userAgent = L"EveryZip/" + AppVersionWString();
+    HINTERNET hSession = WinHttpOpen(userAgent.c_str(),
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
         if (errorMessage) *errorMessage = LastErrorMessage(L"Open download session failed");

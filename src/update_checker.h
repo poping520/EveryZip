@@ -16,6 +16,7 @@ struct ReleaseInfo {
     std::wstring tagName;
     std::wstring name;
     std::wstring body;
+    std::wstring publishedAt;
     std::wstring htmlUrl;
     std::wstring assetName;
     std::wstring downloadUrl;

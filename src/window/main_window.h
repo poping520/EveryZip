@@ -73,6 +73,7 @@ struct MainWindowState {
     std::atomic<int> pendingRowLoads{ 0 };
     std::atomic_bool updateCheckInProgress{ false };
     std::atomic_bool updateDownloadInProgress{ false };
+    std::atomic_bool updatePromptVisible{ false };
 
     // 模块
     IconCache iconCache;

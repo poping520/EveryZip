@@ -4,7 +4,7 @@
 
 #define EVERYZIP_VERSION_MAJOR 0
 #define EVERYZIP_VERSION_MINOR 9
-#define EVERYZIP_VERSION_PATCH 9
+#define EVERYZIP_VERSION_PATCH 8
 
 namespace EveryZip {
 

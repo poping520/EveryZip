@@ -16,6 +16,7 @@
 #include "../update_checker.h"
 #include "about_window.h"
 #include "settings_window.h"
+#include "update_prompt_window.h"
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shlwapi.lib")
@@ -784,25 +785,13 @@ static void ShowStartupScanPrompt(HWND hWnd, MainWindowState* s) {
 }
 
 static std::wstring FormatResourceString(MainWindowState* s, UINT id,
-    const wchar_t* a = L"", const wchar_t* b = L"", const wchar_t* c = L"", const wchar_t* d = L"") {
+    const wchar_t* a = L"", const wchar_t* b = L"", const wchar_t* c = L"",
+    const wchar_t* d = L"", const wchar_t* e = L"") {
     std::wstring format = LS_(s, id);
     wchar_t buf[4096]{};
-    swprintf_s(buf, format.c_str(), a ? a : L"", b ? b : L"", c ? c : L"", d ? d : L"");
+    swprintf_s(buf, format.c_str(), a ? a : L"", b ? b : L"", c ? c : L"",
+        d ? d : L"", e ? e : L"");
     return buf;
-}
-
-static std::wstring ShortReleaseBody(const std::wstring& body) {
-    std::wstring text = body;
-    text.erase(std::remove(text.begin(), text.end(), L'\r'), text.end());
-    while (!text.empty() && (text.back() == L'\n' || text.back() == L' ' || text.back() == L'\t')) {
-        text.pop_back();
-    }
-    constexpr size_t kMaxChars = 500;
-    if (text.size() > kMaxChars) {
-        text.resize(kMaxChars);
-        text += L"...";
-    }
-    return text;
 }
 
 static void SetUpdateMenuEnabled(HWND hWnd, bool enabled) {
@@ -842,30 +831,34 @@ static void StartUpdateDownload(HWND hWnd, MainWindowState* s, const EveryZip::R
 }
 
 static void ShowUpdateAvailableDialog(HWND hWnd, MainWindowState* s, const EveryZip::ReleaseInfo& release) {
-    std::wstring currentVersion = EveryZip::AppVersionWString();
-    std::wstring latestVersion = EveryZip::AppVersionToString(release.version);
-    std::wstring releaseName = release.name.empty() ? release.tagName : release.name;
-    std::wstring body = ShortReleaseBody(release.body);
-
-    std::wstring content = FormatResourceString(s, IDS_UPDATE_FOUND,
-        currentVersion.c_str(), latestVersion.c_str(),
-        releaseName.c_str(), release.assetName.c_str());
-    if (!body.empty()) {
-        content += L"\r\n\r\n";
-        content += body;
+    if (!s || s->updatePromptVisible.exchange(true)) {
+        LOG_INFO(L"Skip duplicate update prompt while another prompt is visible");
+        return;
     }
 
-    int choice = MessageBoxW(hWnd, content.c_str(), LS_(s, IDS_UPDATE_TITLE).c_str(),
-        MB_YESNOCANCEL | MB_ICONINFORMATION);
-    if (choice == IDYES) {
+    UpdatePromptChoice choice = ShowUpdatePromptWindow(hWnd, s, release);
+    s->updatePromptVisible.store(false);
+
+    if (choice == UpdatePromptChoice::UpdateNow) {
         StartUpdateDownload(hWnd, s, release);
-    } else if (choice == IDNO) {
+    } else if (choice == UpdatePromptChoice::OpenRelease) {
         OpenReleasePage(hWnd, release);
     }
 }
 
 static void StartUpdateCheck(HWND hWnd, MainWindowState* s, bool manual) {
     if (!s) return;
+    if (manual) {
+        // 手动检查代表用户已经主动触发，取消启动时的延迟自动检查，避免弹窗重入。
+        KillTimer(hWnd, IDT_AUTO_UPDATE_CHECK);
+    }
+    if (s->updatePromptVisible.load()) {
+        if (manual) {
+            MessageBoxW(hWnd, LS_(s, IDS_UPDATE_IN_PROGRESS).c_str(),
+                LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
+        }
+        return;
+    }
     if (s->updateCheckInProgress.exchange(true)) {
         if (manual) {
             MessageBoxW(hWnd, LS_(s, IDS_UPDATE_IN_PROGRESS).c_str(),

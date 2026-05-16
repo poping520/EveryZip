@@ -570,6 +570,7 @@ UpdateCheckResult CheckForUpdates() {
     result.release.tagName = tagName;
     ExtractStringField(json, "name", &result.release.name);
     ExtractStringField(json, "body", &result.release.body);
+    ExtractStringField(json, "published_at", &result.release.publishedAt);
     ExtractStringField(json, "html_url", &result.release.htmlUrl);
 
     if (CompareAppVersions(latest, CurrentAppVersion()) <= 0) {

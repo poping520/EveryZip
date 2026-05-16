@@ -18,6 +18,8 @@ add_executable(EveryZip WIN32
         src/window/about_window.cpp
         src/window/settings_window.h
         src/window/settings_window.cpp
+        src/window/update_prompt_window.h
+        src/window/update_prompt_window.cpp
         src/window/window_utils.h
         src/window/window_utils.cpp
         src/string_utils.h

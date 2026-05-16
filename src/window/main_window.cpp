@@ -278,7 +278,7 @@ static std::wstring LS_(MainWindowState* s, UINT id) {
     return LS(s->hInstance, id, GetEffectiveLanguageId(s->userConfig));
 }
 
-// 获取搜索框中的过滤文本（转小写，去除通配符 *）
+// 获取搜索框中的过滤文本（转小写，保留 * / ? 交给数据库层解析）
 static std::wstring GetSearchFilter(MainWindowState* s) {
     wchar_t buf[1024]{};
     if (s->hSearch) {
@@ -286,10 +286,6 @@ static std::wstring GetSearchFilter(MainWindowState* s) {
     }
     std::wstring f = buf;
     f = ToLower(f);
-    for (auto& ch : f) {
-        if (ch == L'*') ch = 0;
-    }
-    f.erase(std::remove(f.begin(), f.end(), 0), f.end());
     return f;
 }
 

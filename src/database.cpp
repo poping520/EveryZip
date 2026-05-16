@@ -12,6 +12,36 @@
 // WStringToUtf8 作为 WideToUtf8 的别名，保持内部代码兼容
 static inline std::string WStringToUtf8(const std::wstring& w) { return WideToUtf8(w); }
 
+static std::wstring BuildSearchLikePattern(const std::wstring& filter)
+{
+    std::wstring pattern;
+    pattern.reserve(filter.size() + 2);
+    pattern.push_back(L'%');
+
+    for (wchar_t ch : filter) {
+        switch (ch) {
+        case L'*':
+            pattern.push_back(L'%');
+            break;
+        case L'?':
+            pattern.push_back(L'_');
+            break;
+        case L'%':
+        case L'_':
+        case L'\\':
+            pattern.push_back(L'\\');
+            pattern.push_back(ch);
+            break;
+        default:
+            pattern.push_back(ch);
+            break;
+        }
+    }
+
+    pattern.push_back(L'%');
+    return pattern;
+}
+
 static bool ArchivesTableHasColumn(sqlite3* db, const char* columnName)
 {
     if (!db || !columnName) return false;
@@ -228,7 +258,7 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
     const char* sql = hasFilter
                           ? "SELECT a.file_path, e.entry_path, e.compressed_size, e.original_size, e.modified_time "
                            "FROM entries e JOIN archives a ON e.archive_id = a.id "
-                           "WHERE e.entry_path LIKE '%' || ? || '%' "
+                           "WHERE e.entry_path LIKE ? ESCAPE '\\' "
                            "ORDER BY e.id DESC;"
                           : "SELECT a.file_path, e.entry_path, e.compressed_size, e.original_size, e.modified_time "
                            "FROM entries e JOIN archives a ON e.archive_id = a.id ORDER BY e.id DESC;";
@@ -247,7 +277,7 @@ bool Database::QueryEntries(const std::wstring& filter, std::vector<ArchiveEntry
 
     if (hasFilter)
     {
-        std::string filterUtf8 = WStringToUtf8(filter);
+        std::string filterUtf8 = WStringToUtf8(BuildSearchLikePattern(filter));
         sqlite3_bind_text(stmt, 1, filterUtf8.c_str(), -1, SQLITE_TRANSIENT);
     }
 
@@ -419,7 +449,7 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
 
     const char* sql = hasFilter
                           ? "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number FROM archives "
-                            "WHERE file_path LIKE '%' || ? || '%' ORDER BY id DESC;"
+                            "WHERE file_path LIKE ? ESCAPE '\\' ORDER BY id DESC;"
                           : "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number FROM archives ORDER BY id DESC;";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -436,7 +466,7 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
 
     if (hasFilter)
     {
-        std::string filterUtf8 = WStringToUtf8(filter);
+        std::string filterUtf8 = WStringToUtf8(BuildSearchLikePattern(filter));
         sqlite3_bind_text(stmt, 1, filterUtf8.c_str(), -1, SQLITE_TRANSIENT);
     }
 
@@ -1046,7 +1076,7 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
     if (hasFilter || needJoin) {
         sql = std::string("SELECT e.id FROM entries e JOIN archives a ON e.archive_id = a.id ");
         if (hasFilter) {
-            sql += "WHERE e.entry_path LIKE '%' || ?1 || '%' ";
+            sql += "WHERE e.entry_path LIKE ?1 ESCAPE '\\' ";
         }
         if (compressedSizeSort) {
             sql += std::string("ORDER BY CASE WHEN e.compressed_size < 0 THEN 1 ELSE 0 END ASC, ") + orderCol + " " + orderDir;
@@ -1073,9 +1103,10 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
     }
 
     if (hasFilter) {
-        int needed = WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::wstring pattern = BuildSearchLikePattern(filter);
+        int needed = WideCharToMultiByte(CP_UTF8, 0, pattern.c_str(), -1, nullptr, 0, nullptr, nullptr);
         std::string filterUtf8(needed > 0 ? needed - 1 : 0, '\0');
-        if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, filterUtf8.data(), needed, nullptr, nullptr);
+        if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, pattern.c_str(), -1, filterUtf8.data(), needed, nullptr, nullptr);
         sqlite3_bind_text(stmt, 1, filterUtf8.c_str(), -1, SQLITE_TRANSIENT);
     }
 
@@ -1126,7 +1157,7 @@ int64_t Database::GetEntryCount(const std::wstring& filter)
     std::string sql;
     const bool hasFilter = !filter.empty();
     if (hasFilter) {
-        sql = "SELECT COUNT(*) FROM entries WHERE entry_path LIKE '%' || ?1 || '%'";
+        sql = "SELECT COUNT(*) FROM entries WHERE entry_path LIKE ?1 ESCAPE '\\'";
     } else {
         sql = "SELECT COUNT(*) FROM entries";
     }
@@ -1136,9 +1167,10 @@ int64_t Database::GetEntryCount(const std::wstring& filter)
     if (rc != SQLITE_OK) return 0;
 
     if (hasFilter) {
-        int needed = WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::wstring pattern = BuildSearchLikePattern(filter);
+        int needed = WideCharToMultiByte(CP_UTF8, 0, pattern.c_str(), -1, nullptr, 0, nullptr, nullptr);
         std::string filterUtf8(needed > 0 ? needed - 1 : 0, '\0');
-        if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, filter.c_str(), -1, filterUtf8.data(), needed, nullptr, nullptr);
+        if (needed > 0) WideCharToMultiByte(CP_UTF8, 0, pattern.c_str(), -1, filterUtf8.data(), needed, nullptr, nullptr);
         sqlite3_bind_text(stmt, 1, filterUtf8.c_str(), -1, SQLITE_TRANSIENT);
     }
 

@@ -3,6 +3,7 @@
 #include <commctrl.h>
 
 #include "license_text.h"
+#include "../app_version.h"
 #include "../resource.h"
 #include "window_utils.h"
 
@@ -243,7 +244,10 @@ LRESULT CALLBACK AboutWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             contentLeft, contentTop, contentWidth, titleH,
             hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
 
-        const std::wstring versionText = s ? LoadStateString(s, IDS_ABOUT_VERSION) : L"";
+        std::wstring versionText = s ? LoadStateString(s, IDS_ABOUT_VERSION) : L"";
+        wchar_t versionBuf[128]{};
+        swprintf_s(versionBuf, versionText.c_str(), EVERYZIP_VERSION_WSTRING);
+        versionText = versionBuf;
         HWND hVersion = CreateWindowExW(0, L"STATIC",
             versionText.c_str(),
             WS_CHILD | WS_VISIBLE,

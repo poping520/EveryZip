@@ -17,6 +17,7 @@
 #define IDT_SEARCH_DEBOUNCE 2001
 #define IDT_SPINNER_ANIM    2002
 #define IDT_LIST_RETRY      2003
+#define IDT_AUTO_UPDATE_CHECK 2004
 #define IDI_APP_ICON      10
 
 #define IDI_TRAY_ICON     1         // tray icon id
@@ -112,6 +113,17 @@
 #define IDS_SETTINGS_UI_TITLE   2104
 #define IDS_ABOUT_LICENSE       2105
 #define IDS_LICENSE_TITLE       2106
+#define IDS_UPDATE_TITLE        2107
+#define IDS_UPDATE_CHECKING     2108
+#define IDS_UPDATE_IN_PROGRESS  2109
+#define IDS_UPDATE_UP_TO_DATE   2110
+#define IDS_UPDATE_FOUND        2111
+#define IDS_UPDATE_NO_ASSET     2112
+#define IDS_UPDATE_DOWNLOAD_FAIL 2113
+#define IDS_UPDATE_DOWNLOAD_CONFIRM 2114
+#define IDS_UPDATE_READY        2115
+#define IDS_UPDATE_RESTART_FAIL 2116
+#define IDS_UPDATE_OPEN_RELEASE 2117
 
 #define IDR_LICENSE_PROJECT     3001
 #define IDR_LICENSE_ZLIB        3002
@@ -129,3 +141,5 @@
 #define WM_APP_TRAY       (WM_APP + 6)  // tray icon callback
 #define WM_APP_EXTRACT_DONE (WM_APP + 7) // extract done, lParam=ExtractResult*
 #define WM_APP_PARSE_PROGRESS (WM_APP + 8) // parse progress
+#define WM_APP_UPDATE_CHECK_DONE (WM_APP + 10)
+#define WM_APP_UPDATE_DOWNLOAD_DONE (WM_APP + 11)

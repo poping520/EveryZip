@@ -7,11 +7,13 @@
 
 #include <shlobj.h>
 
+#include "../app_version.h"
 #include "../logger.h"
 #include "../parser/archive_parser_factory.h"
 #include "../resource.h"
 #include "../string_utils.h"
 #include "../tray_icon.h"
+#include "../update_checker.h"
 #include "about_window.h"
 #include "settings_window.h"
 
@@ -20,6 +22,22 @@
 
 static constexpr LANGID kZhCnLangId = MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED);
 static constexpr LANGID kEnUsLangId = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+
+namespace {
+
+struct UpdateCheckUiResult {
+    bool manual = false;
+    EveryZip::UpdateCheckResult result;
+};
+
+struct UpdateDownloadUiResult {
+    bool success = false;
+    EveryZip::ReleaseInfo release;
+    std::wstring downloadedPath;
+    std::wstring errorMessage;
+};
+
+} // namespace
 
 static LANGID ResolveSystemLanguageId() {
     const LANGID systemLang = GetUserDefaultUILanguage();
@@ -217,6 +235,12 @@ static void DrainAsyncResultMessages(HWND hWnd) {
     while (PeekMessageW(&msg, hWnd, WM_APP_EXTRACT_DONE, WM_APP_EXTRACT_DONE, PM_REMOVE)) {
         delete (ExtractResult*)msg.lParam;
     }
+    while (PeekMessageW(&msg, hWnd, WM_APP_UPDATE_CHECK_DONE, WM_APP_UPDATE_CHECK_DONE, PM_REMOVE)) {
+        delete (UpdateCheckUiResult*)msg.lParam;
+    }
+    while (PeekMessageW(&msg, hWnd, WM_APP_UPDATE_DOWNLOAD_DONE, WM_APP_UPDATE_DOWNLOAD_DONE, PM_REMOVE)) {
+        delete (UpdateDownloadUiResult*)msg.lParam;
+    }
 }
 
 // 获取窗口所在显示器的 DPI（Win8.1+ 返回真实值，否则回退到系统 DPI）
@@ -340,6 +364,7 @@ static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s);
 static void UpdateStatusBar(MainWindowState* s);
 static void StartInitialIndexingAfterConsent(HWND hWnd, MainWindowState* s);
 static void RefreshLocalizedMainWindow(HWND hWnd, MainWindowState* s);
+static void StartUpdateCheck(HWND hWnd, MainWindowState* s, bool manual);
 
 // 创建主窗口菜单栏
 static HMENU CreateMainMenu(MainWindowState* s) {
@@ -758,6 +783,111 @@ static void ShowStartupScanPrompt(HWND hWnd, MainWindowState* s) {
     }
 }
 
+static std::wstring FormatResourceString(MainWindowState* s, UINT id,
+    const wchar_t* a = L"", const wchar_t* b = L"", const wchar_t* c = L"", const wchar_t* d = L"") {
+    std::wstring format = LS_(s, id);
+    wchar_t buf[4096]{};
+    swprintf_s(buf, format.c_str(), a ? a : L"", b ? b : L"", c ? c : L"", d ? d : L"");
+    return buf;
+}
+
+static std::wstring ShortReleaseBody(const std::wstring& body) {
+    std::wstring text = body;
+    text.erase(std::remove(text.begin(), text.end(), L'\r'), text.end());
+    while (!text.empty() && (text.back() == L'\n' || text.back() == L' ' || text.back() == L'\t')) {
+        text.pop_back();
+    }
+    constexpr size_t kMaxChars = 500;
+    if (text.size() > kMaxChars) {
+        text.resize(kMaxChars);
+        text += L"...";
+    }
+    return text;
+}
+
+static void SetUpdateMenuEnabled(HWND hWnd, bool enabled) {
+    HMENU menu = GetMenu(hWnd);
+    if (!menu) return;
+    EnableMenuItem(menu, IDM_CHECK_UPDATE, MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED));
+    DrawMenuBar(hWnd);
+}
+
+static void OpenReleasePage(HWND hWnd, const EveryZip::ReleaseInfo& release) {
+    if (!release.htmlUrl.empty()) {
+        ShellExecuteW(hWnd, L"open", release.htmlUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
+static void StartUpdateDownload(HWND hWnd, MainWindowState* s, const EveryZip::ReleaseInfo& release) {
+    if (!s || s->updateDownloadInProgress.exchange(true)) {
+        MessageBoxW(hWnd, LS_(s, IDS_UPDATE_IN_PROGRESS).c_str(),
+            LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SetUpdateMenuEnabled(hWnd, false);
+    UpdateStatusBar(s);
+
+    TrackAsyncThread(s, std::thread([hWnd, s, release]() {
+        auto* result = new UpdateDownloadUiResult();
+        result->release = release;
+        std::wstring err;
+        result->success = EveryZip::DownloadUpdateExe(
+            release.downloadUrl, release.version, &result->downloadedPath, &err);
+        result->errorMessage = err;
+        if (s->shuttingDown.load() ||
+            !PostMessageW(hWnd, WM_APP_UPDATE_DOWNLOAD_DONE, 0, (LPARAM)result)) {
+            delete result;
+        }
+    }));
+}
+
+static void ShowUpdateAvailableDialog(HWND hWnd, MainWindowState* s, const EveryZip::ReleaseInfo& release) {
+    std::wstring currentVersion = EVERYZIP_VERSION_WSTRING;
+    std::wstring latestVersion = EveryZip::AppVersionToString(release.version);
+    std::wstring releaseName = release.name.empty() ? release.tagName : release.name;
+    std::wstring body = ShortReleaseBody(release.body);
+
+    std::wstring content = FormatResourceString(s, IDS_UPDATE_FOUND,
+        currentVersion.c_str(), latestVersion.c_str(),
+        releaseName.c_str(), release.assetName.c_str());
+    if (!body.empty()) {
+        content += L"\r\n\r\n";
+        content += body;
+    }
+
+    int choice = MessageBoxW(hWnd, content.c_str(), LS_(s, IDS_UPDATE_TITLE).c_str(),
+        MB_YESNOCANCEL | MB_ICONINFORMATION);
+    if (choice == IDYES) {
+        StartUpdateDownload(hWnd, s, release);
+    } else if (choice == IDNO) {
+        OpenReleasePage(hWnd, release);
+    }
+}
+
+static void StartUpdateCheck(HWND hWnd, MainWindowState* s, bool manual) {
+    if (!s) return;
+    if (s->updateCheckInProgress.exchange(true)) {
+        if (manual) {
+            MessageBoxW(hWnd, LS_(s, IDS_UPDATE_IN_PROGRESS).c_str(),
+                LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
+        }
+        return;
+    }
+
+    SetUpdateMenuEnabled(hWnd, false);
+    UpdateStatusBar(s);
+
+    TrackAsyncThread(s, std::thread([hWnd, s, manual]() {
+        auto* result = new UpdateCheckUiResult();
+        result->manual = manual;
+        result->result = EveryZip::CheckForUpdates();
+        if (s->shuttingDown.load() ||
+            !PostMessageW(hWnd, WM_APP_UPDATE_CHECK_DONE, 0, (LPARAM)result)) {
+            delete result;
+        }
+    }));
+}
+
 static void UpdateStatusBar(MainWindowState* s) {
     if (!s->hStatusBar) return;
     HWND hWnd = GetParent(s->hStatusBar);
@@ -786,7 +916,8 @@ static void UpdateStatusBar(MainWindowState* s) {
     const int64_t parseTotal = s->parseTotalCount.load();
     const bool parsing = indexerStage == Indexer::Stage::ParsingArchives;
     const bool hasParseProgress = parsing && parseTotal > 0;
-    const bool showSpinner = indexerBusy || rowsLoading;
+    const bool updateBusy = s->updateCheckInProgress.load() || s->updateDownloadInProgress.load();
+    const bool showSpinner = indexerBusy || rowsLoading || updateBusy;
 
     // 控制 Spinner 的显示/隐藏，并定位到状态栏右侧
     if (s->hProgress) {
@@ -831,6 +962,8 @@ static void UpdateStatusBar(MainWindowState* s) {
         rightText = LS_(s, IDS_STATUS_REFRESHING_LIST);
     } else if (indexerStage == Indexer::Stage::Stopping) {
         rightText = LS_(s, IDS_STATUS_PROCESSING);
+    } else if (updateBusy) {
+        rightText = LS_(s, IDS_UPDATE_CHECKING);
     }
 
     if (hWnd) {
@@ -1193,6 +1326,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         // 创建系统托盘图标
         AddTrayIcon(hWnd, IDI_TRAY_ICON, WM_APP_TRAY);
+        SetTimer(hWnd, IDT_AUTO_UPDATE_CHECK, 5000, nullptr);
         if (s->userConfig.GetStartupScanConfirmed()) {
             StartInitialIndexingAfterConsent(hWnd, s);
         } else {
@@ -1248,6 +1382,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             LoadRowsFromDbAndRefreshAsync(hWnd, s);
             return 0;
         }
+        if (wParam == IDT_AUTO_UPDATE_CHECK) {
+            KillTimer(hWnd, IDT_AUTO_UPDATE_CHECK);
+            StartUpdateCheck(hWnd, s, false);
+            return 0;
+        }
         if (wParam == IDT_SPINNER_ANIM) {
             if (s->hProgress && (GetWindowLongW(s->hProgress, GWL_STYLE) & WS_VISIBLE)) {
                 s->spinnerAngle = (s->spinnerAngle + 12) % 360;
@@ -1290,6 +1429,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             ShowAboutPanel(hWnd, s);
             return 0;
         case IDM_CHECK_UPDATE:
+            StartUpdateCheck(hWnd, s, true);
             return 0;
         case IDM_CTX_PROPERTIES: {
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
@@ -1507,6 +1647,87 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         s->parseTotalCount.store((int64_t)lParam);
         UpdateStatusBar(s);
         return 0;
+
+    case WM_APP_UPDATE_CHECK_DONE: {
+        auto* update = (UpdateCheckUiResult*)lParam;
+        s->updateCheckInProgress.store(false);
+        if (!s->updateDownloadInProgress.load()) {
+            SetUpdateMenuEnabled(hWnd, true);
+        }
+        UpdateStatusBar(s);
+
+        if (!update) return 0;
+        const bool manual = update->manual;
+        EveryZip::UpdateCheckResult result = std::move(update->result);
+        delete update;
+
+        switch (result.status) {
+        case EveryZip::UpdateCheckStatus::UpToDate:
+            if (manual) {
+                MessageBoxW(hWnd, LS_(s, IDS_UPDATE_UP_TO_DATE).c_str(),
+                    LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
+            }
+            return 0;
+        case EveryZip::UpdateCheckStatus::UpdateAvailable:
+            ShowUpdateAvailableDialog(hWnd, s, result.release);
+            return 0;
+        case EveryZip::UpdateCheckStatus::NoAsset:
+            if (manual) {
+                MessageBoxW(hWnd, LS_(s, IDS_UPDATE_NO_ASSET).c_str(),
+                    LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONWARNING);
+            } else {
+                LOG_WARN(L"Auto update check found release without exe asset: %s",
+                    result.errorMessage.c_str());
+            }
+            return 0;
+        case EveryZip::UpdateCheckStatus::NetworkError:
+        case EveryZip::UpdateCheckStatus::ParseError:
+        default:
+            if (manual) {
+                MessageBoxW(hWnd, result.errorMessage.c_str(),
+                    LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONERROR);
+            } else {
+                LOG_WARN(L"Auto update check failed: %s", result.errorMessage.c_str());
+            }
+            return 0;
+        }
+    }
+
+    case WM_APP_UPDATE_DOWNLOAD_DONE: {
+        auto* download = (UpdateDownloadUiResult*)lParam;
+        s->updateDownloadInProgress.store(false);
+        if (!s->updateCheckInProgress.load()) {
+            SetUpdateMenuEnabled(hWnd, true);
+        }
+        UpdateStatusBar(s);
+
+        if (!download) return 0;
+        const bool success = download->success;
+        std::wstring downloadedPath = std::move(download->downloadedPath);
+        std::wstring err = std::move(download->errorMessage);
+        delete download;
+
+        if (!success) {
+            std::wstring msg = FormatResourceString(s, IDS_UPDATE_DOWNLOAD_FAIL, err.c_str());
+            MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        int choice = MessageBoxW(hWnd, LS_(s, IDS_UPDATE_DOWNLOAD_CONFIRM).c_str(),
+            LS_(s, IDS_UPDATE_READY).c_str(), MB_YESNO | MB_ICONQUESTION);
+        if (choice != IDYES) return 0;
+
+        std::wstring launchErr;
+        if (!EveryZip::LaunchSelfUpdater(downloadedPath, &launchErr)) {
+            std::wstring msg = FormatResourceString(s, IDS_UPDATE_RESTART_FAIL, launchErr.c_str());
+            MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONERROR);
+            return 0;
+        }
+
+        s->forceQuit = true;
+        DestroyWindow(hWnd);
+        return 0;
+    }
 
     case WM_NOTIFY: { // ListView 通知：双击事件 + NM_CUSTOMDRAW 自绘（关键词加粗）
         LPNMHDR hdr = (LPNMHDR)lParam;
@@ -1762,6 +1983,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         KillTimer(hWnd, IDT_STATUSBAR_TIMER);
         KillTimer(hWnd, IDT_SEARCH_DEBOUNCE);
         KillTimer(hWnd, IDT_LIST_RETRY);
+        KillTimer(hWnd, IDT_AUTO_UPDATE_CHECK);
         s->indexer.Stop();
         JoinAsyncThreads(s);
         DrainAsyncResultMessages(hWnd);

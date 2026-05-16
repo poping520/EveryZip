@@ -39,6 +39,9 @@ add_executable(EveryZip WIN32
         src/database.h
         src/database.cpp
         src/logger.cpp
+        src/app_version.h
+        src/update_checker.h
+        src/update_checker.cpp
         
         src/config/advconfig.h
         src/config/advconfig.cpp
@@ -204,6 +207,7 @@ endif()
 target_link_libraries(EveryZip PRIVATE
         comctl32
         shlwapi
+        winhttp
         minizip
         sevenzip_c
         unrar_static

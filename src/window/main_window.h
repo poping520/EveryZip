@@ -71,6 +71,8 @@ struct MainWindowState {
     std::atomic<int64_t> parseDoneCount{ 0 };
     std::atomic<int64_t> parseTotalCount{ 0 };
     std::atomic<int> pendingRowLoads{ 0 };
+    std::atomic_bool updateCheckInProgress{ false };
+    std::atomic_bool updateDownloadInProgress{ false };
 
     // 模块
     IconCache iconCache;

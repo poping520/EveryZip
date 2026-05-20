@@ -663,7 +663,13 @@ static void LayoutChildren(HWND hWnd, MainWindowState* s) {
 }
 
 // 异步加载：在后台线程中只查询 rowid 列表，完成后通知 UI 线程
-static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
+static void LoadRowsFromDbAndRefreshAsyncInternal(HWND hWnd, MainWindowState* s, bool resetListRetryBudget) {
+    if (resetListRetryBudget) {
+        s->needsListRetry = false;
+        s->listRetryAttempts = 0;
+        s->listRetrySuppressedLogged = false;
+        KillTimer(hWnd, IDT_LIST_RETRY);
+    }
     // 捕获当前搜索条件和排序状态（在 UI 线程中获取）
     std::wstring filter = GetSearchFilter(s);
     std::wstring dbPath = s->dbPath;
@@ -855,6 +861,25 @@ static void StartUpdateDownload(HWND hWnd, MainWindowState* s, const EveryZip::R
             delete result;
         }
     }));
+}
+
+static void LoadRowsFromDbAndRefreshAsync(HWND hWnd, MainWindowState* s) {
+    LoadRowsFromDbAndRefreshAsyncInternal(hWnd, s, true);
+}
+
+static void ScheduleListRetry(HWND hWnd, MainWindowState* s) {
+    if (!s || s->pendingRowLoads.load() > 0 || s->needsListRetry) return;
+    constexpr int kMaxListRetryAttempts = 1;
+    if (s->listRetryAttempts >= kMaxListRetryAttempts) {
+        if (!s->listRetrySuppressedLogged) {
+            LOG_WARN(L"List row cache miss persists after retry; suppress further automatic list refresh");
+            s->listRetrySuppressedLogged = true;
+        }
+        return;
+    }
+    ++s->listRetryAttempts;
+    s->needsListRetry = true;
+    SetTimer(hWnd, IDT_LIST_RETRY, 500, nullptr);
 }
 
 static void ShowUpdateAvailableDialog(HWND hWnd, MainWindowState* s, const EveryZip::ReleaseInfo& release) {
@@ -1409,7 +1434,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (wParam == IDT_LIST_RETRY) {
             KillTimer(hWnd, IDT_LIST_RETRY);
             s->needsListRetry = false;
-            LoadRowsFromDbAndRefreshAsync(hWnd, s);
+            LoadRowsFromDbAndRefreshAsyncInternal(hWnd, s, false);
             return 0;
         }
         if (wParam == IDT_AUTO_UPDATE_CHECK) {
@@ -1788,10 +1813,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 const CachedRow* cr = s->rowCache.Get(rowId);
                 if (!cr) {
                     // rowId 已失效（索引器重建期间删除了旧条目），调度一次延迟刷新
-                    if (!s->needsListRetry) {
-                        s->needsListRetry = true;
-                        SetTimer(hWnd, IDT_LIST_RETRY, 500, nullptr);
-                    }
+                    ScheduleListRetry(hWnd, s);
                     return 0;
                 }
 
@@ -1911,9 +1933,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                     case 1: text = GetArchiveColumnText(s, cr); break;
                                     case 2: text = cr->entryPath; break;
                                     }
-                                } else if (!s->needsListRetry) {
-                                    s->needsListRetry = true;
-                                    SetTimer(hWnd, IDT_LIST_RETRY, 500, nullptr);
+                                } else {
+                                    ScheduleListRetry(hWnd, s);
                                 }
                             }
                         }

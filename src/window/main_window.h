@@ -88,6 +88,8 @@ struct MainWindowState {
 
     // 标记是否有行数据加载失败，需要延迟重试刷新列表
     bool needsListRetry = false;
+    int listRetryAttempts = 0;
+    bool listRetrySuppressedLogged = false;
     int archiveTooltipItem = -1;
     int archiveTooltipSubItem = -1;
     bool archiveTooltipTracking = false;

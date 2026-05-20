@@ -73,6 +73,8 @@ const CachedRow* RowCache::Get(int64_t rowId) {
 void RowCache::Clear() {
     cache_.clear();
     lru_.clear();
+    cacheDb_.Close();
+    dbOpen_ = false;
 }
 
 void RowCache::Close() {

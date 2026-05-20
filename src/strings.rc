@@ -107,7 +107,6 @@ STRINGTABLE
     IDS_UPDATE_DOWNLOAD_CONFIRM,"更新文件已下载完成。\r\n\r\n将关闭 EveryZip、替换程序文件并重新启动。是否现在更新？"
     IDS_UPDATE_READY,       "更新准备完成"
     IDS_UPDATE_RESTART_FAIL,"启动自更新程序失败：\r\n%s"
-    IDS_UPDATE_OPEN_RELEASE,"打开发布页面"
     IDS_UPDATE_FOUND_SHORT, "发现新版本。"
     IDS_UPDATE_CURRENT_VERSION,"当前版本"
     IDS_UPDATE_LATEST_VERSION,"最新版本"
@@ -115,6 +114,8 @@ STRINGTABLE
     IDS_UPDATE_PUBLISHED_AT,"发布时间"
     IDS_UPDATE_NOTES,      "更新内容"
     IDS_UPDATE_NOW,        "立即更新"
+    IDS_UPDATE_DISABLE_REMINDER,"不再提醒"
+    IDS_SETTINGS_AUTO_UPDATE_CHECK,"自动检查更新"
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -211,7 +212,6 @@ STRINGTABLE
     IDS_UPDATE_DOWNLOAD_CONFIRM,"The update file has been downloaded.\r\n\r\nEveryZip will close, replace the executable, and restart. Update now?"
     IDS_UPDATE_READY,       "Update Ready"
     IDS_UPDATE_RESTART_FAIL,"Failed to start the self-updater:\r\n%s"
-    IDS_UPDATE_OPEN_RELEASE,"Open Release Page"
     IDS_UPDATE_FOUND_SHORT, "A new version is available."
     IDS_UPDATE_CURRENT_VERSION,"Current version"
     IDS_UPDATE_LATEST_VERSION,"Latest version"
@@ -219,4 +219,6 @@ STRINGTABLE
     IDS_UPDATE_PUBLISHED_AT,"Published at"
     IDS_UPDATE_NOTES,      "Release notes"
     IDS_UPDATE_NOW,        "Update Now"
+    IDS_UPDATE_DISABLE_REMINDER,"Don't Remind Again"
+    IDS_SETTINGS_AUTO_UPDATE_CHECK,"Automatically check for updates"
 }

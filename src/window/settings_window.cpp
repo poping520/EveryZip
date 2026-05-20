@@ -11,6 +11,7 @@ namespace {
 constexpr wchar_t kSettingsClass[] = L"EveryZipSettingsWindow";
 constexpr int IDC_SETTINGS_SHOW_FULL_PATH = 3001;
 constexpr int IDC_SETTINGS_REMEMBER_UI_STATE = 3002;
+constexpr int IDC_SETTINGS_AUTO_UPDATE_CHECK = 3003;
 constexpr int IDC_SETTINGS_DEFAULT_ZIP = 3010;
 constexpr int IDC_SETTINGS_DEFAULT_RAR = 3011;
 constexpr int IDC_SETTINGS_DEFAULT_7Z = 3012;
@@ -40,6 +41,7 @@ struct SettingsWindowState {
     bool restartIndexerOnApply = true;
     HWND hCheckFullPath = nullptr;
     HWND hCheckRememberUiState = nullptr;
+    HWND hCheckAutoUpdate = nullptr;
     HWND hCustomList = nullptr;
     HWND hCustomExt = nullptr;
     HWND hCustomParser = nullptr;
@@ -272,11 +274,14 @@ bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
     const auto previousRules = s->userConfig.GetArchiveFormatRules();
     const bool previousFullPath = s->showArchiveFullPath;
     const bool previousRemember = s->userConfig.GetRememberUiState();
+    const bool previousAutoUpdate = s->userConfig.GetAutoUpdateCheckEnabled();
     const UserConfig::LanguageMode previousLanguage = s->userConfig.GetLanguageMode();
     const bool fullPath = sws->hCheckFullPath &&
         SendMessageW(sws->hCheckFullPath, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const bool remember = sws->hCheckRememberUiState &&
         SendMessageW(sws->hCheckRememberUiState, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool autoUpdate = sws->hCheckAutoUpdate &&
+        SendMessageW(sws->hCheckAutoUpdate, BM_GETCHECK, 0, 0) == BST_CHECKED;
     UserConfig::LanguageMode language = previousLanguage;
     if (sws->hLanguage) {
         const LRESULT selected = SendMessageW(sws->hLanguage, CB_GETCURSEL, 0, 0);
@@ -292,6 +297,7 @@ bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
     s->showArchiveFullPath = fullPath;
     s->userConfig.SetShowArchiveFullPath(fullPath);
     s->userConfig.SetRememberUiState(remember);
+    s->userConfig.SetAutoUpdateCheckEnabled(autoUpdate);
     s->userConfig.SetLanguageMode(language);
     std::wstring err;
     if (!s->userConfig.Save(&err)) {
@@ -299,6 +305,7 @@ bool ApplyFormatSettings(HWND hWnd, SettingsWindowState* sws) {
         s->showArchiveFullPath = previousFullPath;
         s->userConfig.SetShowArchiveFullPath(previousFullPath);
         s->userConfig.SetRememberUiState(previousRemember);
+        s->userConfig.SetAutoUpdateCheckEnabled(previousAutoUpdate);
         s->userConfig.SetLanguageMode(previousLanguage);
         std::wstring msg = LoadStateString(s, IDS_SETTINGS_SAVE_FAILED);
         if (!err.empty()) msg += L"\n" + err;
@@ -375,7 +382,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         HWND hUiGroup = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_UI_TITLE).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-            contentX, margin, contentW, ScaleDpiValue(112, dpi),
+            contentX, margin, contentW, ScaleDpiValue(148, dpi),
             hWnd, nullptr, s ? s->hInstance : nullptr, nullptr);
         AddPageControl(&sws->uiControls, sws, hUiGroup);
         HWND hLanguageGroup = CreateWindowExW(0, L"BUTTON",
@@ -449,10 +456,21 @@ LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             SendMessageW(sws->hCheckRememberUiState, BM_SETCHECK,
                 s->userConfig.GetRememberUiState() ? BST_CHECKED : BST_UNCHECKED, 0);
         }
+        sws->hCheckAutoUpdate = CreateWindowExW(0, L"BUTTON",
+            s ? LoadStateString(s, IDS_SETTINGS_AUTO_UPDATE_CHECK).c_str() : L"",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            contentX + groupPadX, margin + groupPadY + (checkH + checkGap) * 2,
+            ScaleDpiValue(360, dpi), checkH,
+            hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_AUTO_UPDATE_CHECK, s ? s->hInstance : nullptr, nullptr);
+        AddPageControl(&sws->uiControls, sws, sws->hCheckAutoUpdate);
+        if (sws->hCheckAutoUpdate && s) {
+            SendMessageW(sws->hCheckAutoUpdate, BM_SETCHECK,
+                s->userConfig.GetAutoUpdateCheckEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
         sws->hResetColumns = CreateWindowExW(0, L"BUTTON",
             s ? LoadStateString(s, IDS_SETTINGS_RESET_LAYOUT).c_str() : L"",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            contentX + groupPadX, margin + groupPadY + (checkH + checkGap) * 2 + ScaleDpiValue(8, dpi),
+            contentX + groupPadX, margin + groupPadY + (checkH + checkGap) * 3 + ScaleDpiValue(8, dpi),
             ScaleDpiValue(110, dpi), checkH,
             hWnd, (HMENU)(INT_PTR)IDC_SETTINGS_RESET_COLUMNS, s ? s->hInstance : nullptr, nullptr);
         AddPageControl(&sws->uiControls, sws, sws->hResetColumns);

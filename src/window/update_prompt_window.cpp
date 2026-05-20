@@ -21,7 +21,7 @@ constexpr int IDC_UPDATE_PUBLISHED_VALUE = 4108;
 constexpr int IDC_UPDATE_NOTES_LABEL = 4109;
 constexpr int IDC_UPDATE_NOTES = 4110;
 constexpr int IDC_UPDATE_NOW = 4111;
-constexpr int IDC_UPDATE_OPEN_RELEASE = 4112;
+constexpr int IDC_UPDATE_DISABLE_REMINDER = 4112;
 
 struct UpdatePromptState {
     HWND owner = nullptr;
@@ -140,7 +140,7 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         const int valueX = margin + labelW;
         const int valueW = ScaleDpiValue(280, dpi);
         const int contentW = ScaleDpiValue(420, dpi);
-        const int buttonW = ScaleDpiValue(112, dpi);
+        const int buttonW = ScaleDpiValue(122, dpi);
         const int buttonH = ScaleDpiValue(30, dpi);
         const int buttonGap = ScaleDpiValue(12, dpi);
         NONCLIENTMETRICSW ncm{};
@@ -229,10 +229,10 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
             buttonX, buttonY, buttonW, buttonH, hWnd,
             (HMENU)(INT_PTR)IDC_UPDATE_NOW, s ? s->hInstance : nullptr, nullptr);
         buttonX += buttonW + buttonGap;
-        CreateWindowExW(0, L"BUTTON", LoadStateString(s, IDS_UPDATE_OPEN_RELEASE).c_str(),
+        CreateWindowExW(0, L"BUTTON", LoadStateString(s, IDS_UPDATE_DISABLE_REMINDER).c_str(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
             buttonX, buttonY, buttonW, buttonH, hWnd,
-            (HMENU)(INT_PTR)IDC_UPDATE_OPEN_RELEASE, s ? s->hInstance : nullptr, nullptr);
+            (HMENU)(INT_PTR)IDC_UPDATE_DISABLE_REMINDER, s ? s->hInstance : nullptr, nullptr);
         buttonX += buttonW + buttonGap;
         CreateWindowExW(0, L"BUTTON", LoadStateString(s, IDS_SETTINGS_CANCEL).c_str(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -243,7 +243,7 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
             IDC_UPDATE_FOUND, IDC_UPDATE_CURRENT_LABEL, IDC_UPDATE_CURRENT_VALUE,
             IDC_UPDATE_LATEST_LABEL, IDC_UPDATE_PUBLISHED_LABEL,
             IDC_UPDATE_PUBLISHED_VALUE, IDC_UPDATE_NOTES_LABEL, IDC_UPDATE_NOTES,
-            IDC_UPDATE_NOW, IDC_UPDATE_OPEN_RELEASE, IDCANCEL
+            IDC_UPDATE_NOW, IDC_UPDATE_DISABLE_REMINDER, IDCANCEL
         };
         for (int id : fontIds) SetControlFont(hWnd, id, state->hFont);
         SetControlFont(hWnd, IDC_UPDATE_RELEASE_TITLE, state->hTitleFont);
@@ -259,8 +259,8 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         case IDC_UPDATE_NOW:
             FinishPrompt(hWnd, state, UpdatePromptChoice::UpdateNow);
             return 0;
-        case IDC_UPDATE_OPEN_RELEASE:
-            FinishPrompt(hWnd, state, UpdatePromptChoice::OpenRelease);
+        case IDC_UPDATE_DISABLE_REMINDER:
+            FinishPrompt(hWnd, state, UpdatePromptChoice::DisableReminder);
             return 0;
         case IDCANCEL:
             FinishPrompt(hWnd, state, UpdatePromptChoice::Cancel);

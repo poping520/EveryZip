@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cwctype>
 #include <thread>
@@ -801,9 +802,35 @@ static void SetUpdateMenuEnabled(HWND hWnd, bool enabled) {
     DrawMenuBar(hWnd);
 }
 
-static void OpenReleasePage(HWND hWnd, const EveryZip::ReleaseInfo& release) {
-    if (!release.htmlUrl.empty()) {
-        ShellExecuteW(hWnd, L"open", release.htmlUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+static int64_t CurrentUnixSeconds() {
+    using namespace std::chrono;
+    return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
+}
+
+static bool IsAutoUpdateCheckDue(MainWindowState* s) {
+    if (!s || !s->userConfig.GetAutoUpdateCheckEnabled()) return false;
+    constexpr int64_t kAutoUpdateIntervalSeconds = 24 * 60 * 60;
+    const int64_t now = CurrentUnixSeconds();
+    const int64_t lastCheck = s->userConfig.GetLastAutoUpdateCheckAt();
+    return lastCheck <= 0 || now <= lastCheck || now - lastCheck >= kAutoUpdateIntervalSeconds;
+}
+
+static void ScheduleAutoUpdateCheckIfDue(HWND hWnd, MainWindowState* s) {
+    if (IsAutoUpdateCheckDue(s)) {
+        SetTimer(hWnd, IDT_AUTO_UPDATE_CHECK, 5000, nullptr);
+    }
+}
+
+static void SaveAutoUpdatePreference(HWND hWnd, MainWindowState* s, bool enabled) {
+    if (!s) return;
+    const bool previous = s->userConfig.GetAutoUpdateCheckEnabled();
+    s->userConfig.SetAutoUpdateCheckEnabled(enabled);
+    std::wstring err;
+    if (!s->userConfig.Save(&err)) {
+        s->userConfig.SetAutoUpdateCheckEnabled(previous);
+        std::wstring msg = LS_(s, IDS_SETTINGS_SAVE_FAILED);
+        if (!err.empty()) msg += L"\n" + err;
+        MessageBoxW(hWnd, msg.c_str(), LS_(s, IDS_ERROR).c_str(), MB_OK | MB_ICONERROR);
     }
 }
 
@@ -841,8 +868,8 @@ static void ShowUpdateAvailableDialog(HWND hWnd, MainWindowState* s, const Every
 
     if (choice == UpdatePromptChoice::UpdateNow) {
         StartUpdateDownload(hWnd, s, release);
-    } else if (choice == UpdatePromptChoice::OpenRelease) {
-        OpenReleasePage(hWnd, release);
+    } else if (choice == UpdatePromptChoice::DisableReminder) {
+        SaveAutoUpdatePreference(hWnd, s, false);
     }
 }
 
@@ -851,6 +878,8 @@ static void StartUpdateCheck(HWND hWnd, MainWindowState* s, bool manual) {
     if (manual) {
         // 手动检查代表用户已经主动触发，取消启动时的延迟自动检查，避免弹窗重入。
         KillTimer(hWnd, IDT_AUTO_UPDATE_CHECK);
+    } else if (!IsAutoUpdateCheckDue(s)) {
+        return;
     }
     if (s->updatePromptVisible.load()) {
         if (manual) {
@@ -865,6 +894,14 @@ static void StartUpdateCheck(HWND hWnd, MainWindowState* s, bool manual) {
                 LS_(s, IDS_UPDATE_TITLE).c_str(), MB_OK | MB_ICONINFORMATION);
         }
         return;
+    }
+
+    if (!manual) {
+        s->userConfig.SetLastAutoUpdateCheckAt(CurrentUnixSeconds());
+        std::wstring err;
+        if (!s->userConfig.Save(&err)) {
+            LOG_WARN(L"Save auto update check timestamp failed: %s", err.c_str());
+        }
     }
 
     SetUpdateMenuEnabled(hWnd, false);
@@ -1319,7 +1356,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         // 创建系统托盘图标
         AddTrayIcon(hWnd, IDI_TRAY_ICON, WM_APP_TRAY);
-        SetTimer(hWnd, IDT_AUTO_UPDATE_CHECK, 5000, nullptr);
+        ScheduleAutoUpdateCheckIfDue(hWnd, s);
         if (s->userConfig.GetStartupScanConfirmed()) {
             StartInitialIndexingAfterConsent(hWnd, s);
         } else {

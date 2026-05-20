@@ -6,7 +6,7 @@
 
 enum class UpdatePromptChoice {
     UpdateNow,
-    OpenRelease,
+    DisableReminder,
     Cancel
 };
 

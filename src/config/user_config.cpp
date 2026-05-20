@@ -20,6 +20,8 @@ static const wchar_t* kKeyParseThreads = L"parse_threads";
 static const wchar_t* kKeyShowArchiveFullPath = L"show_archive_full_path";
 static const wchar_t* kKeyRememberUiState = L"remember_ui_state";
 static const wchar_t* kKeyStartupScanConfirmed = L"startup_scan_confirmed";
+static const wchar_t* kKeyAutoUpdateCheckEnabled = L"auto_update_check_enabled";
+static const wchar_t* kKeyLastAutoUpdateCheckAt = L"last_auto_update_check_at";
 static const wchar_t* kKeyLanguage = L"language";
 static const wchar_t* kKeyWindowRect = L"window_rect";
 static const wchar_t* kKeyWindowMaximized = L"window_maximized";
@@ -166,6 +168,16 @@ bool UserConfig::GetStartupScanConfirmed() const
     return startupScanConfirmed_;
 }
 
+bool UserConfig::GetAutoUpdateCheckEnabled() const
+{
+    return autoUpdateCheckEnabled_;
+}
+
+int64_t UserConfig::GetLastAutoUpdateCheckAt() const
+{
+    return lastAutoUpdateCheckAt_;
+}
+
 UserConfig::LanguageMode UserConfig::GetLanguageMode() const
 {
     return languageMode_;
@@ -296,6 +308,18 @@ void UserConfig::SetRememberUiState(bool remember)
 void UserConfig::SetStartupScanConfirmed(bool confirmed)
 {
     startupScanConfirmed_ = confirmed;
+    SyncToParser();
+}
+
+void UserConfig::SetAutoUpdateCheckEnabled(bool enabled)
+{
+    autoUpdateCheckEnabled_ = enabled;
+    SyncToParser();
+}
+
+void UserConfig::SetLastAutoUpdateCheckAt(int64_t timestamp)
+{
+    lastAutoUpdateCheckAt_ = std::max<int64_t>(0, timestamp);
     SyncToParser();
 }
 
@@ -464,6 +488,22 @@ void UserConfig::SyncFromParser()
         configMigrated_ = true;
     }
 
+    const Value& autoUpdateCheckEnabled = parser_.Get(kKeyAutoUpdateCheckEnabled);
+    if (autoUpdateCheckEnabled.IsBool()) {
+        autoUpdateCheckEnabled_ = autoUpdateCheckEnabled.AsBool(true);
+    } else {
+        autoUpdateCheckEnabled_ = true;
+        configMigrated_ = true;
+    }
+
+    const Value& lastAutoUpdateCheckAt = parser_.Get(kKeyLastAutoUpdateCheckAt);
+    if (lastAutoUpdateCheckAt.IsInt()) {
+        lastAutoUpdateCheckAt_ = std::max<int64_t>(0, lastAutoUpdateCheckAt.AsInt());
+    } else {
+        lastAutoUpdateCheckAt_ = 0;
+        configMigrated_ = true;
+    }
+
     const Value& language = parser_.Get(kKeyLanguage);
     if (language.IsString()) {
         const LanguageMode parsed = ParseLanguageMode(language.AsString());
@@ -578,6 +618,8 @@ void UserConfig::SyncToParser()
 
     parser_.Set(kKeyRememberUiState, Value(rememberUiState_));
     parser_.Set(kKeyStartupScanConfirmed, Value(startupScanConfirmed_));
+    parser_.Set(kKeyAutoUpdateCheckEnabled, Value(autoUpdateCheckEnabled_));
+    parser_.Set(kKeyLastAutoUpdateCheckAt, Value(lastAutoUpdateCheckAt_));
     parser_.Set(kKeyLanguage, Value(LanguageModeToConfigValue(languageMode_)));
     parser_.Remove(L"window_left");
     parser_.Remove(L"window_top");
@@ -615,6 +657,8 @@ bool UserConfig::Load(const std::wstring& configPath, std::wstring* err)
         showArchiveFullPath_ = false;
         rememberUiState_ = true;
         startupScanConfirmed_ = false;
+        autoUpdateCheckEnabled_ = true;
+        lastAutoUpdateCheckAt_ = 0;
         languageMode_ = LanguageMode::System;
         windowPlacement_ = WindowPlacementConfig{};
         listColumnWidths_ = kDefaultListColumnWidths;

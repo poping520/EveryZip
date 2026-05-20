@@ -78,6 +78,10 @@ public:
 
     bool GetStartupScanConfirmed() const;
 
+    bool GetAutoUpdateCheckEnabled() const;
+
+    int64_t GetLastAutoUpdateCheckAt() const;
+
     LanguageMode GetLanguageMode() const;
 
     std::wstring GetLanguageConfigValue() const;
@@ -112,6 +116,10 @@ public:
 
     void SetStartupScanConfirmed(bool confirmed);
 
+    void SetAutoUpdateCheckEnabled(bool enabled);
+
+    void SetLastAutoUpdateCheckAt(int64_t timestamp);
+
     void SetLanguageMode(LanguageMode mode);
 
     void SetWindowPlacement(const WindowPlacementConfig& placement);
@@ -140,6 +148,8 @@ private:
     bool showArchiveFullPath_ = false;
     bool rememberUiState_ = true;
     bool startupScanConfirmed_ = false;
+    bool autoUpdateCheckEnabled_ = true;
+    int64_t lastAutoUpdateCheckAt_ = 0;
     LanguageMode languageMode_ = LanguageMode::System;
     WindowPlacementConfig windowPlacement_;
     std::vector<int> listColumnWidths_;

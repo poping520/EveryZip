@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "../app_version.h"
+#include "../logger.h"
 #include "../resource.h"
 #include "window_utils.h"
 
@@ -35,6 +36,18 @@ struct UpdatePromptState {
     HBRUSH hNotesBrush = nullptr;
     bool done = false;
 };
+
+const wchar_t* UpdatePromptChoiceName(UpdatePromptChoice choice) {
+    switch (choice) {
+    case UpdatePromptChoice::UpdateNow:
+        return L"UpdateNow";
+    case UpdatePromptChoice::DisableReminder:
+        return L"DisableReminder";
+    case UpdatePromptChoice::Cancel:
+    default:
+        return L"Cancel";
+    }
+}
 
 std::wstring NormalizeReleaseBody(const std::wstring& body) {
     std::wstring text = body;
@@ -99,6 +112,7 @@ std::wstring FormatPublishedAtLocal(const std::wstring& publishedAt) {
 }
 
 void FinishPrompt(HWND hWnd, UpdatePromptState* state, UpdatePromptChoice choice) {
+    LOG_INFO(L"Update prompt finished: choice=%s", UpdatePromptChoiceName(choice));
     if (state) {
         state->choice = choice;
         state->done = true;
@@ -131,6 +145,15 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
 
         MainWindowState* s = state ? state->mainState : nullptr;
         const auto* release = state ? state->release : nullptr;
+        if (release) {
+            LOG_INFO(L"Create update prompt controls: tag=%s version=%s asset=%s url=%s",
+                release->tagName.c_str(),
+                EveryZip::AppVersionToString(release->version).c_str(),
+                release->assetName.c_str(),
+                release->htmlUrl.c_str());
+        } else {
+            LOG_WARN(L"Create update prompt controls without release info");
+        }
         const UINT dpi = GetWindowDpiValue(hWnd);
         const int margin = ScaleDpiValue(18, dpi);
         const int iconSize = ScaleDpiValue(32, dpi);
@@ -219,6 +242,8 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
             nullptr);
         if (hNotes) {
             SendMessageW(hNotes, EM_SETSEL, 0, 0);
+        } else {
+            LOG_WARN(L"Create update prompt notes edit failed (err=%lu)", GetLastError());
         }
 
         const int buttonY = notesY + notesH + ScaleDpiValue(18, dpi);
@@ -250,6 +275,7 @@ LRESULT CALLBACK UpdatePromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM 
         SetControlFont(hWnd, IDC_UPDATE_LATEST_VALUE, state->hBoldFont);
 
         SetFocus(GetDlgItem(hWnd, IDC_UPDATE_NOW));
+        LOG_INFO(L"Update prompt controls created");
         return 0;
     }
 
@@ -322,7 +348,13 @@ void RegisterUpdatePromptClass(HINSTANCE hInstance) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
     wc.lpszClassName = kUpdatePromptClass;
-    RegisterClassExW(&wc);
+    if (!RegisterClassExW(&wc)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_CLASS_ALREADY_EXISTS) {
+            LOG_WARN(L"Register update prompt window class failed (err=%lu)", err);
+            return;
+        }
+    }
     registered = true;
 }
 
@@ -330,7 +362,16 @@ void RegisterUpdatePromptClass(HINSTANCE hInstance) {
 
 UpdatePromptChoice ShowUpdatePromptWindow(HWND owner, MainWindowState* state,
     const EveryZip::ReleaseInfo& release) {
-    if (!state) return UpdatePromptChoice::Cancel;
+    if (!state) {
+        LOG_WARN(L"Show update prompt skipped: state is null");
+        return UpdatePromptChoice::Cancel;
+    }
+
+    LOG_INFO(L"Show update prompt: current=%s latest=%s tag=%s asset=%s",
+        EveryZip::AppVersionWString().c_str(),
+        EveryZip::AppVersionToString(release.version).c_str(),
+        release.tagName.c_str(),
+        release.assetName.c_str());
 
     RegisterUpdatePromptClass(state->hInstance);
 
@@ -364,16 +405,23 @@ UpdatePromptChoice ShowUpdatePromptWindow(HWND owner, MainWindowState* state,
         nullptr,
         state->hInstance,
         &promptState);
-    if (!hDlg) return UpdatePromptChoice::Cancel;
+    if (!hDlg) {
+        LOG_WARN(L"Create update prompt window failed (err=%lu)", GetLastError());
+        return UpdatePromptChoice::Cancel;
+    }
+    LOG_INFO(L"Update prompt window created: hwnd=0x%p", hDlg);
 
     BOOL ownerWasEnabled = FALSE;
     if (owner) {
         ownerWasEnabled = IsWindowEnabled(owner);
         EnableWindow(owner, FALSE);
+        LOG_INFO(L"Update prompt disabled owner window: owner=0x%p wasEnabled=%d",
+            owner, ownerWasEnabled);
     }
 
     ShowWindow(hDlg, SW_SHOW);
     UpdateWindow(hDlg);
+    LOG_INFO(L"Update prompt modal loop started");
 
     MSG msg{};
     while (!promptState.done && IsWindow(hDlg) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -386,7 +434,9 @@ UpdatePromptChoice ShowUpdatePromptWindow(HWND owner, MainWindowState* state,
     if (owner && ownerWasEnabled) {
         EnableWindow(owner, TRUE);
         SetActiveWindow(owner);
+        LOG_INFO(L"Update prompt restored owner window: owner=0x%p", owner);
     }
 
+    LOG_INFO(L"Update prompt returning choice=%s", UpdatePromptChoiceName(promptState.choice));
     return promptState.choice;
 }

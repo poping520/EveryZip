@@ -989,15 +989,41 @@ bool Database::GetArchiveLastUsn(wchar_t driveLetter, USN* outUsn)
 
 bool Database::DeleteArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumber)
 {
-    const char* sql = "DELETE FROM archives WHERE drive_letter = ? AND file_ref_number = ?";
+    if (!db_) {
+        return false;
+    }
+
+    const char* deleteEntriesSql = R"(
+        DELETE FROM entries
+        WHERE archive_id IN (
+            SELECT id FROM archives WHERE drive_letter = ? AND file_ref_number = ?
+        );
+    )";
     sqlite3_stmt* stmt = nullptr;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    int rc = sqlite3_prepare_v2(db_, deleteEntriesSql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK)
     {
         return false;
     }
 
     std::string driveStr(1, (char)driveLetter);
+    sqlite3_bind_text(stmt, 1, driveStr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, fileRefNumber);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        return false;
+    }
+
+    const char* deleteArchiveSql = "DELETE FROM archives WHERE drive_letter = ? AND file_ref_number = ?";
+    stmt = nullptr;
+    rc = sqlite3_prepare_v2(db_, deleteArchiveSql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK)
+    {
+        return false;
+    }
+
     sqlite3_bind_text(stmt, 1, driveStr.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, fileRefNumber);
 
@@ -1058,11 +1084,10 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
     // 列0(名称): 从 entry_path 提取文件名排序
     // 列1(归档文件): 需要 JOIN archives 表
     const char* orderCol = "e.id";
-    bool needJoin = false;
     bool compressedSizeSort = false;
     switch (sortColumn) {
     case 0: orderCol = "SUBSTR(e.entry_path, LENGTH(RTRIM(e.entry_path, REPLACE(e.entry_path, '/', ''))) + 1)"; break;
-    case 1: orderCol = "a.file_path"; needJoin = true; break;
+    case 1: orderCol = "a.file_path"; break;
     case 2: orderCol = "e.entry_path"; break;
     case 3: orderCol = "e.compressed_size"; compressedSizeSort = true; break;
     case 4: orderCol = "e.original_size"; break;
@@ -1073,22 +1098,14 @@ bool Database::QueryEntryIds(const std::wstring& filter, int sortColumn, bool so
 
     std::string sql;
     const bool hasFilter = !filter.empty();
-    if (hasFilter || needJoin) {
-        sql = std::string("SELECT e.id FROM entries e JOIN archives a ON e.archive_id = a.id ");
-        if (hasFilter) {
-            sql += "WHERE e.entry_path LIKE ?1 ESCAPE '\\' ";
-        }
-        if (compressedSizeSort) {
-            sql += std::string("ORDER BY CASE WHEN e.compressed_size < 0 THEN 1 ELSE 0 END ASC, ") + orderCol + " " + orderDir;
-        } else {
-            sql += std::string("ORDER BY ") + orderCol + " " + orderDir;
-        }
+    sql = std::string("SELECT e.id FROM entries e JOIN archives a ON e.archive_id = a.id ");
+    if (hasFilter) {
+        sql += "WHERE e.entry_path LIKE ?1 ESCAPE '\\' ";
+    }
+    if (compressedSizeSort) {
+        sql += std::string("ORDER BY CASE WHEN e.compressed_size < 0 THEN 1 ELSE 0 END ASC, ") + orderCol + " " + orderDir;
     } else {
-        if (compressedSizeSort) {
-            sql = std::string("SELECT e.id FROM entries e ORDER BY CASE WHEN e.compressed_size < 0 THEN 1 ELSE 0 END ASC, ") + orderCol + " " + orderDir;
-        } else {
-            sql = std::string("SELECT e.id FROM entries e ORDER BY ") + orderCol + " " + orderDir;
-        }
+        sql += std::string("ORDER BY ") + orderCol + " " + orderDir;
     }
 
     sqlite3_stmt* stmt = nullptr;
@@ -1157,9 +1174,9 @@ int64_t Database::GetEntryCount(const std::wstring& filter)
     std::string sql;
     const bool hasFilter = !filter.empty();
     if (hasFilter) {
-        sql = "SELECT COUNT(*) FROM entries WHERE entry_path LIKE ?1 ESCAPE '\\'";
+        sql = "SELECT COUNT(*) FROM entries e JOIN archives a ON e.archive_id = a.id WHERE e.entry_path LIKE ?1 ESCAPE '\\'";
     } else {
-        sql = "SELECT COUNT(*) FROM entries";
+        sql = "SELECT COUNT(*) FROM entries e JOIN archives a ON e.archive_id = a.id";
     }
 
     sqlite3_stmt* stmt = nullptr;

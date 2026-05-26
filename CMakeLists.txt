@@ -8,6 +8,29 @@ project(EveryZip LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+add_library(ezdb STATIC
+        src/ezdb/ezdb.c
+        src/ezdb/ezdb.h
+)
+
+target_include_directories(ezdb PUBLIC
+        src/ezdb
+)
+
+if(MSVC)
+    target_compile_options(ezdb PRIVATE /utf-8)
+endif()
+
+add_executable(EzdbBench
+        tools/ezdb_bench.c
+)
+
+target_link_libraries(EzdbBench PRIVATE ezdb)
+
+if(MSVC)
+    target_compile_options(EzdbBench PRIVATE /utf-8)
+endif()
+
 add_executable(EveryZip WIN32
         src/resource.h
         src/strings.rc

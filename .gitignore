@@ -2,3 +2,4 @@
 .vscode
 build
 cmake-build-*
+test_data

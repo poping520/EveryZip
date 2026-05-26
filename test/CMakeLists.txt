@@ -42,6 +42,14 @@ add_executable(TestMftScan
         test_mft_scan.cpp
 )
 
+add_executable(TestFdb
+        test_fdb.c
+)
+
+target_link_libraries(TestFdb PRIVATE
+        psapi
+)
+
 add_executable(TestFileTracker
         test_file_tracker.cpp
         ../external/sqlite/sqlite3.c
@@ -116,6 +124,7 @@ everyzip_configure_test_target(TestSevenZip)
 everyzip_configure_test_target(TestRar)
 everyzip_configure_test_target(TestUsnScan)
 everyzip_configure_test_target(TestMftScan)
+everyzip_configure_test_target(TestFdb)
 everyzip_configure_test_target(TestFileTracker)
 everyzip_configure_test_target(QueryDB)
 everyzip_configure_test_target(TestConfig)

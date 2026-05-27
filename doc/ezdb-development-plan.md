@@ -242,6 +242,8 @@ v4 在此基础上继续优化：
 - file records 从固定 32 字节结构改为 compact varint 磁盘编码。
 - 构建索引不再保留全量 `GramPair` 数组，而是按 gram key 聚合 id list，并分阶段构建 file postings 和 dir postings，避免两套 builder 同时占用内存。
 - UTF-8 token/key 生成使用栈上小缓冲，减少构建期大量小 malloc。
+- 构建 postings 时对 gram key 的哈希桶位做混合散列，并扩大 file/dir builder 桶数，减少高频构建阶段的链表查找冲突。
+- postings id list 利用“按递增 id 扫描输入、单条记录内 gram key 已去重”的性质，写出阶段不再重复排序和去重，显著降低 file index 构建耗时。
 
 ### 4.4 查询流程
 
@@ -467,12 +469,23 @@ section 体积：
 
 构建指标：
 
-| 指标 | v3 Release | v4 Release |
+| 指标 | v3 Release | v4 初版 Release | v4 构建优化后 Release |
+| --- | ---: | ---: | ---: |
+| 记录数 | 5,299,514 | 5,299,514 | 5,299,514 |
+| ezdb 文件 | 576,650,570 bytes / 549.94 MB | 348,730,600 bytes / 332.58 MB | 348,730,600 bytes / 332.58 MB |
+| 构建耗时 | 66,941 ms / 66.94s | 64,141 ms / 64.14s | 26,238 ms / 26.24s |
+| 构建峰值内存 | 4,613.01 MB | 1,841.57 MB | 1,843.72 MB |
+
+构建阶段耗时：
+
+| 阶段 | v4 初版 | v4 构建优化后 |
 | --- | ---: | ---: |
-| 记录数 | 5,299,514 | 5,299,514 |
-| ezdb 文件 | 576,650,570 bytes / 549.94 MB | 348,730,600 bytes / 332.58 MB |
-| 构建耗时 | 66,941 ms / 66.94s | 64,141 ms / 64.14s |
-| 构建峰值内存 | 4,613.01 MB | 1,841.57 MB |
+| parse/tree | 5,135 ms | 5,112 ms |
+| dfs | 56 ms | 48 ms |
+| write base | 926 ms | 972 ms |
+| file index | 55,347 ms | 18,787 ms |
+| dir index | 2,489 ms | 1,173 ms |
+| internal total | 64,141 ms | 26,238 ms |
 
 section 体积：
 
@@ -506,9 +519,9 @@ section 体积：
 - 文件体积从 549.94 MB 降到 332.58 MB，达到 `<400 MB` 目标。
 - 构建峰值内存从 4.61 GB 降到 1.84 GB，达到 `1.5GB~2GB` 目标区间。
 - 常见词、中文词、不存在词搜索继续稳定在 300ms 内。
-- 构建时间从 66.94s 小幅降到 64.14s，仍未达到 45s 目标。
-- 当前新增 build 阶段计时显示 530 万样本主要耗时在 `build_file_index_ms`：约 55.35s；parse/tree 约 5.14s，base write 约 0.93s，dir index 约 2.49s。
-- 下一轮构建加速应集中优化 file index builder：减少每个文件名 gram 生成、hash 查找、id list 追加的成本，优先尝试连续 arena/block postings builder 或真正分桶外排。
+- 构建时间从 66.94s 降到 26.24s，已经明显优于 40s 左右的阶段目标。
+- 构建加速主要来自 file index：`build_file_index_ms` 从约 55.35s 降到 18.79s。核心原因是减少 postings builder 哈希冲突，并去掉写出阶段对已递增 id list 的重复排序。
+- 当前剩余主要成本仍在 file index 和 parse/tree；如果继续追求 20s 以内，可进一步考虑并行 file index 构建、按文件名长度分层的 gram 生成优化，或更连续的 postings id arena。
 
 ## 9. C API 设计
 

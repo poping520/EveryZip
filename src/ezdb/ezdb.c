@@ -605,9 +605,20 @@ static int posting_builder_init(PostingBuilder* builder, uint32_t bucket_count)
     return EZDB_OK;
 }
 
+static uint32_t posting_bucket_for(uint32_t key, uint32_t bucket_count)
+{
+    uint32_t x = key;
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x & (bucket_count - 1u);
+}
+
 static int posting_builder_add(PostingBuilder* builder, uint32_t key, uint32_t id)
 {
-    uint32_t bucket = key & (builder->bucket_count - 1u);
+    uint32_t bucket = posting_bucket_for(key, builder->bucket_count);
     for (uint32_t i = builder->buckets[bucket]; i != UINT32_MAX; i = builder->entries[i].next) {
         PostingBuildEntry* entry = &builder->entries[i];
         if (entry->key == key) {
@@ -981,13 +992,8 @@ static int write_postings(FILE* out, PostingBuilder* builder, uint32_t universe_
     for (uint32_t entry_i = 0; entry_i < builder->entry_count; ++entry_i) {
         PostingBuildEntry* entry = sorted[entry_i];
         if (!entry->count) continue;
-        qsort(entry->ids, entry->count, sizeof(uint32_t), u32_compare);
-        uint32_t unique_count = 0;
-        for (uint32_t i = 0; i < entry->count; ++i) {
-            if (i && entry->ids[i] == entry->ids[i - 1u]) continue;
-            entry->ids[unique_count++] = entry->ids[i];
-        }
-        entry->count = unique_count;
+        /* Source ids are visited in ascending order, and each record de-duplicates gram keys before insertion. */
+        uint32_t unique_count = entry->count;
 
         uint32_t array_size = estimate_array_size(entry->ids, entry->count);
         uint32_t range_count = count_ranges(entry->ids, entry->count);
@@ -1471,7 +1477,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             uint64_t file_postings_size = 0, dir_postings_size = 0;
             if (rc == EZDB_OK) {
                 stage_start_ms = ezdb_now_ms();
-                rc = posting_builder_init(&file_builder, 65536u);
+                rc = posting_builder_init(&file_builder, 262144u);
                 if (rc == EZDB_OK) file_builder_ready = 1;
             }
             if (rc == EZDB_OK) {
@@ -1488,7 +1494,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             }
             if (rc == EZDB_OK) {
                 stage_start_ms = ezdb_now_ms();
-                rc = posting_builder_init(&dir_builder, 65536u);
+                rc = posting_builder_init(&dir_builder, 131072u);
                 if (rc == EZDB_OK) dir_builder_ready = 1;
             }
             if (rc == EZDB_OK) {

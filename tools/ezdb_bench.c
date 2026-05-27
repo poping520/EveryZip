@@ -26,6 +26,7 @@ static void print_usage(void)
     printf("  EzdbBench info <db.ezdb>\n");
     printf("  EzdbBench get <db.ezdb> <id>\n");
     printf("  EzdbBench search <db.ezdb> <keyword> [limit]\n");
+    printf("  EzdbBench open <db.ezdb> [limit]\n");
 }
 
 static void print_memory_usage(const char* prefix)
@@ -56,6 +57,23 @@ static void on_result(const EzdbSearchResult* result, void* user_data)
                (unsigned long long)result->modified_time);
         ++stats->printed;
     }
+}
+
+static int run_search_once(Ezdb* db, const char* keyword, uint32_t limit, const char* memory_prefix)
+{
+    SearchStats stats;
+    memset(&stats, 0, sizeof(stats));
+    double search_start = now_ms();
+    int rc = ezdb_search_path(db, keyword, limit, on_result, &stats);
+    double search_elapsed = now_ms() - search_start;
+    if (rc != 0) {
+        fprintf(stderr, "search failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("search_ms: %.2f\n", search_elapsed);
+    printf("returned: %u\n", stats.total);
+    print_memory_usage(memory_prefix);
+    return 0;
 }
 
 static char* wide_to_utf8(const wchar_t* text)
@@ -100,6 +118,66 @@ static int make_utf8_argv(int* out_argc, char*** out_argv)
     *out_argc = argc;
     *out_argv = argv;
     return 1;
+}
+
+static int read_console_utf8_line(char* out, size_t out_size)
+{
+    if (!out || !out_size) return 0;
+    out[0] = '\0';
+
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (input != INVALID_HANDLE_VALUE && GetConsoleMode(input, &mode)) {
+        wchar_t wide[4096];
+        DWORD read = 0;
+        if (!ReadConsoleW(input, wide, (DWORD)(sizeof(wide) / sizeof(wide[0]) - 1u), &read, NULL)) return 0;
+        wide[read] = L'\0';
+        while (read > 0 && (wide[read - 1u] == L'\n' || wide[read - 1u] == L'\r')) wide[--read] = L'\0';
+        int needed = WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, (int)out_size, NULL, NULL);
+        if (needed <= 0) return 0;
+        out[out_size - 1u] = '\0';
+        return 1;
+    }
+
+    if (!fgets(out, (int)out_size, stdin)) return 0;
+    size_t len = strlen(out);
+    while (len > 0 && (out[len - 1u] == '\n' || out[len - 1u] == '\r')) out[--len] = '\0';
+    return 1;
+}
+
+static char* trim_ascii(char* text)
+{
+    while (*text == ' ' || *text == '\t') ++text;
+    size_t len = strlen(text);
+    while (len > 0 && (text[len - 1u] == ' ' || text[len - 1u] == '\t')) text[--len] = '\0';
+    return text;
+}
+
+static int parse_interactive_query(char* line, char** out_keyword, uint32_t* out_limit, uint32_t default_limit)
+{
+    char* text = trim_ascii(line);
+    *out_keyword = text;
+    *out_limit = default_limit;
+    if (!*text) return 0;
+    if (strcmp(text, "exit") == 0 || strcmp(text, "quit") == 0) return -1;
+
+    char* last_space = NULL;
+    for (char* p = text; *p; ++p) {
+        if (*p == ' ' || *p == '\t') last_space = p;
+    }
+    if (last_space) {
+        char* maybe_limit = trim_ascii(last_space + 1);
+        if (*maybe_limit) {
+            char* end = NULL;
+            unsigned long value = strtoul(maybe_limit, &end, 10);
+            if (end && *end == '\0') {
+                *last_space = '\0';
+                *out_keyword = trim_ascii(text);
+                *out_limit = (uint32_t)value;
+            }
+        }
+    }
+    return **out_keyword ? 1 : 0;
 }
 
 static int run_main(int argc, char** argv)
@@ -201,20 +279,50 @@ static int run_main(int argc, char** argv)
             return 2;
         }
 
-        SearchStats stats;
-        memset(&stats, 0, sizeof(stats));
-        double search_start = now_ms();
-        rc = ezdb_search_path(db, argv[3], limit, on_result, &stats);
-        double search_elapsed = now_ms() - search_start;
+        printf("open_ms: %.2f\n", open_elapsed);
+        rc = run_search_once(db, argv[3], limit, "search");
         if (rc != 0) {
-            fprintf(stderr, "search failed: %s (%d)\n", ezdb_error_message(rc), rc);
             ezdb_close(db);
             return 2;
         }
+        ezdb_close(db);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "open") == 0 || strcmp(argv[1], "interactive") == 0) {
+        if (argc < 3 || argc > 4) {
+            print_usage();
+            return 1;
+        }
+        uint32_t default_limit = argc == 4 ? (uint32_t)strtoul(argv[3], NULL, 10) : 20u;
+        Ezdb* db = NULL;
+        double open_start = now_ms();
+        int rc = ezdb_open(argv[2], &db);
+        double open_elapsed = now_ms() - open_start;
+        if (rc != 0) {
+            fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
         printf("open_ms: %.2f\n", open_elapsed);
-        printf("search_ms: %.2f\n", search_elapsed);
-        printf("returned: %u\n", stats.total);
-        print_memory_usage("search");
+        print_memory_usage("open");
+        printf("Enter keyword or keyword limit. Type exit or quit to leave.\n");
+
+        char line[4096];
+        for (;;) {
+            printf("ezdb> ");
+            fflush(stdout);
+            if (!read_console_utf8_line(line, sizeof(line))) break;
+            char* keyword = NULL;
+            uint32_t limit = default_limit;
+            int parsed = parse_interactive_query(line, &keyword, &limit, default_limit);
+            if (parsed < 0) break;
+            if (parsed == 0) continue;
+            rc = run_search_once(db, keyword, limit, "open_search");
+            if (rc != 0) {
+                ezdb_close(db);
+                return 2;
+            }
+        }
         ezdb_close(db);
         return 0;
     }

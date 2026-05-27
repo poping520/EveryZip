@@ -26,7 +26,6 @@
 
 #define EZDB_MAGIC "EZDB0005"
 #define EZDB_VERSION 5u
-#define EZDB_FLAG_DELETED 1u
 #define EZDB_GRAM1 1u
 #define EZDB_GRAM2 2u
 #define EZDB_GRAM3 3u
@@ -182,7 +181,21 @@ struct Ezdb {
     FILE* fp;
     char* path;
     EzdbHeader header;
-    EzdbDiskFile* files;
+    uint32_t* file_parent_dir_ids;
+    uint32_t* file_name_offsets;
+    uint16_t* file_name_lens;
+    uint32_t* file_sizes32;
+    uint32_t* file_size_overflow_ids;
+    uint64_t* file_size_overflow_values;
+    uint32_t file_size_overflow_count;
+    uint32_t file_size_overflow_id_cap;
+    uint32_t file_size_overflow_value_cap;
+    uint32_t* file_modified_times32;
+    uint32_t* file_mtime_overflow_ids;
+    uint64_t* file_mtime_overflow_values;
+    uint32_t file_mtime_overflow_count;
+    uint32_t file_mtime_overflow_id_cap;
+    uint32_t file_mtime_overflow_value_cap;
     EzdbDiskDir* dirs;
     char* strings;
     EzdbDiskIndex* file_index;
@@ -860,29 +873,169 @@ static int encode_file_records_compact(const BuildFile* files, uint32_t file_cou
     return EZDB_OK;
 }
 
-static int read_file_records_compact_mem(const unsigned char* data, uint64_t encoded_size, EzdbDiskFile* files, uint32_t file_count)
+typedef struct SectionVarReader {
+    FILE* fp;
+    uint64_t remaining;
+    int compressed;
+    z_stream z;
+    int z_ready;
+    unsigned char in[65536];
+    unsigned char out[65536];
+    uint32_t pos;
+    uint32_t end;
+} SectionVarReader;
+
+static void section_var_reader_close(SectionVarReader* reader)
 {
-    const unsigned char* p = data;
-    const unsigned char* end = data + encoded_size;
+    if (reader->z_ready) inflateEnd(&reader->z);
+    reader->z_ready = 0;
+}
+
+static int section_var_reader_init(SectionVarReader* reader, FILE* fp, uint64_t offset, uint64_t encoded_size, uint32_t flags)
+{
+    memset(reader, 0, sizeof(*reader));
+    if (fseek(fp, (long)offset, SEEK_SET) != 0) return EZDB_ERR_IO;
+    reader->fp = fp;
+    reader->remaining = encoded_size;
+    reader->compressed = (flags & EZDB_SECTION_COMPRESSED) != 0;
+    if (reader->compressed) {
+        int zrc = inflateInit(&reader->z);
+        if (zrc != Z_OK) return EZDB_ERR_FORMAT;
+        reader->z_ready = 1;
+    }
+    return EZDB_OK;
+}
+
+static int section_var_reader_fill(SectionVarReader* reader)
+{
+    reader->pos = 0;
+    reader->end = 0;
+    if (!reader->compressed) {
+        if (!reader->remaining) return EZDB_ERR_IO;
+        uint32_t want = reader->remaining > sizeof(reader->out) ? (uint32_t)sizeof(reader->out) : (uint32_t)reader->remaining;
+        if (fread(reader->out, 1, want, reader->fp) != want) return EZDB_ERR_IO;
+        reader->remaining -= want;
+        reader->end = want;
+        return EZDB_OK;
+    }
+
+    while (reader->end == 0) {
+        if (reader->z.avail_in == 0 && reader->remaining) {
+            uint32_t want = reader->remaining > sizeof(reader->in) ? (uint32_t)sizeof(reader->in) : (uint32_t)reader->remaining;
+            if (fread(reader->in, 1, want, reader->fp) != want) return EZDB_ERR_IO;
+            reader->remaining -= want;
+            reader->z.next_in = reader->in;
+            reader->z.avail_in = want;
+        }
+        reader->z.next_out = reader->out;
+        reader->z.avail_out = (uInt)sizeof(reader->out);
+        int zrc = inflate(&reader->z, reader->remaining || reader->z.avail_in ? Z_NO_FLUSH : Z_FINISH);
+        reader->end = (uint32_t)(sizeof(reader->out) - reader->z.avail_out);
+        if (reader->end) return EZDB_OK;
+        if (zrc == Z_STREAM_END) return EZDB_ERR_IO;
+        if (zrc != Z_OK && zrc != Z_BUF_ERROR) return EZDB_ERR_FORMAT;
+        if (!reader->remaining && reader->z.avail_in == 0 && zrc == Z_BUF_ERROR) return EZDB_ERR_IO;
+    }
+    return EZDB_OK;
+}
+
+static int section_var_reader_byte(SectionVarReader* reader, unsigned char* out)
+{
+    if (reader->pos >= reader->end) {
+        int rc = section_var_reader_fill(reader);
+        if (rc != EZDB_OK) return rc;
+    }
+    *out = reader->out[reader->pos++];
+    return EZDB_OK;
+}
+
+static int section_var_reader_varuint(SectionVarReader* reader, uint32_t* out)
+{
+    uint32_t value = 0;
+    int shift = 0;
+    for (int i = 0; i < 5; ++i) {
+        unsigned char ch = 0;
+        int rc = section_var_reader_byte(reader, &ch);
+        if (rc != EZDB_OK) return rc;
+        value |= (uint32_t)(ch & 0x7fu) << shift;
+        if (!(ch & 0x80u)) {
+            *out = value;
+            return EZDB_OK;
+        }
+        shift += 7;
+    }
+    return EZDB_ERR_FORMAT;
+}
+
+static int section_var_reader_varuint64(SectionVarReader* reader, uint64_t* out)
+{
+    uint64_t value = 0;
+    int shift = 0;
+    for (int i = 0; i < 10; ++i) {
+        unsigned char ch = 0;
+        int rc = section_var_reader_byte(reader, &ch);
+        if (rc != EZDB_OK) return rc;
+        value |= (uint64_t)(ch & 0x7fu) << shift;
+        if (!(ch & 0x80u)) {
+            *out = value;
+            return EZDB_OK;
+        }
+        shift += 7;
+    }
+    return EZDB_ERR_FORMAT;
+}
+
+static int store_file_record(Ezdb* db, uint32_t id, uint32_t parent_dir, uint32_t name_offset, uint32_t name_len, uint64_t size, uint64_t modified_time)
+{
+    if (name_len > UINT16_MAX) return EZDB_ERR_FORMAT;
+    db->file_parent_dir_ids[id] = parent_dir;
+    db->file_name_offsets[id] = name_offset;
+    db->file_name_lens[id] = (uint16_t)name_len;
+    if (size <= UINT32_MAX) {
+        db->file_sizes32[id] = (uint32_t)size;
+    } else {
+        if (ensure_capacity((void**)&db->file_size_overflow_ids, sizeof(uint32_t), &db->file_size_overflow_id_cap, db->file_size_overflow_count + 1) != EZDB_OK ||
+            ensure_capacity((void**)&db->file_size_overflow_values, sizeof(uint64_t), &db->file_size_overflow_value_cap, db->file_size_overflow_count + 1) != EZDB_OK) {
+            return EZDB_ERR_MEMORY;
+        }
+        db->file_sizes32[id] = UINT32_MAX;
+        db->file_size_overflow_ids[db->file_size_overflow_count] = id;
+        db->file_size_overflow_values[db->file_size_overflow_count] = size;
+        ++db->file_size_overflow_count;
+    }
+    if (modified_time <= UINT32_MAX) {
+        db->file_modified_times32[id] = (uint32_t)modified_time;
+    } else {
+        if (ensure_capacity((void**)&db->file_mtime_overflow_ids, sizeof(uint32_t), &db->file_mtime_overflow_id_cap, db->file_mtime_overflow_count + 1) != EZDB_OK ||
+            ensure_capacity((void**)&db->file_mtime_overflow_values, sizeof(uint64_t), &db->file_mtime_overflow_value_cap, db->file_mtime_overflow_count + 1) != EZDB_OK) {
+            return EZDB_ERR_MEMORY;
+        }
+        db->file_modified_times32[id] = UINT32_MAX;
+        db->file_mtime_overflow_ids[db->file_mtime_overflow_count] = id;
+        db->file_mtime_overflow_values[db->file_mtime_overflow_count] = modified_time;
+        ++db->file_mtime_overflow_count;
+    }
+    return EZDB_OK;
+}
+
+static int read_file_records_compact_stream(FILE* fp, uint64_t offset, uint64_t encoded_size, uint32_t flags, Ezdb* db, uint32_t file_count)
+{
+    SectionVarReader reader;
+    int rc = section_var_reader_init(&reader, fp, offset, encoded_size, flags);
+    if (rc != EZDB_OK) return rc;
     for (uint32_t i = 0; i < file_count; ++i) {
         uint32_t parent_dir = 0, name_offset = 0, name_len = 0;
         uint64_t size = 0, modified_time = 0;
-        int rc = read_mem_varuint(&p, end, &parent_dir);
-        if (rc == EZDB_OK) rc = read_mem_varuint(&p, end, &name_offset);
-        if (rc == EZDB_OK) rc = read_mem_varuint(&p, end, &name_len);
-        if (rc == EZDB_OK) rc = read_mem_varuint64(&p, end, &size);
-        if (rc == EZDB_OK) rc = read_mem_varuint64(&p, end, &modified_time);
-        if (rc != EZDB_OK) {
-            return rc;
-        }
-        files[i].parent_dir_id = parent_dir;
-        files[i].name_offset = name_offset;
-        files[i].name_len = name_len;
-        files[i].flags = 0;
-        files[i].size = size;
-        files[i].modified_time = modified_time;
+        rc = section_var_reader_varuint(&reader, &parent_dir);
+        if (rc == EZDB_OK) rc = section_var_reader_varuint(&reader, &name_offset);
+        if (rc == EZDB_OK) rc = section_var_reader_varuint(&reader, &name_len);
+        if (rc == EZDB_OK) rc = section_var_reader_varuint64(&reader, &size);
+        if (rc == EZDB_OK) rc = section_var_reader_varuint64(&reader, &modified_time);
+        if (rc == EZDB_OK) rc = store_file_record(db, i, parent_dir, name_offset, name_len, size, modified_time);
+        if (rc != EZDB_OK) break;
     }
-    return EZDB_OK;
+    section_var_reader_close(&reader);
+    return rc;
 }
 
 static int write_bytes(FILE* fp, const void* data, uint32_t size, uint64_t* written)
@@ -1278,14 +1431,46 @@ static uint32_t dfs_assign(BuildDir* dirs, BuildFile* old_files, BuildFile* new_
     return next_file;
 }
 
-static const char* file_name(Ezdb* db, const EzdbDiskFile* f)
-{
-    return db->strings + f->name_offset;
-}
-
 static const char* dir_name(Ezdb* db, const EzdbDiskDir* d)
 {
     return db->strings + d->name_offset;
+}
+
+static const char* file_name_by_id(Ezdb* db, uint32_t id)
+{
+    return db->strings + db->file_name_offsets[id];
+}
+
+static uint64_t lookup_u64_overflow(uint32_t id, uint32_t inline_value, const uint32_t* ids, const uint64_t* values, uint32_t count)
+{
+    if (inline_value != UINT32_MAX) return inline_value;
+    uint32_t lo = 0;
+    uint32_t hi = count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (ids[mid] < id) lo = mid + 1u;
+        else hi = mid;
+    }
+    if (lo < count && ids[lo] == id) return values[lo];
+    return inline_value;
+}
+
+static uint64_t file_size_by_id(Ezdb* db, uint32_t id)
+{
+    return lookup_u64_overflow(id,
+                               db->file_sizes32[id],
+                               db->file_size_overflow_ids,
+                               db->file_size_overflow_values,
+                               db->file_size_overflow_count);
+}
+
+static uint64_t file_modified_time_by_id(Ezdb* db, uint32_t id)
+{
+    return lookup_u64_overflow(id,
+                               db->file_modified_times32[id],
+                               db->file_mtime_overflow_ids,
+                               db->file_mtime_overflow_values,
+                               db->file_mtime_overflow_count);
 }
 
 static int build_dir_path(Ezdb* db, uint32_t dir_id, char** out, uint32_t* out_len)
@@ -1334,13 +1519,13 @@ static int build_result_path(Ezdb* db, uint32_t id, EzdbSearchResult* out_result
     if (!db || !out_result) return EZDB_ERR_ARG;
     if (id >= db->header.file_count) return EZDB_ERR_NOT_FOUND;
     memset(out_result, 0, sizeof(*out_result));
-    EzdbDiskFile* f = &db->files[id];
-    if (f->flags & EZDB_FLAG_DELETED) return EZDB_ERR_NOT_FOUND;
     char* dir_path = NULL;
     uint32_t dir_len = 0;
-    int rc = build_dir_path(db, f->parent_dir_id, &dir_path, &dir_len);
+    uint32_t name_len = db->file_name_lens[id];
+    const char* name = file_name_by_id(db, id);
+    int rc = build_dir_path(db, db->file_parent_dir_ids[id], &dir_path, &dir_len);
     if (rc != EZDB_OK) return rc;
-    uint32_t path_len = dir_len + (dir_len ? 1u : 0u) + f->name_len;
+    uint32_t path_len = dir_len + (dir_len ? 1u : 0u) + name_len;
     char* path = (char*)malloc((size_t)path_len + 1u);
     if (!path) {
         free(dir_path);
@@ -1349,15 +1534,16 @@ static int build_result_path(Ezdb* db, uint32_t id, EzdbSearchResult* out_result
     if (dir_len) {
         memcpy(path, dir_path, dir_len);
         path[dir_len] = '\\';
-        memcpy(path + dir_len + 1u, file_name(db, f), f->name_len + 1u);
+        memcpy(path + dir_len + 1u, name, name_len);
     } else {
-        memcpy(path, file_name(db, f), f->name_len + 1u);
+        memcpy(path, name, name_len);
     }
+    path[path_len] = '\0';
     free(dir_path);
     out_result->id = id;
     out_result->path = path;
-    out_result->size = f->size;
-    out_result->modified_time = f->modified_time;
+    out_result->size = file_size_by_id(db, id);
+    out_result->modified_time = file_modified_time_by_id(db, id);
     return EZDB_OK;
 }
 
@@ -1376,9 +1562,7 @@ static int contains_ascii_casefold_bytes(const char* text, size_t text_len, cons
 
 static int record_contains_keyword(Ezdb* db, uint32_t id, const char* keyword, size_t key_len)
 {
-    const EzdbDiskFile* f = &db->files[id];
-    if (f->flags & EZDB_FLAG_DELETED) return 0;
-    if (contains_ascii_casefold_bytes(file_name(db, f), f->name_len, keyword, key_len)) return 1;
+    if (contains_ascii_casefold_bytes(file_name_by_id(db, id), db->file_name_lens[id], keyword, key_len)) return 1;
     char* path = NULL;
     EzdbSearchResult result;
     if (build_result_path(db, id, &result) != EZDB_OK) return 0;
@@ -1807,23 +1991,34 @@ int ezdb_open(const char* path, Ezdb** out_db)
     if (!db->header.file_records_raw_size) db->header.file_records_raw_size = db->header.file_records_size;
     if (!db->header.dir_records_raw_size) db->header.dir_records_raw_size = db->header.dir_records_size;
     if (!db->header.strings_raw_size) db->header.strings_raw_size = db->header.strings_size;
-    db->files = (EzdbDiskFile*)malloc(sizeof(EzdbDiskFile) * (size_t)db->header.file_count);
+    db->file_parent_dir_ids = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)db->header.file_count);
+    db->file_name_offsets = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)db->header.file_count);
+    db->file_name_lens = (uint16_t*)malloc(sizeof(uint16_t) * (size_t)db->header.file_count);
+    db->file_sizes32 = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)db->header.file_count);
+    db->file_modified_times32 = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)db->header.file_count);
     db->dirs = (EzdbDiskDir*)malloc((size_t)db->header.dir_records_raw_size);
     db->strings = (char*)malloc((size_t)db->header.strings_raw_size + 1u);
     db->file_index = (EzdbDiskIndex*)malloc(sizeof(EzdbDiskIndex) * (size_t)db->header.file_index_count);
     db->dir_index = (EzdbDiskIndex*)malloc(sizeof(EzdbDiskIndex) * (size_t)db->header.dir_index_count);
-    if ((!db->files && db->header.file_count) || (!db->dirs && db->header.dir_records_raw_size) ||
+    if ((!db->file_parent_dir_ids && db->header.file_count) ||
+        (!db->file_name_offsets && db->header.file_count) ||
+        (!db->file_name_lens && db->header.file_count) ||
+        (!db->file_sizes32 && db->header.file_count) ||
+        (!db->file_modified_times32 && db->header.file_count) ||
+        (!db->dirs && db->header.dir_records_raw_size) ||
         (!db->strings && db->header.strings_raw_size) || (!db->file_index && db->header.file_index_count) ||
         (!db->dir_index && db->header.dir_index_count)) {
         ezdb_close(db);
         return EZDB_ERR_MEMORY;
     }
-    unsigned char* file_records_data = NULL;
-    int rc = read_section_payload(fp, db->header.file_records_offset, db->header.file_records_size, db->header.file_records_raw_size, db->header.file_records_flags, &file_records_data);
-    if (rc == EZDB_OK) rc = read_file_records_compact_mem(file_records_data, db->header.file_records_raw_size, db->files, (uint32_t)db->header.file_count);
+    int rc = read_file_records_compact_stream(fp,
+                                              db->header.file_records_offset,
+                                              db->header.file_records_size,
+                                              db->header.file_records_flags,
+                                              db,
+                                              (uint32_t)db->header.file_count);
     if (rc == EZDB_OK) rc = read_section_into(fp, db->header.dir_records_offset, db->header.dir_records_size, db->header.dir_records_raw_size, db->header.dir_records_flags, (unsigned char*)db->dirs);
     if (rc == EZDB_OK) rc = read_section_into(fp, db->header.strings_offset, db->header.strings_size, db->header.strings_raw_size, db->header.strings_flags, (unsigned char*)db->strings);
-    free(file_records_data);
     if (rc != EZDB_OK) {
         ezdb_close(db);
         return rc;
@@ -1845,7 +2040,15 @@ void ezdb_close(Ezdb* db)
     if (!db) return;
     if (db->fp) fclose(db->fp);
     free(db->path);
-    free(db->files);
+    free(db->file_parent_dir_ids);
+    free(db->file_name_offsets);
+    free(db->file_name_lens);
+    free(db->file_sizes32);
+    free(db->file_size_overflow_ids);
+    free(db->file_size_overflow_values);
+    free(db->file_modified_times32);
+    free(db->file_mtime_overflow_ids);
+    free(db->file_mtime_overflow_values);
     free(db->dirs);
     free(db->strings);
     free(db->file_index);
@@ -1919,14 +2122,15 @@ int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCa
         return rc;
     }
 
-    unsigned char* seen = (unsigned char*)calloc((size_t)db->header.file_count, 1);
+    size_t seen_size = ((size_t)db->header.file_count + 7u) / 8u;
+    unsigned char* seen = (unsigned char*)calloc(seen_size ? seen_size : 1u, 1);
     if (!seen && db->header.file_count) {
         free(file_ids);
         free(dir_ids);
         return EZDB_ERR_MEMORY;
     }
     for (uint32_t i = 0; i < file_count; ++i) {
-        if (file_ids[i] < db->header.file_count) seen[file_ids[i]] = 1;
+        if (file_ids[i] < db->header.file_count) seen[file_ids[i] >> 3u] |= (unsigned char)(1u << (file_ids[i] & 7u));
     }
     for (uint32_t i = 0; i < dir_count; ++i) {
         uint32_t dir_id = dir_ids[i];
@@ -1934,13 +2138,13 @@ int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCa
         EzdbDiskDir* d = &db->dirs[dir_id];
         uint32_t end = d->first_file_id + d->file_count;
         if (end > db->header.file_count) end = (uint32_t)db->header.file_count;
-        for (uint32_t id = d->first_file_id; id < end; ++id) seen[id] = 1;
+        for (uint32_t id = d->first_file_id; id < end; ++id) seen[id >> 3u] |= (unsigned char)(1u << (id & 7u));
     }
 
     uint32_t emitted = 0;
     for (uint32_t id = 0; id < db->header.file_count; ++id) {
         if (limit && emitted >= limit) break;
-        if (!seen[id]) continue;
+        if (!(seen[id >> 3u] & (unsigned char)(1u << (id & 7u)))) continue;
         if (key_len > EZDB_GRAM3 && !record_contains_keyword(db, id, keyword, key_len)) continue;
         EzdbSearchResult result;
         rc = build_result_path(db, id, &result);

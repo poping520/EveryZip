@@ -385,12 +385,20 @@ v4 已完成的空间优化：
 2. postings 引入 array/range/bitset 自适应容器。
 3. 构建阶段分阶段释放 postings builder，降低峰值内存。
 
+v5 已完成的构建峰值内存优化：
+
+1. DFS 重排完成后立即释放旧 file 顺序数组，避免新旧 `BuildFile` 同时保留到 build 结束。
+2. base section 写出后提前释放目录哈希表和字符串去重哈希表，避免与 postings builder 峰值叠加。
+3. `BuildFile` 去掉构建后未使用字段，并在 records 写出后释放完整 `BuildFile[]`，只保留 `file_name_offset[]` 给文件名索引阶段使用。
+4. postings builder 改为两遍构建：第一遍统计每个 gram 的 postings 数量，第二遍填充到一整块精确大小的连续 `id_block`，减少大量小块 `realloc`、容量翻倍空洞和堆碎片。
+5. count/fill 阶段不再对每条记录的 gram key 排序，依赖 builder 侧同一 id 去重，抵消两遍扫描带来的额外 CPU 成本。
+
 下一阶段空间优化优先级：
 
 1. size/mtime 使用 block base-delta 或按页懒加载，进一步降低 records 常驻内存。
 2. 对字符串池增加块压缩或按页缓存，降低 names 常驻内存。
-3. postings builder 改为更连续的 arena/block 存储，进一步降低构建时间。
-4. postings 查询支持更细粒度的懒展开，减少高频短词 `limit > 0` 的候选标记成本。
+3. postings 查询支持更细粒度的懒展开，减少高频短词 `limit > 0` 的候选标记成本。
+4. 继续压缩 build 阶段目录树和字符串池辅助结构，目标是在 530 万样本上把 build 峰值内存压到 1GB 左右。
 
 ## 8. 性能目标与验证方法
 
@@ -614,6 +622,67 @@ v5 section 占比：
 - cold open 从约 100ms 增加到约 400ms；file records 改为流式解码后，打开峰值 working set 从约 319 MB 降到约 176-182 MB。
 - 稳定查询 private 从 v5 初版约 233 MB 降到约 163 MB，主要来自文件记录列式常驻、`size/mtime` 32 位主体 + overflow 表，以及搜索 `seen` bitset。
 
+#### 530 万样本 v5 build 峰值内存优化结果（当前电脑）
+
+测试命令使用 `cmake-build-codex-release\EzdbBench.exe`，输入为 `test_data\files_5300K.txt`，输出为 `test_data\files_5300K_v5_memopt8.ezdb`。本节数据来自当前电脑；由于 CPU、磁盘和缓存状态不同，耗时不能直接等同于上一节来自另一台电脑的 v5 Release 数据。
+
+构建指标：
+
+| 指标 | 当前电脑 v5 优化前 | 当前电脑 v5 build 内存优化后 |
+| --- | ---: | ---: |
+| 记录数 | 5,299,514 | 5,299,514 |
+| 原始 txt | 777,734,595 bytes / 741.71 MB | 777,734,595 bytes / 741.71 MB |
+| ezdb 文件 | 146,861,276 bytes / 140.06 MB | 146,861,276 bytes / 140.06 MB |
+| 构建耗时 | 46,409 ms / 46.41s | 35,108 ms / 35.11s |
+| 构建峰值内存 | 1,844.48 MB | 1,244.00 MB |
+| 构建结束 working set | 9.68 MB | 6.62 MB |
+| 构建结束 private | 5.26 MB | 1.80 MB |
+
+构建阶段耗时：
+
+| 阶段 | 优化前 | 优化后 |
+| --- | ---: | ---: |
+| parse/tree | 9,911 ms | 10,238 ms |
+| dfs | 90 ms | 69 ms |
+| write base | 2,501 ms | 2,761 ms |
+| file index | 31,609 ms | 20,215 ms |
+| dir index | 1,975 ms | 1,716 ms |
+| internal total | 46,409 ms | 35,108 ms |
+
+section 体积保持不变：
+
+| section | bytes | MB |
+| --- | ---: | ---: |
+| records | 31,149,103 | 29.71 |
+| dirs | 4,241,127 | 4.04 |
+| names | 12,151,677 | 11.59 |
+| index | 3,390,336 | 3.23 |
+| postings | 95,928,841 | 91.49 |
+
+打开数据库后的常驻内存：
+
+| 指标 | 数值 |
+| --- | ---: |
+| info working set | 166.71 MB |
+| info peak working set | 175.05 MB |
+| info private | 162.07 MB |
+
+抽查查询性能：
+
+| 关键词 | open_ms | search_ms | returned | private MB |
+| --- | ---: | ---: | ---: | ---: |
+| `index.js` | 844 | 27 | 20 | 163.58 |
+| `设计` | 840 | 7 | 3 | 162.70 |
+
+完整查询矩阵也已验证，常见词、中文词、不存在词仍保持原有热搜索水平。`a limit=0` 仍主要受全量返回 5,238,437 条结果影响。
+
+结论：
+
+- build 峰值内存从 1,844.48 MB 降到 1,244.00 MB，减少约 600 MB，降幅约 32.5%。
+- ezdb 文件体积、section 体积和打开后的常驻内存保持不变。
+- 当前电脑 build 总耗时从 46.41s 降到 35.11s，没有为了降内存牺牲构建速度。
+- 收益主要来自 postings builder 的连续精确 id 存储，以及更早释放构建阶段临时结构。
+
 ## 9. C API 设计
 
 当前公开接口位于 `src/ezdb/ezdb.h`。
@@ -679,7 +748,7 @@ API 设计原则：
 - 目录索引基于路径组件，不为任意跨组件子串单独建索引。
 - 高频 1 字节关键词可能返回接近全库，耗时主要由候选确认和结果回调决定。
 - 没有崩溃恢复、校验和、compact、并发读写控制。
-- 530 万 v5 Release 基准已完成；后续重点是进一步降低字符串池/索引常驻内存，并优化高频短词 `limit > 0` 的候选展开。
+- 530 万 v5 Release 基准已完成；build 峰值内存已从当前电脑约 1.84 GB 降到约 1.24 GB。后续重点是进一步降低字符串池/索引常驻内存，并优化高频短词 `limit > 0` 的候选展开。
 
 ## 12. 后续迭代路线
 
@@ -699,7 +768,7 @@ API 设计原则：
 - 对比 txt、SQLite 或现有 EveryZip 查询路径。
 - 根据真实瓶颈决定优先优化 records、names、postings 或高频短词搜索。
 
-当前已完成 `files_5300K.txt` 的 Release 基准。下一步重点是字符串池/索引内存压缩，以及高频短词候选展开优化。
+当前已完成 `files_5300K.txt` 的 Release 基准，并完成一轮 build 峰值内存优化。下一步重点是字符串池/索引常驻内存压缩，以及高频短词候选展开优化。
 
 ### 阶段 3：增删改与 compact
 
@@ -711,6 +780,7 @@ API 设计原则：
 ### 阶段 4：空间和内存优化
 
 - records 已完成磁盘 varint 和运行时列式常驻。
+- build 阶段已完成 postings builder 连续精确 id 存储、临时哈希表提前释放、`BuildFile` 瘦身和提前释放。
 - names 去重或块压缩。
 - 目录 component trie。
 - postings 分块和 mmap。

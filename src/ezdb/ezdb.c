@@ -131,7 +131,6 @@ typedef struct BuildDir {
 typedef struct BuildFile {
     uint32_t name_offset;
     uint32_t name_len;
-    uint32_t old_dir;
     uint32_t parent_dir;
     uint32_t next_in_dir;
     uint64_t size;
@@ -171,6 +170,7 @@ typedef struct PostingBuilder {
     uint32_t entry_cap;
     uint32_t* buckets;
     uint32_t bucket_count;
+    uint32_t* id_block;
 } PostingBuilder;
 
 typedef struct QueryIndex {
@@ -243,10 +243,12 @@ static int ensure_capacity(void** data, size_t elem_size, uint32_t* capacity, ui
 static int ensure_capacity_small(void** data, size_t elem_size, uint32_t* capacity, uint32_t needed)
 {
     if (*capacity >= needed) return EZDB_OK;
-    uint32_t next = *capacity ? *capacity : 16u;
+    uint32_t next = *capacity ? *capacity : 4u;
     while (next < needed) {
-        if (next > UINT32_MAX / 2u) return EZDB_ERR_MEMORY;
-        next *= 2u;
+        uint32_t grow = next < 1024u ? next : next / 2u;
+        if (!grow) grow = 1u;
+        if (next > UINT32_MAX - grow) return EZDB_ERR_MEMORY;
+        next += grow;
     }
     void* new_data = realloc(*data, elem_size * (size_t)next);
     if (!new_data) return EZDB_ERR_MEMORY;
@@ -567,7 +569,6 @@ static int append_file(BuildFile** files,
     memset(f, 0, sizeof(*f));
     f->name_offset = name_offset;
     f->name_len = name_len;
-    f->old_dir = dir_id;
     f->parent_dir = dir_id;
     f->size = size;
     f->modified_time = modified_time;
@@ -622,7 +623,11 @@ static int query_index_compare(const void* a, const void* b)
 static void posting_builder_free(PostingBuilder* builder)
 {
     if (!builder) return;
-    for (uint32_t i = 0; i < builder->entry_count; ++i) free(builder->entries[i].ids);
+    if (builder->id_block) {
+        free(builder->id_block);
+    } else {
+        for (uint32_t i = 0; i < builder->entry_count; ++i) free(builder->entries[i].ids);
+    }
     free(builder->entries);
     free(builder->buckets);
     memset(builder, 0, sizeof(*builder));
@@ -676,7 +681,74 @@ static int posting_builder_add(PostingBuilder* builder, uint32_t key, uint32_t i
     return EZDB_OK;
 }
 
-static int add_text_grams(PostingBuilder* builder, const char* text, uint32_t id)
+static PostingBuildEntry* posting_builder_find(PostingBuilder* builder, uint32_t key)
+{
+    uint32_t bucket = posting_bucket_for(key, builder->bucket_count);
+    for (uint32_t i = builder->buckets[bucket]; i != UINT32_MAX; i = builder->entries[i].next) {
+        PostingBuildEntry* entry = &builder->entries[i];
+        if (entry->key == key) return entry;
+    }
+    return NULL;
+}
+
+static int posting_builder_count_id(PostingBuilder* builder, uint32_t key, uint32_t id)
+{
+    uint32_t bucket = posting_bucket_for(key, builder->bucket_count);
+    for (uint32_t i = builder->buckets[bucket]; i != UINT32_MAX; i = builder->entries[i].next) {
+        PostingBuildEntry* entry = &builder->entries[i];
+        if (entry->key == key) {
+            if (entry->count && entry->cap == id) return EZDB_OK;
+            entry->count += 1u;
+            entry->cap = id;
+            return EZDB_OK;
+        }
+    }
+
+    if (ensure_capacity((void**)&builder->entries, sizeof(PostingBuildEntry), &builder->entry_cap, builder->entry_count + 1u) != EZDB_OK) {
+        return EZDB_ERR_MEMORY;
+    }
+    PostingBuildEntry* entry = &builder->entries[builder->entry_count];
+    memset(entry, 0, sizeof(*entry));
+    entry->key = key;
+    entry->count = 1u;
+    entry->cap = id;
+    entry->next = builder->buckets[bucket];
+    builder->buckets[bucket] = builder->entry_count;
+    builder->entry_count += 1u;
+    return EZDB_OK;
+}
+
+static int posting_builder_prepare_fill(PostingBuilder* builder)
+{
+    uint64_t total_ids = 0;
+    for (uint32_t i = 0; i < builder->entry_count; ++i) {
+        total_ids += builder->entries[i].count;
+    }
+    if (total_ids > (uint64_t)(SIZE_MAX / sizeof(uint32_t))) return EZDB_ERR_MEMORY;
+
+    builder->id_block = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)(total_ids ? total_ids : 1u));
+    if (!builder->id_block) return EZDB_ERR_MEMORY;
+
+    uint64_t offset = 0;
+    for (uint32_t i = 0; i < builder->entry_count; ++i) {
+        builder->entries[i].ids = builder->id_block + offset;
+        offset += builder->entries[i].count;
+        builder->entries[i].cap = 0;
+    }
+    return EZDB_OK;
+}
+
+static int posting_builder_fill_id(PostingBuilder* builder, uint32_t key, uint32_t id)
+{
+    PostingBuildEntry* entry = posting_builder_find(builder, key);
+    if (!entry) return EZDB_ERR_FORMAT;
+    if (entry->cap && entry->ids[entry->cap - 1u] == id) return EZDB_OK;
+    if (entry->cap >= entry->count) return EZDB_ERR_FORMAT;
+    entry->ids[entry->cap++] = id;
+    return EZDB_OK;
+}
+
+static int add_text_grams_to_builder(PostingBuilder* builder, const char* text, uint32_t id, int mode)
 {
     uint32_t len = (uint32_t)strlen(text);
     if (!len) return EZDB_OK;
@@ -736,18 +808,43 @@ static int add_text_grams(PostingBuilder* builder, const char* text, uint32_t id
     }
     if (offsets != stack_offsets) free(offsets);
     if (lens != stack_lens) free(lens);
-    qsort(keys, key_count, sizeof(uint32_t), u32_compare);
+    if (mode == 0) qsort(keys, key_count, sizeof(uint32_t), u32_compare);
     uint32_t last = UINT32_MAX;
     for (uint32_t i = 0; i < key_count; ++i) {
-        if (keys[i] == last) continue;
-        last = keys[i];
-        if (posting_builder_add(builder, keys[i], id) != EZDB_OK) {
+        if (mode == 0) {
+            if (keys[i] == last) continue;
+            last = keys[i];
+        }
+        int rc = EZDB_OK;
+        if (mode == 1) {
+            rc = posting_builder_count_id(builder, keys[i], id);
+        } else if (mode == 2) {
+            rc = posting_builder_fill_id(builder, keys[i], id);
+        } else {
+            rc = posting_builder_add(builder, keys[i], id);
+        }
+        if (rc != EZDB_OK) {
             if (keys != stack_keys) free(keys);
-            return EZDB_ERR_MEMORY;
+            return rc;
         }
     }
     if (keys != stack_keys) free(keys);
     return EZDB_OK;
+}
+
+static int add_text_grams(PostingBuilder* builder, const char* text, uint32_t id)
+{
+    return add_text_grams_to_builder(builder, text, id, 0);
+}
+
+static int count_text_grams(PostingBuilder* builder, const char* text, uint32_t id)
+{
+    return add_text_grams_to_builder(builder, text, id, 1);
+}
+
+static int fill_text_grams(PostingBuilder* builder, const char* text, uint32_t id)
+{
+    return add_text_grams_to_builder(builder, text, id, 2);
 }
 
 static int append_varuint(unsigned char** data, uint32_t* size, uint32_t* cap, uint32_t value)
@@ -1767,6 +1864,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
     StringHashEntry* string_entries = NULL;
     uint32_t string_entry_count = 0, string_entry_cap = 0, string_bucket_count = 0;
     uint32_t* string_buckets = NULL;
+    uint32_t* file_name_offsets = NULL;
     PostingBuilder file_builder;
     PostingBuilder dir_builder;
     int file_builder_ready = 0;
@@ -1829,6 +1927,8 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
         stage_start_ms = ezdb_now_ms();
         uint32_t assigned = dfs_assign(dirs, old_files, files, 0, 0);
         if (assigned != file_count) rc = EZDB_ERR_FORMAT;
+        free(old_files);
+        old_files = NULL;
         dfs_ms = ezdb_now_ms() - stage_start_ms;
     }
     if (rc == EZDB_OK) {
@@ -1855,6 +1955,16 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             free(file_records_raw);
             header.file_records_raw_size = file_records_raw_size;
             header.file_records_size = file_records_written;
+            if (rc == EZDB_OK) {
+                file_name_offsets = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)(file_count ? file_count : 1u));
+                if (!file_name_offsets) {
+                    rc = EZDB_ERR_MEMORY;
+                } else {
+                    for (uint32_t i = 0; i < file_count; ++i) file_name_offsets[i] = files[i].name_offset;
+                }
+            }
+            free(files);
+            files = NULL;
 
             header.dir_records_offset = (uint64_t)ftell(out);
             uint64_t dir_records_raw_size = sizeof(EzdbDiskDir) * (uint64_t)dir_count;
@@ -1880,6 +1990,21 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             header.strings_size = strings_written;
             write_base_ms = ezdb_now_ms() - stage_start_ms;
 
+            free(dir_hash_entries);
+            dir_hash_entries = NULL;
+            dir_hash_count = 0;
+            dir_hash_cap = 0;
+            free(dir_buckets);
+            dir_buckets = NULL;
+            dir_bucket_count = 0;
+            free(string_entries);
+            string_entries = NULL;
+            string_entry_count = 0;
+            string_entry_cap = 0;
+            free(string_buckets);
+            string_buckets = NULL;
+            string_bucket_count = 0;
+
             header.postings_offset = (uint64_t)ftell(out);
             EzdbDiskIndex* file_index = NULL;
             EzdbDiskIndex* dir_index = NULL;
@@ -1892,7 +2017,14 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             }
             if (rc == EZDB_OK) {
                 for (uint32_t i = 0; i < file_count; ++i) {
-                    rc = add_text_grams(&file_builder, string_pool + files[i].name_offset, i);
+                    rc = count_text_grams(&file_builder, string_pool + file_name_offsets[i], i);
+                    if (rc != EZDB_OK) break;
+                }
+            }
+            if (rc == EZDB_OK) rc = posting_builder_prepare_fill(&file_builder);
+            if (rc == EZDB_OK) {
+                for (uint32_t i = 0; i < file_count; ++i) {
+                    rc = fill_text_grams(&file_builder, string_pool + file_name_offsets[i], i);
                     if (rc != EZDB_OK) break;
                 }
             }
@@ -1909,7 +2041,14 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             }
             if (rc == EZDB_OK) {
                 for (uint32_t i = 1; i < dir_count; ++i) {
-                    rc = add_text_grams(&dir_builder, string_pool + dirs[i].name_offset, i);
+                    rc = count_text_grams(&dir_builder, string_pool + dirs[i].name_offset, i);
+                    if (rc != EZDB_OK) break;
+                }
+            }
+            if (rc == EZDB_OK) rc = posting_builder_prepare_fill(&dir_builder);
+            if (rc == EZDB_OK) {
+                for (uint32_t i = 1; i < dir_count; ++i) {
+                    rc = fill_text_grams(&dir_builder, string_pool + dirs[i].name_offset, i);
                     if (rc != EZDB_OK) break;
                 }
             }
@@ -1942,6 +2081,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
     free(dirs);
     free(old_files);
     free(files);
+    free(file_name_offsets);
     free(dir_hash_entries);
     free(dir_buckets);
     free(string_pool);

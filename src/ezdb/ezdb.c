@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define EZDB_MAGIC "EZDB0004"
 #define EZDB_VERSION 4u
@@ -175,6 +176,11 @@ static uint64_t file_size_of(FILE* fp)
     long size = ftell(fp);
     fseek(fp, old_pos, SEEK_SET);
     return size < 0 ? 0 : (uint64_t)size;
+}
+
+static double ezdb_now_ms(void)
+{
+    return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
 }
 
 static char* ezdb_strdup_range(const char* text, size_t len)
@@ -1337,6 +1343,12 @@ static int load_intersected_postings(Ezdb* db, EzdbDiskIndex* index, uint64_t in
 int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
 {
     if (!input_txt || !output_ezdb) return EZDB_ERR_ARG;
+    double total_start_ms = ezdb_now_ms();
+    double parse_ms = 0.0;
+    double dfs_ms = 0.0;
+    double write_base_ms = 0.0;
+    double file_index_ms = 0.0;
+    double dir_index_ms = 0.0;
     FILE* in = fopen(input_txt, "rb");
     if (!in) return EZDB_ERR_IO;
 
@@ -1369,6 +1381,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
     dirs[0].old_first_file = UINT32_MAX;
     dir_count = 1;
 
+    double stage_start_ms = ezdb_now_ms();
     char line[32768];
     while (fgets(line, sizeof(line), in)) {
         char* path = NULL;
@@ -1401,6 +1414,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
         if (rc != EZDB_OK) break;
     }
     fclose(in);
+    parse_ms = ezdb_now_ms() - stage_start_ms;
 
     BuildFile* files = NULL;
     if (rc == EZDB_OK) {
@@ -1408,8 +1422,10 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
         if (!files && file_count) rc = EZDB_ERR_MEMORY;
     }
     if (rc == EZDB_OK) {
+        stage_start_ms = ezdb_now_ms();
         uint32_t assigned = dfs_assign(dirs, old_files, files, 0, 0);
         if (assigned != file_count) rc = EZDB_ERR_FORMAT;
+        dfs_ms = ezdb_now_ms() - stage_start_ms;
     }
     if (rc == EZDB_OK) {
         FILE* out = fopen(output_ezdb, "wb");
@@ -1425,6 +1441,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             header.dir_count = dir_count;
             fwrite(&header, sizeof(header), 1, out);
 
+            stage_start_ms = ezdb_now_ms();
             header.file_records_offset = (uint64_t)ftell(out);
             uint64_t file_records_written = 0;
             rc = write_file_records_compact(out, files, file_count, &file_records_written);
@@ -1445,6 +1462,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             header.strings_offset = (uint64_t)ftell(out);
             header.strings_size = string_size;
             if (string_size && fwrite(string_pool, 1, string_size, out) != string_size) rc = EZDB_ERR_IO;
+            write_base_ms = ezdb_now_ms() - stage_start_ms;
 
             header.postings_offset = (uint64_t)ftell(out);
             EzdbDiskIndex* file_index = NULL;
@@ -1452,6 +1470,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
             uint32_t file_index_count = 0, dir_index_count = 0;
             uint64_t file_postings_size = 0, dir_postings_size = 0;
             if (rc == EZDB_OK) {
+                stage_start_ms = ezdb_now_ms();
                 rc = posting_builder_init(&file_builder, 65536u);
                 if (rc == EZDB_OK) file_builder_ready = 1;
             }
@@ -1462,11 +1481,13 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
                 }
             }
             if (rc == EZDB_OK) rc = write_postings(out, &file_builder, file_count, &file_index, &file_index_count, &file_postings_size);
+            if (rc == EZDB_OK) file_index_ms = ezdb_now_ms() - stage_start_ms;
             if (file_builder_ready) {
                 posting_builder_free(&file_builder);
                 file_builder_ready = 0;
             }
             if (rc == EZDB_OK) {
+                stage_start_ms = ezdb_now_ms();
                 rc = posting_builder_init(&dir_builder, 65536u);
                 if (rc == EZDB_OK) dir_builder_ready = 1;
             }
@@ -1477,6 +1498,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
                 }
             }
             if (rc == EZDB_OK) rc = write_postings(out, &dir_builder, dir_count, &dir_index, &dir_index_count, &dir_postings_size);
+            if (rc == EZDB_OK) dir_index_ms = ezdb_now_ms() - stage_start_ms;
             if (dir_builder_ready) {
                 posting_builder_free(&dir_builder);
                 dir_builder_ready = 0;
@@ -1511,6 +1533,15 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
     free(string_buckets);
     if (file_builder_ready) posting_builder_free(&file_builder);
     if (dir_builder_ready) posting_builder_free(&dir_builder);
+    if (rc == EZDB_OK) {
+        double total_ms = ezdb_now_ms() - total_start_ms;
+        printf("build_parse_tree_ms: %.2f\n", parse_ms);
+        printf("build_dfs_ms: %.2f\n", dfs_ms);
+        printf("build_write_base_ms: %.2f\n", write_base_ms);
+        printf("build_file_index_ms: %.2f\n", file_index_ms);
+        printf("build_dir_index_ms: %.2f\n", dir_index_ms);
+        printf("build_internal_total_ms: %.2f\n", total_ms);
+    }
     return rc;
 }
 

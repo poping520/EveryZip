@@ -25,7 +25,7 @@ add_executable(EzdbBench
         tools/ezdb_bench.c
 )
 
-target_link_libraries(EzdbBench PRIVATE ezdb)
+target_link_libraries(EzdbBench PRIVATE ezdb psapi)
 
 if(MSVC)
     target_compile_options(EzdbBench PRIVATE /utf-8)

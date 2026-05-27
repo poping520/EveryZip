@@ -1,5 +1,9 @@
 #include "../src/ezdb/ezdb.h"
 
+#include <windows.h>
+#include <psapi.h>
+#include <shellapi.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +28,22 @@ static void print_usage(void)
     printf("  EzdbBench search <db.ezdb> <keyword> [limit]\n");
 }
 
+static void print_memory_usage(const char* prefix)
+{
+    PROCESS_MEMORY_COUNTERS_EX counters;
+    memset(&counters, 0, sizeof(counters));
+    counters.cb = sizeof(counters);
+
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&counters, sizeof(counters))) {
+        printf("%s_memory_error: %lu\n", prefix, GetLastError());
+        return;
+    }
+
+    printf("%s_working_set_mb: %.2f\n", prefix, (double)counters.WorkingSetSize / 1024.0 / 1024.0);
+    printf("%s_peak_working_set_mb: %.2f\n", prefix, (double)counters.PeakWorkingSetSize / 1024.0 / 1024.0);
+    printf("%s_private_mb: %.2f\n", prefix, (double)counters.PrivateUsage / 1024.0 / 1024.0);
+}
+
 static void on_result(const EzdbSearchResult* result, void* user_data)
 {
     SearchStats* stats = (SearchStats*)user_data;
@@ -38,7 +58,51 @@ static void on_result(const EzdbSearchResult* result, void* user_data)
     }
 }
 
-int main(int argc, char** argv)
+static char* wide_to_utf8(const wchar_t* text)
+{
+    int needed = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
+    if (needed <= 0) return NULL;
+    char* out = (char*)malloc((size_t)needed);
+    if (!out) return NULL;
+    if (WideCharToMultiByte(CP_UTF8, 0, text, -1, out, needed, NULL, NULL) != needed) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+static void free_utf8_argv(int argc, char** argv)
+{
+    if (!argv) return;
+    for (int i = 0; i < argc; ++i) free(argv[i]);
+    free(argv);
+}
+
+static int make_utf8_argv(int* out_argc, char*** out_argv)
+{
+    int argc = 0;
+    wchar_t** wide_argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!wide_argv) return 0;
+    char** argv = (char**)calloc((size_t)argc, sizeof(char*));
+    if (!argv) {
+        LocalFree(wide_argv);
+        return 0;
+    }
+    for (int i = 0; i < argc; ++i) {
+        argv[i] = wide_to_utf8(wide_argv[i]);
+        if (!argv[i]) {
+            free_utf8_argv(argc, argv);
+            LocalFree(wide_argv);
+            return 0;
+        }
+    }
+    LocalFree(wide_argv);
+    *out_argc = argc;
+    *out_argv = argv;
+    return 1;
+}
+
+static int run_main(int argc, char** argv)
 {
     if (argc < 2) {
         print_usage();
@@ -58,6 +122,7 @@ int main(int argc, char** argv)
             return 2;
         }
         printf("build ok: %.2f ms\n", elapsed);
+        print_memory_usage("build");
         return 0;
     }
 
@@ -87,6 +152,7 @@ int main(int argc, char** argv)
         printf("names_size: %llu bytes\n", (unsigned long long)stats.names_size);
         printf("index_size: %llu bytes\n", (unsigned long long)stats.index_size);
         printf("postings_size: %llu bytes\n", (unsigned long long)stats.postings_size);
+        print_memory_usage("info");
         ezdb_close(db);
         return 0;
     }
@@ -114,6 +180,7 @@ int main(int argc, char** argv)
                result.path,
                (unsigned long long)result.size,
                (unsigned long long)result.modified_time);
+        print_memory_usage("get");
         ezdb_free_result(&result);
         ezdb_close(db);
         return 0;
@@ -147,10 +214,24 @@ int main(int argc, char** argv)
         printf("open_ms: %.2f\n", open_elapsed);
         printf("search_ms: %.2f\n", search_elapsed);
         printf("returned: %u\n", stats.total);
+        print_memory_usage("search");
         ezdb_close(db);
         return 0;
     }
 
     print_usage();
     return 1;
+}
+
+int main(void)
+{
+    int argc = 0;
+    char** argv = NULL;
+    if (!make_utf8_argv(&argc, &argv)) {
+        fprintf(stderr, "failed to parse UTF-8 command line\n");
+        return 2;
+    }
+    int rc = run_main(argc, argv);
+    free_utf8_argv(argc, argv);
+    return rc;
 }

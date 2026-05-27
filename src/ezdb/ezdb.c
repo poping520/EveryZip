@@ -1,8 +1,8 @@
 /*
- * ezdb v4 path-tree index
+ * ezdb v5 path-tree index
  * =======================
  *
- * v4 intentionally breaks compatibility with v1/v2/v3. Instead of indexing every
+ * v5 intentionally breaks compatibility with v1/v2/v3/v4. Instead of indexing every
  * byte gram in every full path, it stores a directory tree and builds separate
  * gram indexes for file names and directory components. Directory hits expand
  * to DFS file-id ranges, so a common directory term is stored once per matching
@@ -10,10 +10,13 @@
  *
  * The public C API stays stable. The on-disk layout is:
  * header, file records, directory records, string pool, file index, directory
- * index, postings. Postings use adaptive array/range/bitset containers.
+ * index, postings. Postings use adaptive array/range/bitset containers and
+ * independently choose zlib compression when it reduces disk size.
  */
 
 #include "ezdb.h"
+
+#include <zlib.h>
 
 #include <ctype.h>
 #include <stdio.h>
@@ -21,8 +24,8 @@
 #include <string.h>
 #include <time.h>
 
-#define EZDB_MAGIC "EZDB0004"
-#define EZDB_VERSION 4u
+#define EZDB_MAGIC "EZDB0005"
+#define EZDB_VERSION 5u
 #define EZDB_FLAG_DELETED 1u
 #define EZDB_GRAM1 1u
 #define EZDB_GRAM2 2u
@@ -36,7 +39,16 @@
 #define EZDB_POSTING_ARRAY 1u
 #define EZDB_POSTING_RANGE 2u
 #define EZDB_POSTING_BITSET 3u
+#define EZDB_POSTING_TYPE_MASK 0x7fffffffu
+#define EZDB_POSTING_COMPRESSED 0x80000000u
 #define EZDB_BITSET_DENSITY_DIVISOR 16u
+#define EZDB_POSTING_COMPRESS_MIN_SIZE 256u
+#define EZDB_POSTING_COMPRESS_MIN_SAVING 16u
+#define EZDB_POSTING_COMPRESSION_LEVEL 1
+#define EZDB_SECTION_COMPRESSED 1u
+#define EZDB_SECTION_COMPRESS_MIN_SIZE 4096u
+#define EZDB_SECTION_COMPRESS_MIN_SAVING 256u
+#define EZDB_SECTION_COMPRESSION_LEVEL 3
 
 enum {
     EZDB_OK = 0,
@@ -69,6 +81,13 @@ typedef struct EzdbHeader {
     uint64_t postings_size;
     uint64_t reserved_offset;
     uint64_t reserved_size;
+    uint64_t file_records_raw_size;
+    uint64_t dir_records_raw_size;
+    uint64_t strings_raw_size;
+    uint32_t file_records_flags;
+    uint32_t dir_records_flags;
+    uint32_t strings_flags;
+    uint32_t reserved_flags;
 } EzdbHeader;
 
 typedef struct EzdbDiskFile {
@@ -93,6 +112,7 @@ typedef struct EzdbDiskIndex {
     uint32_t count;
     uint32_t container_type;
     uint32_t encoded_size;
+    uint32_t raw_size;
     uint64_t offset;
 } EzdbDiskIndex;
 
@@ -717,66 +737,71 @@ static int add_text_grams(PostingBuilder* builder, const char* text, uint32_t id
     return EZDB_OK;
 }
 
-static int write_varuint(FILE* fp, uint32_t value, uint64_t* written)
+static int append_varuint(unsigned char** data, uint32_t* size, uint32_t* cap, uint32_t value)
 {
     unsigned char bytes[5];
-    int count = 0;
+    uint32_t count = 0;
     do {
         bytes[count] = (unsigned char)(value & 0x7fu);
         value >>= 7u;
         if (value) bytes[count] |= 0x80u;
         ++count;
     } while (value);
-    if (fwrite(bytes, 1, (size_t)count, fp) != (size_t)count) return EZDB_ERR_IO;
-    *written += (uint64_t)count;
+    if (*size + count > *cap) {
+        uint32_t next = *cap ? *cap : 256u;
+        while (next < *size + count) {
+            if (next > UINT32_MAX / 2u) return EZDB_ERR_MEMORY;
+            next *= 2u;
+        }
+        unsigned char* new_data = (unsigned char*)realloc(*data, next);
+        if (!new_data) return EZDB_ERR_MEMORY;
+        *data = new_data;
+        *cap = next;
+    }
+    memcpy(*data + *size, bytes, count);
+    *size += count;
     return EZDB_OK;
 }
 
-static int read_varuint(FILE* fp, uint32_t* out)
-{
-    uint32_t value = 0;
-    int shift = 0;
-    for (int i = 0; i < 5; ++i) {
-        int ch = fgetc(fp);
-        if (ch == EOF) return EZDB_ERR_IO;
-        value |= (uint32_t)(ch & 0x7f) << shift;
-        if (!(ch & 0x80)) {
-            *out = value;
-            return EZDB_OK;
-        }
-        shift += 7;
-    }
-    return EZDB_ERR_FORMAT;
-}
-
-static int write_varuint64(FILE* fp, uint64_t value, uint64_t* written)
+static int append_varuint64(unsigned char** data, uint32_t* size, uint32_t* cap, uint64_t value)
 {
     unsigned char bytes[10];
-    int count = 0;
+    uint32_t count = 0;
     do {
         bytes[count] = (unsigned char)(value & 0x7fu);
         value >>= 7u;
         if (value) bytes[count] |= 0x80u;
         ++count;
     } while (value);
-    if (fwrite(bytes, 1, (size_t)count, fp) != (size_t)count) return EZDB_ERR_IO;
-    *written += (uint64_t)count;
+    if (*size + count > *cap) {
+        uint32_t next = *cap ? *cap : 256u;
+        while (next < *size + count) {
+            if (next > UINT32_MAX / 2u) return EZDB_ERR_MEMORY;
+            next *= 2u;
+        }
+        unsigned char* new_data = (unsigned char*)realloc(*data, next);
+        if (!new_data) return EZDB_ERR_MEMORY;
+        *data = new_data;
+        *cap = next;
+    }
+    memcpy(*data + *size, bytes, count);
+    *size += count;
     return EZDB_OK;
 }
 
-static int read_varuint64(FILE* fp, uint64_t* out)
+static int read_varuint_mem(const unsigned char* data, uint32_t size, uint32_t* pos, uint32_t* out)
 {
-    uint64_t value = 0;
-    int shift = 0;
-    for (int i = 0; i < 10; ++i) {
-        int ch = fgetc(fp);
-        if (ch == EOF) return EZDB_ERR_IO;
-        value |= (uint64_t)(ch & 0x7f) << shift;
-        if (!(ch & 0x80)) {
+    uint32_t value = 0;
+    uint32_t shift = 0;
+    while (*pos < size) {
+        unsigned char byte = data[(*pos)++];
+        value |= (uint32_t)(byte & 0x7fu) << shift;
+        if (!(byte & 0x80u)) {
             *out = value;
             return EZDB_OK;
         }
-        shift += 7;
+        shift += 7u;
+        if (shift >= 35u) return EZDB_ERR_FORMAT;
     }
     return EZDB_ERR_FORMAT;
 }
@@ -815,29 +840,28 @@ static int read_mem_varuint64(const unsigned char** p, const unsigned char* end,
     return EZDB_ERR_FORMAT;
 }
 
-static int write_file_records_compact(FILE* out, const BuildFile* files, uint32_t file_count, uint64_t* out_written)
+static int encode_file_records_compact(const BuildFile* files, uint32_t file_count, unsigned char** out_data, uint64_t* out_size)
 {
-    uint64_t written = 0;
+    unsigned char* data = NULL;
+    uint32_t size = 0, cap = 0;
     for (uint32_t i = 0; i < file_count; ++i) {
-        int rc = write_varuint(out, files[i].parent_dir, &written);
-        if (rc == EZDB_OK) rc = write_varuint(out, files[i].name_offset, &written);
-        if (rc == EZDB_OK) rc = write_varuint(out, files[i].name_len, &written);
-        if (rc == EZDB_OK) rc = write_varuint64(out, files[i].size, &written);
-        if (rc == EZDB_OK) rc = write_varuint64(out, files[i].modified_time, &written);
-        if (rc != EZDB_OK) return rc;
+        int rc = append_varuint(&data, &size, &cap, files[i].parent_dir);
+        if (rc == EZDB_OK) rc = append_varuint(&data, &size, &cap, files[i].name_offset);
+        if (rc == EZDB_OK) rc = append_varuint(&data, &size, &cap, files[i].name_len);
+        if (rc == EZDB_OK) rc = append_varuint64(&data, &size, &cap, files[i].size);
+        if (rc == EZDB_OK) rc = append_varuint64(&data, &size, &cap, files[i].modified_time);
+        if (rc != EZDB_OK) {
+            free(data);
+            return rc;
+        }
     }
-    *out_written = written;
+    *out_data = data;
+    *out_size = size;
     return EZDB_OK;
 }
 
-static int read_file_records_compact(FILE* fp, uint64_t encoded_size, EzdbDiskFile* files, uint32_t file_count)
+static int read_file_records_compact_mem(const unsigned char* data, uint64_t encoded_size, EzdbDiskFile* files, uint32_t file_count)
 {
-    unsigned char* data = (unsigned char*)malloc((size_t)encoded_size ? (size_t)encoded_size : 1u);
-    if (!data) return EZDB_ERR_MEMORY;
-    if (encoded_size && fread(data, 1, (size_t)encoded_size, fp) != (size_t)encoded_size) {
-        free(data);
-        return EZDB_ERR_IO;
-    }
     const unsigned char* p = data;
     const unsigned char* end = data + encoded_size;
     for (uint32_t i = 0; i < file_count; ++i) {
@@ -849,7 +873,6 @@ static int read_file_records_compact(FILE* fp, uint64_t encoded_size, EzdbDiskFi
         if (rc == EZDB_OK) rc = read_mem_varuint64(&p, end, &size);
         if (rc == EZDB_OK) rc = read_mem_varuint64(&p, end, &modified_time);
         if (rc != EZDB_OK) {
-            free(data);
             return rc;
         }
         files[i].parent_dir_id = parent_dir;
@@ -859,7 +882,6 @@ static int read_file_records_compact(FILE* fp, uint64_t encoded_size, EzdbDiskFi
         files[i].size = size;
         files[i].modified_time = modified_time;
     }
-    free(data);
     return EZDB_OK;
 }
 
@@ -926,20 +948,29 @@ static uint32_t estimate_range_size(const uint32_t* ids, uint32_t count)
     return bytes;
 }
 
-static int write_array_container(FILE* out, const uint32_t* ids, uint32_t count, uint64_t* written)
+static int encode_array_container(const uint32_t* ids, uint32_t count, unsigned char** out_data, uint32_t* out_size)
 {
+    unsigned char* data = NULL;
+    uint32_t size = 0, cap = 0;
     uint32_t prev = 0;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t delta = i == 0 ? ids[i] : ids[i] - prev;
-        int rc = write_varuint(out, delta, written);
-        if (rc != EZDB_OK) return rc;
+        int rc = append_varuint(&data, &size, &cap, delta);
+        if (rc != EZDB_OK) {
+            free(data);
+            return rc;
+        }
         prev = ids[i];
     }
+    *out_data = data;
+    *out_size = size;
     return EZDB_OK;
 }
 
-static int write_range_container(FILE* out, const uint32_t* ids, uint32_t count, uint64_t* written)
+static int encode_range_container(const uint32_t* ids, uint32_t count, unsigned char** out_data, uint32_t* out_size)
 {
+    unsigned char* data = NULL;
+    uint32_t size = 0, cap = 0;
     uint32_t i = 0;
     uint32_t prev_start = 0;
     uint32_t range_index = 0;
@@ -950,17 +981,22 @@ static int write_range_container(FILE* out, const uint32_t* ids, uint32_t count,
             ++i;
             ++end;
         }
-        int rc = write_varuint(out, range_index == 0 ? start : start - prev_start, written);
-        if (rc == EZDB_OK) rc = write_varuint(out, end - start + 1u, written);
-        if (rc != EZDB_OK) return rc;
+        int rc = append_varuint(&data, &size, &cap, range_index == 0 ? start : start - prev_start);
+        if (rc == EZDB_OK) rc = append_varuint(&data, &size, &cap, end - start + 1u);
+        if (rc != EZDB_OK) {
+            free(data);
+            return rc;
+        }
         prev_start = start;
         ++range_index;
         ++i;
     }
+    *out_data = data;
+    *out_size = size;
     return EZDB_OK;
 }
 
-static int write_bitset_container(FILE* out, const uint32_t* ids, uint32_t count, uint32_t universe_count, uint64_t* written)
+static int encode_bitset_container(const uint32_t* ids, uint32_t count, uint32_t universe_count, unsigned char** out_data, uint32_t* out_size)
 {
     uint32_t byte_count = (universe_count + 7u) / 8u;
     unsigned char* bits = (unsigned char*)calloc(byte_count ? byte_count : 1u, 1);
@@ -968,9 +1004,141 @@ static int write_bitset_container(FILE* out, const uint32_t* ids, uint32_t count
     for (uint32_t i = 0; i < count; ++i) {
         if (ids[i] < universe_count) bits[ids[i] >> 3u] |= (unsigned char)(1u << (ids[i] & 7u));
     }
-    int rc = write_bytes(out, bits, byte_count, written);
-    free(bits);
+    *out_data = bits;
+    *out_size = byte_count;
+    return EZDB_OK;
+}
+
+static int encode_posting_container(const uint32_t* ids, uint32_t count, uint32_t universe_count, uint32_t type, unsigned char** out_data, uint32_t* out_size)
+{
+    if (type == EZDB_POSTING_RANGE) return encode_range_container(ids, count, out_data, out_size);
+    if (type == EZDB_POSTING_BITSET) return encode_bitset_container(ids, count, universe_count, out_data, out_size);
+    return encode_array_container(ids, count, out_data, out_size);
+}
+
+static int maybe_compress_payload(const unsigned char* raw, uint32_t raw_size, unsigned char** out_data, uint32_t* out_size, int* out_compressed)
+{
+    *out_data = NULL;
+    *out_size = 0;
+    *out_compressed = 0;
+    if (raw_size >= EZDB_POSTING_COMPRESS_MIN_SIZE) {
+        uLongf bound = compressBound((uLong)raw_size);
+        if (bound <= UINT32_MAX) {
+            unsigned char* compressed = (unsigned char*)malloc((size_t)bound);
+            if (!compressed) return EZDB_ERR_MEMORY;
+            uLongf compressed_size = bound;
+            int zrc = compress2(compressed, &compressed_size, raw, (uLong)raw_size, EZDB_POSTING_COMPRESSION_LEVEL);
+            if (zrc == Z_OK && compressed_size + EZDB_POSTING_COMPRESS_MIN_SAVING < raw_size && compressed_size <= UINT32_MAX) {
+                *out_data = compressed;
+                *out_size = (uint32_t)compressed_size;
+                *out_compressed = 1;
+                return EZDB_OK;
+            }
+            free(compressed);
+        }
+    }
+    unsigned char* copy = (unsigned char*)malloc(raw_size ? raw_size : 1u);
+    if (!copy) return EZDB_ERR_MEMORY;
+    if (raw_size) memcpy(copy, raw, raw_size);
+    *out_data = copy;
+    *out_size = raw_size;
+    return EZDB_OK;
+}
+
+static int maybe_compress_section(const unsigned char* raw, uint64_t raw_size, unsigned char** out_data, uint64_t* out_size, uint32_t* out_flags)
+{
+    *out_data = NULL;
+    *out_size = 0;
+    *out_flags = 0;
+    if (raw_size > UINT32_MAX) return EZDB_ERR_MEMORY;
+    if (raw_size >= EZDB_SECTION_COMPRESS_MIN_SIZE) {
+        uLongf bound = compressBound((uLong)raw_size);
+        if (bound <= UINT32_MAX) {
+            unsigned char* compressed = (unsigned char*)malloc((size_t)bound);
+            if (!compressed) return EZDB_ERR_MEMORY;
+            uLongf compressed_size = bound;
+            int zrc = compress2(compressed, &compressed_size, raw, (uLong)raw_size, EZDB_SECTION_COMPRESSION_LEVEL);
+            if (zrc == Z_OK && compressed_size + EZDB_SECTION_COMPRESS_MIN_SAVING < raw_size) {
+                *out_data = compressed;
+                *out_size = (uint64_t)compressed_size;
+                *out_flags = EZDB_SECTION_COMPRESSED;
+                return EZDB_OK;
+            }
+            free(compressed);
+        }
+    }
+    unsigned char* copy = (unsigned char*)malloc(raw_size ? (size_t)raw_size : 1u);
+    if (!copy) return EZDB_ERR_MEMORY;
+    if (raw_size) memcpy(copy, raw, (size_t)raw_size);
+    *out_data = copy;
+    *out_size = raw_size;
+    return EZDB_OK;
+}
+
+static int write_compressed_section(FILE* out, const unsigned char* raw, uint64_t raw_size, uint64_t* out_written, uint32_t* out_flags)
+{
+    unsigned char* payload = NULL;
+    uint64_t payload_size = 0;
+    int rc = maybe_compress_section(raw, raw_size, &payload, &payload_size, out_flags);
+    if (rc != EZDB_OK) return rc;
+    if (payload_size && fwrite(payload, 1, (size_t)payload_size, out) != (size_t)payload_size) rc = EZDB_ERR_IO;
+    free(payload);
+    *out_written = payload_size;
     return rc;
+}
+
+static int read_section_payload(FILE* fp, uint64_t offset, uint64_t encoded_size, uint64_t raw_size, uint32_t flags, unsigned char** out_data)
+{
+    if (encoded_size > UINT32_MAX || raw_size > UINT32_MAX) return EZDB_ERR_MEMORY;
+    unsigned char* encoded = (unsigned char*)malloc(encoded_size ? (size_t)encoded_size : 1u);
+    if (!encoded) return EZDB_ERR_MEMORY;
+    if (fseek(fp, (long)offset, SEEK_SET) != 0 ||
+        (encoded_size && fread(encoded, 1, (size_t)encoded_size, fp) != (size_t)encoded_size)) {
+        free(encoded);
+        return EZDB_ERR_IO;
+    }
+    if (!(flags & EZDB_SECTION_COMPRESSED)) {
+        *out_data = encoded;
+        return EZDB_OK;
+    }
+    unsigned char* raw = (unsigned char*)malloc(raw_size ? (size_t)raw_size : 1u);
+    if (!raw) {
+        free(encoded);
+        return EZDB_ERR_MEMORY;
+    }
+    uLongf dest_len = (uLongf)raw_size;
+    int zrc = uncompress(raw, &dest_len, encoded, (uLong)encoded_size);
+    free(encoded);
+    if (zrc != Z_OK || dest_len != raw_size) {
+        free(raw);
+        return EZDB_ERR_FORMAT;
+    }
+    *out_data = raw;
+    return EZDB_OK;
+}
+
+static int read_section_into(FILE* fp, uint64_t offset, uint64_t encoded_size, uint64_t raw_size, uint32_t flags, unsigned char* out)
+{
+    if (encoded_size > UINT32_MAX || raw_size > UINT32_MAX) return EZDB_ERR_MEMORY;
+    if (!(flags & EZDB_SECTION_COMPRESSED)) {
+        if (fseek(fp, (long)offset, SEEK_SET) != 0 ||
+            (raw_size && fread(out, 1, (size_t)raw_size, fp) != (size_t)raw_size)) {
+            return EZDB_ERR_IO;
+        }
+        return EZDB_OK;
+    }
+    unsigned char* encoded = (unsigned char*)malloc(encoded_size ? (size_t)encoded_size : 1u);
+    if (!encoded) return EZDB_ERR_MEMORY;
+    if (fseek(fp, (long)offset, SEEK_SET) != 0 ||
+        (encoded_size && fread(encoded, 1, (size_t)encoded_size, fp) != (size_t)encoded_size)) {
+        free(encoded);
+        return EZDB_ERR_IO;
+    }
+    uLongf dest_len = (uLongf)raw_size;
+    int zrc = uncompress(out, &dest_len, encoded, (uLong)encoded_size);
+    free(encoded);
+    if (zrc != Z_OK || dest_len != raw_size) return EZDB_ERR_FORMAT;
+    return EZDB_OK;
 }
 
 static int write_postings(FILE* out, PostingBuilder* builder, uint32_t universe_count, EzdbDiskIndex** out_index, uint32_t* out_index_count, uint64_t* out_written)
@@ -1010,15 +1178,29 @@ static int write_postings(FILE* out, PostingBuilder* builder, uint32_t universe_
             encoded_size = bitset_size;
         }
 
-        uint64_t local_offset = written;
-        int rc;
-        if (type == EZDB_POSTING_RANGE) {
-            rc = write_range_container(out, entry->ids, entry->count, &written);
-        } else if (type == EZDB_POSTING_BITSET) {
-            rc = write_bitset_container(out, entry->ids, entry->count, universe_count, &written);
-        } else {
-            rc = write_array_container(out, entry->ids, entry->count, &written);
+        unsigned char* raw_payload = NULL;
+        uint32_t raw_size = 0;
+        int rc = encode_posting_container(entry->ids, entry->count, universe_count, type, &raw_payload, &raw_size);
+        if (rc != EZDB_OK) {
+            free(sorted);
+            free(indexes);
+            return rc;
         }
+
+        unsigned char* payload = NULL;
+        uint32_t payload_size = 0;
+        int compressed = 0;
+        rc = maybe_compress_payload(raw_payload, raw_size, &payload, &payload_size, &compressed);
+        free(raw_payload);
+        if (rc != EZDB_OK) {
+            free(sorted);
+            free(indexes);
+            return rc;
+        }
+
+        uint64_t local_offset = written;
+        rc = write_bytes(out, payload, payload_size, &written);
+        free(payload);
         if (rc != EZDB_OK) {
             free(sorted);
             free(indexes);
@@ -1032,8 +1214,9 @@ static int write_postings(FILE* out, PostingBuilder* builder, uint32_t universe_
         }
         indexes[index_count].key = entry->key;
         indexes[index_count].count = entry->count;
-        indexes[index_count].container_type = type;
+        indexes[index_count].container_type = type | (compressed ? EZDB_POSTING_COMPRESSED : 0u);
         indexes[index_count].encoded_size = (uint32_t)(written - local_offset);
+        indexes[index_count].raw_size = raw_size;
         indexes[index_count].offset = local_offset;
         ++index_count;
     }
@@ -1222,47 +1405,73 @@ static int load_postings(Ezdb* db, const EzdbDiskIndex* idx, uint32_t** out_ids)
         free(ids);
         return EZDB_ERR_IO;
     }
-    if (idx->container_type == EZDB_POSTING_ARRAY) {
+    unsigned char* encoded = (unsigned char*)malloc(idx->encoded_size ? idx->encoded_size : 1u);
+    if (!encoded) {
+        free(ids);
+        return EZDB_ERR_MEMORY;
+    }
+    if (idx->encoded_size && fread(encoded, 1, idx->encoded_size, db->fp) != idx->encoded_size) {
+        free(encoded);
+        free(ids);
+        return EZDB_ERR_IO;
+    }
+
+    uint32_t raw_size = idx->raw_size ? idx->raw_size : idx->encoded_size;
+    unsigned char* raw = encoded;
+    if (idx->container_type & EZDB_POSTING_COMPRESSED) {
+        raw = (unsigned char*)malloc(raw_size ? raw_size : 1u);
+        if (!raw) {
+            free(encoded);
+            free(ids);
+            return EZDB_ERR_MEMORY;
+        }
+        uLongf dest_len = (uLongf)raw_size;
+        int zrc = uncompress(raw, &dest_len, encoded, (uLong)idx->encoded_size);
+        free(encoded);
+        if (zrc != Z_OK || dest_len != raw_size) {
+            free(raw);
+            free(ids);
+            return EZDB_ERR_FORMAT;
+        }
+    }
+
+    uint32_t container_type = idx->container_type & EZDB_POSTING_TYPE_MASK;
+    if (container_type == EZDB_POSTING_ARRAY) {
         uint32_t current = 0;
+        uint32_t pos = 0;
         for (uint32_t i = 0; i < idx->count; ++i) {
             uint32_t delta = 0;
-            int rc = read_varuint(db->fp, &delta);
+            int rc = read_varuint_mem(raw, raw_size, &pos, &delta);
             if (rc != EZDB_OK) {
+                if (raw != encoded) free(raw);
+                else free(encoded);
                 free(ids);
                 return rc;
             }
             current = i == 0 ? delta : current + delta;
             ids[i] = current;
         }
-    } else if (idx->container_type == EZDB_POSTING_RANGE) {
+    } else if (container_type == EZDB_POSTING_RANGE) {
         uint32_t n = 0;
         uint32_t current_start = 0;
+        uint32_t pos = 0;
         while (n < idx->count) {
             uint32_t start_delta = 0, len = 0;
-            int rc = read_varuint(db->fp, &start_delta);
-            if (rc == EZDB_OK) rc = read_varuint(db->fp, &len);
+            int rc = read_varuint_mem(raw, raw_size, &pos, &start_delta);
+            if (rc == EZDB_OK) rc = read_varuint_mem(raw, raw_size, &pos, &len);
             if (rc != EZDB_OK) {
+                if (raw != encoded) free(raw);
+                else free(encoded);
                 free(ids);
                 return rc;
             }
             current_start = n == 0 ? start_delta : current_start + start_delta;
             for (uint32_t j = 0; j < len && n < idx->count; ++j) ids[n++] = current_start + j;
         }
-    } else if (idx->container_type == EZDB_POSTING_BITSET) {
-        uint32_t byte_count = idx->encoded_size;
-        unsigned char* bits = (unsigned char*)malloc(byte_count ? byte_count : 1u);
-        if (!bits) {
-            free(ids);
-            return EZDB_ERR_MEMORY;
-        }
-        if (byte_count && fread(bits, 1, byte_count, db->fp) != byte_count) {
-            free(bits);
-            free(ids);
-            return EZDB_ERR_IO;
-        }
+    } else if (container_type == EZDB_POSTING_BITSET) {
         uint32_t n = 0;
-        for (uint32_t byte_i = 0; byte_i < byte_count && n < idx->count; ++byte_i) {
-            unsigned char byte = bits[byte_i];
+        for (uint32_t byte_i = 0; byte_i < raw_size && n < idx->count; ++byte_i) {
+            unsigned char byte = raw[byte_i];
             while (byte && n < idx->count) {
                 unsigned bit = 0;
                 while (bit < 8u && !(byte & (1u << bit))) ++bit;
@@ -1271,15 +1480,20 @@ static int load_postings(Ezdb* db, const EzdbDiskIndex* idx, uint32_t** out_ids)
                 byte &= (unsigned char)~(1u << bit);
             }
         }
-        free(bits);
         if (n != idx->count) {
+            if (raw != encoded) free(raw);
+            else free(encoded);
             free(ids);
             return EZDB_ERR_FORMAT;
         }
     } else {
+        if (raw != encoded) free(raw);
+        else free(encoded);
         free(ids);
         return EZDB_ERR_FORMAT;
     }
+    if (raw != encoded) free(raw);
+    else free(encoded);
     *out_ids = ids;
     return EZDB_OK;
 }
@@ -1449,25 +1663,37 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
 
             stage_start_ms = ezdb_now_ms();
             header.file_records_offset = (uint64_t)ftell(out);
+            unsigned char* file_records_raw = NULL;
+            uint64_t file_records_raw_size = 0;
             uint64_t file_records_written = 0;
-            rc = write_file_records_compact(out, files, file_count, &file_records_written);
-            header.file_records_size = (uint64_t)ftell(out) - header.file_records_offset;
+            rc = encode_file_records_compact(files, file_count, &file_records_raw, &file_records_raw_size);
+            if (rc == EZDB_OK) rc = write_compressed_section(out, file_records_raw, file_records_raw_size, &file_records_written, &header.file_records_flags);
+            free(file_records_raw);
+            header.file_records_raw_size = file_records_raw_size;
+            header.file_records_size = file_records_written;
 
             header.dir_records_offset = (uint64_t)ftell(out);
+            uint64_t dir_records_raw_size = sizeof(EzdbDiskDir) * (uint64_t)dir_count;
+            EzdbDiskDir* dir_records_raw = (EzdbDiskDir*)malloc(dir_records_raw_size ? (size_t)dir_records_raw_size : 1u);
+            if (!dir_records_raw) rc = EZDB_ERR_MEMORY;
             for (uint32_t i = 0; i < dir_count && rc == EZDB_OK; ++i) {
-                EzdbDiskDir d;
-                d.parent_dir_id = dirs[i].parent;
-                d.name_offset = dirs[i].name_offset;
-                d.name_len = dirs[i].name_len;
-                d.first_file_id = dirs[i].first_file_id;
-                d.file_count = dirs[i].file_count;
-                if (fwrite(&d, sizeof(d), 1, out) != 1) rc = EZDB_ERR_IO;
+                dir_records_raw[i].parent_dir_id = dirs[i].parent;
+                dir_records_raw[i].name_offset = dirs[i].name_offset;
+                dir_records_raw[i].name_len = dirs[i].name_len;
+                dir_records_raw[i].first_file_id = dirs[i].first_file_id;
+                dir_records_raw[i].file_count = dirs[i].file_count;
             }
-            header.dir_records_size = (uint64_t)ftell(out) - header.dir_records_offset;
+            uint64_t dir_records_written = 0;
+            if (rc == EZDB_OK) rc = write_compressed_section(out, (const unsigned char*)dir_records_raw, dir_records_raw_size, &dir_records_written, &header.dir_records_flags);
+            free(dir_records_raw);
+            header.dir_records_raw_size = dir_records_raw_size;
+            header.dir_records_size = dir_records_written;
 
             header.strings_offset = (uint64_t)ftell(out);
-            header.strings_size = string_size;
-            if (string_size && fwrite(string_pool, 1, string_size, out) != string_size) rc = EZDB_ERR_IO;
+            header.strings_raw_size = string_size;
+            uint64_t strings_written = 0;
+            if (rc == EZDB_OK) rc = write_compressed_section(out, (const unsigned char*)string_pool, string_size, &strings_written, &header.strings_flags);
+            header.strings_size = strings_written;
             write_base_ms = ezdb_now_ms() - stage_start_ms;
 
             header.postings_offset = (uint64_t)ftell(out);
@@ -1573,35 +1799,43 @@ int ezdb_open(const char* path, Ezdb** out_db)
     }
     if (db->header.file_count > UINT32_MAX || db->header.dir_count > UINT32_MAX ||
         db->header.file_index_count > UINT32_MAX || db->header.dir_index_count > UINT32_MAX ||
-        db->header.strings_size > UINT32_MAX) {
+        db->header.strings_size > UINT32_MAX || db->header.strings_raw_size > UINT32_MAX ||
+        db->header.dir_records_raw_size > UINT32_MAX || db->header.file_records_raw_size > UINT32_MAX) {
         ezdb_close(db);
         return EZDB_ERR_FORMAT;
     }
+    if (!db->header.file_records_raw_size) db->header.file_records_raw_size = db->header.file_records_size;
+    if (!db->header.dir_records_raw_size) db->header.dir_records_raw_size = db->header.dir_records_size;
+    if (!db->header.strings_raw_size) db->header.strings_raw_size = db->header.strings_size;
     db->files = (EzdbDiskFile*)malloc(sizeof(EzdbDiskFile) * (size_t)db->header.file_count);
-    db->dirs = (EzdbDiskDir*)malloc((size_t)db->header.dir_records_size);
-    db->strings = (char*)malloc((size_t)db->header.strings_size + 1u);
+    db->dirs = (EzdbDiskDir*)malloc((size_t)db->header.dir_records_raw_size);
+    db->strings = (char*)malloc((size_t)db->header.strings_raw_size + 1u);
     db->file_index = (EzdbDiskIndex*)malloc(sizeof(EzdbDiskIndex) * (size_t)db->header.file_index_count);
     db->dir_index = (EzdbDiskIndex*)malloc(sizeof(EzdbDiskIndex) * (size_t)db->header.dir_index_count);
-    if ((!db->files && db->header.file_count) || (!db->dirs && db->header.dir_records_size) ||
-        (!db->strings && db->header.strings_size) || (!db->file_index && db->header.file_index_count) ||
+    if ((!db->files && db->header.file_count) || (!db->dirs && db->header.dir_records_raw_size) ||
+        (!db->strings && db->header.strings_raw_size) || (!db->file_index && db->header.file_index_count) ||
         (!db->dir_index && db->header.dir_index_count)) {
         ezdb_close(db);
         return EZDB_ERR_MEMORY;
     }
-    if (fseek(fp, (long)db->header.file_records_offset, SEEK_SET) != 0 ||
-        read_file_records_compact(fp, db->header.file_records_size, db->files, (uint32_t)db->header.file_count) != EZDB_OK ||
-        fseek(fp, (long)db->header.dir_records_offset, SEEK_SET) != 0 ||
-        fread(db->dirs, 1, (size_t)db->header.dir_records_size, fp) != (size_t)db->header.dir_records_size ||
-        fseek(fp, (long)db->header.strings_offset, SEEK_SET) != 0 ||
-        fread(db->strings, 1, (size_t)db->header.strings_size, fp) != (size_t)db->header.strings_size ||
-        fseek(fp, (long)db->header.file_index_offset, SEEK_SET) != 0 ||
+    unsigned char* file_records_data = NULL;
+    int rc = read_section_payload(fp, db->header.file_records_offset, db->header.file_records_size, db->header.file_records_raw_size, db->header.file_records_flags, &file_records_data);
+    if (rc == EZDB_OK) rc = read_file_records_compact_mem(file_records_data, db->header.file_records_raw_size, db->files, (uint32_t)db->header.file_count);
+    if (rc == EZDB_OK) rc = read_section_into(fp, db->header.dir_records_offset, db->header.dir_records_size, db->header.dir_records_raw_size, db->header.dir_records_flags, (unsigned char*)db->dirs);
+    if (rc == EZDB_OK) rc = read_section_into(fp, db->header.strings_offset, db->header.strings_size, db->header.strings_raw_size, db->header.strings_flags, (unsigned char*)db->strings);
+    free(file_records_data);
+    if (rc != EZDB_OK) {
+        ezdb_close(db);
+        return rc;
+    }
+    if (fseek(fp, (long)db->header.file_index_offset, SEEK_SET) != 0 ||
         fread(db->file_index, sizeof(EzdbDiskIndex), (size_t)db->header.file_index_count, fp) != (size_t)db->header.file_index_count ||
         fseek(fp, (long)db->header.dir_index_offset, SEEK_SET) != 0 ||
         fread(db->dir_index, sizeof(EzdbDiskIndex), (size_t)db->header.dir_index_count, fp) != (size_t)db->header.dir_index_count) {
         ezdb_close(db);
         return EZDB_ERR_IO;
     }
-    db->strings[db->header.strings_size] = '\0';
+    db->strings[db->header.strings_raw_size] = '\0';
     *out_db = db;
     return EZDB_OK;
 }

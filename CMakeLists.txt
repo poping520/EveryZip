@@ -8,6 +8,8 @@ project(EveryZip LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+add_subdirectory(external/zlib)
+
 add_library(ezdb STATIC
         src/ezdb/ezdb.c
         src/ezdb/ezdb.h
@@ -16,6 +18,12 @@ add_library(ezdb STATIC
 target_include_directories(ezdb PUBLIC
         src/ezdb
 )
+
+target_include_directories(ezdb PRIVATE
+        external/zlib
+)
+
+target_link_libraries(ezdb PUBLIC zlibstatic)
 
 if(MSVC)
     target_compile_options(ezdb PRIVATE /utf-8)
@@ -87,8 +95,6 @@ add_executable(EveryZip WIN32
 
         external/sqlite/sqlite3.c
 )
-
-add_subdirectory(external/zlib)
 
 add_library(minizip STATIC
         external/zlib/contrib/minizip/ioapi.c

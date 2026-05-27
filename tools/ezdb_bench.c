@@ -331,6 +331,36 @@ static char* trim_ascii(char* text)
     return text;
 }
 
+static void print_interactive_help(uint32_t default_limit)
+{
+    printf("Commands:\n");
+    printf("  help\n");
+    printf("  info\n");
+    printf("  get <id>\n");
+    printf("  search <keyword> [limit]\n");
+    printf("  <keyword> [limit]\n");
+    printf("  insert <path> [size] [mtime]\n");
+    printf("  update <id> <path> [size] [mtime]\n");
+    printf("  delete <id>\n");
+    printf("  exit | quit\n");
+    printf("Default search limit: %u\n", default_limit);
+}
+
+static char* next_token(char** cursor)
+{
+    char* p = *cursor;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!*p) {
+        *cursor = p;
+        return NULL;
+    }
+    char* start = p;
+    while (*p && *p != ' ' && *p != '\t') ++p;
+    if (*p) *p++ = '\0';
+    *cursor = p;
+    return start;
+}
+
 static int parse_interactive_query(char* line, char** out_keyword, uint32_t* out_limit, uint32_t default_limit)
 {
     char* text = trim_ascii(line);
@@ -356,6 +386,99 @@ static int parse_interactive_query(char* line, char** out_keyword, uint32_t* out
         }
     }
     return **out_keyword ? 1 : 0;
+}
+
+static int print_db_info(Ezdb* db, const char* memory_prefix)
+{
+    EzdbStats stats;
+    int rc = ezdb_stats(db, &stats);
+    if (rc != 0) {
+        fprintf(stderr, "stats failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("records: %u\n", stats.record_count);
+    printf("active: %u\n", stats.active_count);
+    printf("file_size: %llu bytes\n", (unsigned long long)stats.file_size);
+    printf("records_size: %llu bytes\n", (unsigned long long)stats.records_size);
+    printf("dirs_size: %llu bytes\n", (unsigned long long)stats.dirs_size);
+    printf("names_size: %llu bytes\n", (unsigned long long)stats.names_size);
+    printf("index_size: %llu bytes\n", (unsigned long long)stats.index_size);
+    printf("postings_size: %llu bytes\n", (unsigned long long)stats.postings_size);
+    print_memory_usage(memory_prefix);
+    return 0;
+}
+
+static int run_get_once(Ezdb* db, uint32_t id, const char* memory_prefix)
+{
+    EzdbSearchResult result;
+    double start = now_ms();
+    int rc = ezdb_get_by_id(db, id, &result);
+    double elapsed = now_ms() - start;
+    if (rc != 0) {
+        fprintf(stderr, "get failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("[%u] %s, %llu, %llu\n",
+           result.id,
+           result.path,
+           (unsigned long long)result.size,
+           (unsigned long long)result.modified_time);
+    printf("get_ms: %.2f\n", elapsed);
+    print_memory_usage(memory_prefix);
+    ezdb_free_result(&result);
+    return 0;
+}
+
+static int run_insert_once(Ezdb* db, const char* path, uint64_t size, uint64_t mtime, const char* memory_prefix)
+{
+    EzdbFileRecord record;
+    record.path = path;
+    record.size = size;
+    record.modified_time = mtime;
+    uint32_t id = 0;
+    double start = now_ms();
+    int rc = ezdb_insert(db, &record, &id);
+    double elapsed = now_ms() - start;
+    if (rc != 0) {
+        fprintf(stderr, "insert failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("insert_id: %u\n", id);
+    printf("insert_ms: %.2f\n", elapsed);
+    print_memory_usage(memory_prefix);
+    return 0;
+}
+
+static int run_update_once(Ezdb* db, uint32_t id, const char* path, uint64_t size, uint64_t mtime, const char* memory_prefix)
+{
+    EzdbFileRecord record;
+    record.path = path;
+    record.size = size;
+    record.modified_time = mtime;
+    double start = now_ms();
+    int rc = ezdb_update(db, id, &record);
+    double elapsed = now_ms() - start;
+    if (rc != 0) {
+        fprintf(stderr, "update failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("update_ms: %.2f\n", elapsed);
+    print_memory_usage(memory_prefix);
+    return 0;
+}
+
+static int run_delete_once(Ezdb* db, uint32_t id, const char* memory_prefix)
+{
+    double start = now_ms();
+    int rc = ezdb_delete(db, id);
+    double elapsed = now_ms() - start;
+    if (rc != 0) {
+        fprintf(stderr, "delete failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("delete_ms: %.2f\n", elapsed);
+    print_memory_usage(memory_prefix);
+    return 0;
 }
 
 static int run_main(int argc, char** argv)
@@ -483,23 +606,92 @@ static int run_main(int argc, char** argv)
         }
         printf("open_ms: %.2f\n", open_elapsed);
         print_memory_usage("open");
-        printf("Enter keyword or keyword limit. Type exit or quit to leave.\n");
+        print_interactive_help(default_limit);
 
         char line[4096];
         for (;;) {
             printf("ezdb> ");
             fflush(stdout);
             if (!read_console_utf8_line(line, sizeof(line))) break;
-            char* keyword = NULL;
-            uint32_t limit = default_limit;
-            int parsed = parse_interactive_query(line, &keyword, &limit, default_limit);
-            if (parsed < 0) break;
-            if (parsed == 0) continue;
-            rc = run_search_once(db, keyword, limit, "open_search");
-            if (rc != 0) {
-                ezdb_close(db);
-                return 2;
+            char* text = trim_ascii(line);
+            if (!*text || strcmp(text, "help") == 0 || strcmp(text, "?") == 0) {
+                print_interactive_help(default_limit);
+                continue;
             }
+            if (strcmp(text, "exit") == 0 || strcmp(text, "quit") == 0) break;
+
+            char* cursor = text;
+            char* command = next_token(&cursor);
+            if (!command) {
+                print_interactive_help(default_limit);
+                continue;
+            }
+
+            if (strcmp(command, "info") == 0) {
+                rc = print_db_info(db, "open_info");
+            } else if (strcmp(command, "get") == 0) {
+                char* id_text = next_token(&cursor);
+                if (!id_text) {
+                    printf("usage: get <id>\n");
+                    continue;
+                }
+                rc = run_get_once(db, (uint32_t)strtoul(id_text, NULL, 10), "open_get");
+            } else if (strcmp(command, "search") == 0) {
+                char* keyword = trim_ascii(cursor);
+                uint32_t limit = default_limit;
+                int parsed = parse_interactive_query(keyword, &keyword, &limit, default_limit);
+                if (parsed <= 0) {
+                    printf("usage: search <keyword> [limit]\n");
+                    continue;
+                }
+                rc = run_search_once(db, keyword, limit, "open_search");
+            } else if (strcmp(command, "insert") == 0) {
+                char* path = next_token(&cursor);
+                char* size_text = next_token(&cursor);
+                char* mtime_text = next_token(&cursor);
+                if (!path) {
+                    printf("usage: insert <path> [size] [mtime]\n");
+                    continue;
+                }
+                rc = run_insert_once(db,
+                                     path,
+                                     parse_u64_arg(size_text, 0),
+                                     parse_u64_arg(mtime_text, 0),
+                                     "open_insert");
+            } else if (strcmp(command, "update") == 0) {
+                char* id_text = next_token(&cursor);
+                char* path = next_token(&cursor);
+                char* size_text = next_token(&cursor);
+                char* mtime_text = next_token(&cursor);
+                if (!id_text || !path) {
+                    printf("usage: update <id> <path> [size] [mtime]\n");
+                    continue;
+                }
+                rc = run_update_once(db,
+                                     (uint32_t)strtoul(id_text, NULL, 10),
+                                     path,
+                                     parse_u64_arg(size_text, 0),
+                                     parse_u64_arg(mtime_text, 0),
+                                     "open_update");
+            } else if (strcmp(command, "delete") == 0) {
+                char* id_text = next_token(&cursor);
+                if (!id_text) {
+                    printf("usage: delete <id>\n");
+                    continue;
+                }
+                rc = run_delete_once(db, (uint32_t)strtoul(id_text, NULL, 10), "open_delete");
+            } else {
+                char* keyword = NULL;
+                uint32_t limit = default_limit;
+                int parsed = parse_interactive_query(text, &keyword, &limit, default_limit);
+                if (parsed < 0) break;
+                if (parsed == 0) {
+                    print_interactive_help(default_limit);
+                    continue;
+                }
+                rc = run_search_once(db, keyword, limit, "open_search");
+            }
+            if (rc != 0) printf("command failed, type help for usage.\n");
         }
         ezdb_close(db);
         return 0;

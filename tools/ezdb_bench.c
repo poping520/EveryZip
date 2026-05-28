@@ -14,6 +14,8 @@ typedef struct SearchStats {
     uint32_t total;
 } SearchStats;
 
+static char* trim_ascii(char* text);
+
 static double now_ms(void)
 {
     return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
@@ -28,6 +30,7 @@ static void print_usage(void)
     printf("  EzdbBench search <db.ezdb> <keyword> [limit]\n");
     printf("  EzdbBench open <db.ezdb> [limit]\n");
     printf("  EzdbBench insert <db.ezdb> <path> [size] [mtime]\n");
+    printf("  EzdbBench insert-file <db.ezdb> <input.txt>\n");
     printf("  EzdbBench update <db.ezdb> <id> <path> [size] [mtime]\n");
     printf("  EzdbBench delete <db.ezdb> <id>\n");
     printf("  EzdbBench crud <input.txt> <output.ezdb>\n");
@@ -118,6 +121,31 @@ static uint64_t parse_u64_arg(const char* text, uint64_t fallback)
 {
     if (!text) return fallback;
     return (uint64_t)_strtoui64(text, NULL, 10);
+}
+
+static int parse_record_line(char* line, EzdbFileRecord* out_record)
+{
+    char* mtime_text = NULL;
+    char* size_text = NULL;
+    char* path = NULL;
+
+    mtime_text = strrchr(line, ',');
+    if (!mtime_text) return 0;
+    *mtime_text++ = '\0';
+
+    size_text = strrchr(line, ',');
+    if (!size_text) return 0;
+    *size_text++ = '\0';
+
+    path = trim_ascii(line);
+    size_text = trim_ascii(size_text);
+    mtime_text = trim_ascii(mtime_text);
+    if (!*path) return 0;
+
+    out_record->path = path;
+    out_record->size = parse_u64_arg(size_text, 0);
+    out_record->modified_time = parse_u64_arg(mtime_text, 0);
+    return 1;
 }
 
 static int run_crud_bench(const char* input_txt, const char* output_ezdb)
@@ -449,6 +477,149 @@ static int run_insert_once(Ezdb* db, const char* path, uint64_t size, uint64_t m
     return 0;
 }
 
+static int run_insert_file_bench(const char* db_path, const char* input_txt)
+{
+    Ezdb* db = NULL;
+    FILE* fp = NULL;
+    char* line = NULL;
+    size_t line_cap = 0;
+    uint64_t parsed = 0;
+    uint64_t skipped = 0;
+    EzdbFileRecord* records = NULL;
+    uint32_t record_count = 0;
+    uint32_t record_cap = 0;
+    uint32_t first_id = 0;
+    uint32_t last_id = 0;
+    uint64_t file_size_before = 0;
+    uint64_t file_size_after = 0;
+
+    double total_start = now_ms();
+    double start = total_start;
+    int rc = ezdb_open(db_path, &db);
+    double open_elapsed = now_ms() - start;
+    if (rc != 0) {
+        fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return 2;
+    }
+
+    printf("insert_file_open_ms: %.2f\n", open_elapsed);
+    printf("insert_file_before_count: %u\n", ezdb_count(db));
+    printf("insert_file_before_active: %u\n", ezdb_active_count(db));
+    file_size_before = ezdb_file_size(db);
+    printf("insert_file_before_file_size: %llu\n", (unsigned long long)file_size_before);
+    print_memory_usage("insert_file_open");
+
+    fp = fopen(input_txt, "rb");
+    if (!fp) {
+        fprintf(stderr, "failed to open input: %s\n", input_txt);
+        ezdb_close(db);
+        return 2;
+    }
+
+    line_cap = 4096;
+    line = (char*)malloc(line_cap);
+    if (!line) {
+        fclose(fp);
+        ezdb_close(db);
+        return 2;
+    }
+
+    start = now_ms();
+    while (fgets(line, (int)line_cap, fp)) {
+        size_t len = strlen(line);
+        while (len > 0 && line[len - 1] != '\n' && !feof(fp)) {
+            char* grown = NULL;
+            line_cap *= 2;
+            grown = (char*)realloc(line, line_cap);
+            if (!grown) {
+                free(line);
+                fclose(fp);
+                ezdb_close(db);
+                return 2;
+            }
+            line = grown;
+            if (!fgets(line + len, (int)(line_cap - len), fp)) break;
+            len = strlen(line);
+        }
+
+        EzdbFileRecord record;
+        if (!parse_record_line(line, &record)) {
+            ++skipped;
+            continue;
+        }
+        if (record_count >= record_cap) {
+            uint32_t next_cap = record_cap ? record_cap * 2u : 65536u;
+            EzdbFileRecord* grown = (EzdbFileRecord*)realloc(records, sizeof(EzdbFileRecord) * (size_t)next_cap);
+            if (!grown) {
+                free(line);
+                fclose(fp);
+                ezdb_close(db);
+                free(records);
+                return 2;
+            }
+            records = grown;
+            record_cap = next_cap;
+        }
+        records[record_count].path = _strdup(record.path);
+        if (!records[record_count].path) {
+            free(line);
+            fclose(fp);
+            ezdb_close(db);
+            for (uint32_t i = 0; i < record_count; ++i) free((void*)records[i].path);
+            free(records);
+            return 2;
+        }
+        records[record_count].size = record.size;
+        records[record_count].modified_time = record.modified_time;
+        ++record_count;
+        ++parsed;
+    }
+
+    double parse_elapsed = now_ms() - start;
+    free(line);
+    fclose(fp);
+
+    printf("insert_file_parse_ms: %.2f\n", parse_elapsed);
+    printf("insert_file_parsed: %llu\n", (unsigned long long)parsed);
+    printf("insert_file_skipped: %llu\n", (unsigned long long)skipped);
+    print_memory_usage("insert_file_parsed");
+
+    start = now_ms();
+    rc = ezdb_insert_many(db, records, record_count, &first_id);
+    double insert_elapsed = now_ms() - start;
+    if (rc != 0) {
+        fprintf(stderr, "insert_many failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        for (uint32_t i = 0; i < record_count; ++i) free((void*)records[i].path);
+        free(records);
+        ezdb_close(db);
+        return 2;
+    }
+    if (record_count) last_id = first_id + record_count - 1u;
+
+    file_size_after = ezdb_file_size(db);
+    double total_elapsed = now_ms() - total_start;
+    printf("insert_file_insert_ms: %.2f\n", insert_elapsed);
+    printf("insert_file_insert_s: %.2f\n", insert_elapsed / 1000.0);
+    printf("insert_file_total_ms: %.2f\n", total_elapsed);
+    printf("insert_file_total_s: %.2f\n", total_elapsed / 1000.0);
+    printf("insert_file_inserted: %u\n", record_count);
+    printf("insert_file_first_id: %u\n", first_id);
+    printf("insert_file_last_id: %u\n", last_id);
+    printf("insert_file_after_count: %u\n", ezdb_count(db));
+    printf("insert_file_after_active: %u\n", ezdb_active_count(db));
+    printf("insert_file_after_file_size: %llu\n", (unsigned long long)file_size_after);
+    printf("insert_file_delta_bytes: %llu\n", (unsigned long long)(file_size_after - file_size_before));
+    if (insert_elapsed > 0.0) {
+        printf("insert_file_rows_per_sec: %.2f\n", (double)record_count * 1000.0 / insert_elapsed);
+    }
+    print_memory_usage("insert_file_after");
+
+    for (uint32_t i = 0; i < record_count; ++i) free((void*)records[i].path);
+    free(records);
+    ezdb_close(db);
+    return 0;
+}
+
 static int run_update_once(Ezdb* db, uint32_t id, const char* path, uint64_t size, uint64_t mtime, const char* memory_prefix)
 {
     EzdbFileRecord record;
@@ -726,6 +897,14 @@ static int run_main(int argc, char** argv)
         print_memory_usage("insert");
         ezdb_close(db);
         return 0;
+    }
+
+    if (strcmp(argv[1], "insert-file") == 0) {
+        if (argc != 4) {
+            print_usage();
+            return 1;
+        }
+        return run_insert_file_bench(argv[2], argv[3]);
     }
 
     if (strcmp(argv[1], "update") == 0) {

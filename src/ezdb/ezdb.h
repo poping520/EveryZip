@@ -49,6 +49,11 @@ void ezdb_free_result(EzdbSearchResult* result);
 
 int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCallback callback, void* user_data);
 
+int ezdb_begin_write(Ezdb* db, uint32_t flags);
+int ezdb_commit_write(Ezdb* db);
+int ezdb_rollback_write(Ezdb* db);
+int ezdb_insert_many(Ezdb* db, const EzdbFileRecord* records, uint32_t count, uint32_t* first_id);
+
 int ezdb_insert(Ezdb* db, const EzdbFileRecord* record, uint32_t* out_id);
 int ezdb_update(Ezdb* db, uint32_t id, const EzdbFileRecord* record);
 int ezdb_delete(Ezdb* db, uint32_t id);

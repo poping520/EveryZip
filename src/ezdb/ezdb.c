@@ -205,6 +205,7 @@ typedef struct BuildFile {
     uint32_t name_len;
     uint32_t parent_dir;
     uint32_t next_in_dir;
+    uint32_t original_id;
     uint64_t size;
     uint64_t modified_time;
     char drive_letter;
@@ -705,6 +706,7 @@ static int append_file(BuildFile** files,
                        uint32_t* string_bucket_count,
                        const char* name,
                        uint32_t name_len,
+                       uint32_t original_id,
                        uint64_t size,
                        uint64_t modified_time,
                        char drive_letter,
@@ -724,6 +726,7 @@ static int append_file(BuildFile** files,
     f->name_offset = name_offset;
     f->name_len = name_len;
     f->parent_dir = dir_id;
+    f->original_id = original_id;
     f->size = size;
     f->modified_time = modified_time;
     f->drive_letter = drive_letter;
@@ -1963,17 +1966,23 @@ static int build_query_keys(const char* keyword, uint32_t** out_keys, uint32_t* 
     return EZDB_OK;
 }
 
-static uint32_t dfs_assign(BuildDir* dirs, BuildFile* old_files, BuildFile* new_files, uint32_t dir_id, uint32_t next_file)
+static uint32_t dfs_assign(BuildDir* dirs,
+                           BuildFile* old_files,
+                           BuildFile* new_files,
+                           uint32_t dir_id,
+                           uint32_t next_file,
+                           uint32_t* original_to_final)
 {
     BuildDir* dir = &dirs[dir_id];
     dir->first_file_id = next_file;
     for (uint32_t old = dir->old_first_file; old != UINT32_MAX; old = old_files[old].next_in_dir) {
         new_files[next_file] = old_files[old];
         new_files[next_file].parent_dir = dir_id;
+        if (original_to_final) original_to_final[old_files[old].original_id] = next_file;
         ++next_file;
     }
     for (uint32_t child = dir->first_child; child != UINT32_MAX; child = dirs[child].next_sibling) {
-        next_file = dfs_assign(dirs, old_files, new_files, child, next_file);
+        next_file = dfs_assign(dirs, old_files, new_files, child, next_file, original_to_final);
     }
     dir->file_count = next_file - dir->first_file_id;
     return next_file;
@@ -2777,7 +2786,7 @@ static int query_build_candidate_bitset(Ezdb* db, EzdbQueryNode* node, unsigned 
     return EZDB_OK;
 }
 
-int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
+static int ezdb_build_from_text_internal(const char* input_txt, const char* output_ezdb, uint32_t* original_to_final)
 {
     if (!input_txt || !output_ezdb) return EZDB_ERR_ARG;
     double total_start_ms = ezdb_now_ms();
@@ -2855,7 +2864,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
                          &string_pool, &string_size, &string_cap,
                          &string_entries, &string_entry_count, &string_entry_cap,
                          &string_buckets, &string_bucket_count,
-                         name, name_len, size, modified_time, drive_letter, file_ref_number, usn);
+                         name, name_len, file_count, size, modified_time, drive_letter, file_ref_number, usn);
         if (rc != EZDB_OK) break;
     }
     fclose(in);
@@ -2868,7 +2877,7 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
     }
     if (rc == EZDB_OK) {
         stage_start_ms = ezdb_now_ms();
-        uint32_t assigned = dfs_assign(dirs, old_files, files, 0, 0);
+        uint32_t assigned = dfs_assign(dirs, old_files, files, 0, 0, original_to_final);
         if (assigned != file_count) rc = EZDB_ERR_FORMAT;
         free(old_files);
         old_files = NULL;
@@ -3066,6 +3075,11 @@ int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
     return rc;
 }
 
+int ezdb_build_from_text(const char* input_txt, const char* output_ezdb)
+{
+    return ezdb_build_from_text_internal(input_txt, output_ezdb, NULL);
+}
+
 int ezdb_build_from_archives_tsv(const char* input_tsv, const char* output_ezdb)
 {
     return ezdb_build_from_text(input_tsv, output_ezdb);
@@ -3109,33 +3123,21 @@ int ezdb_build_snapshot(const EzdbArchiveRecord* archives,
         }
     }
     if (fclose(tmp) != 0 && rc == EZDB_OK) rc = EZDB_ERR_IO;
-    if (rc == EZDB_OK) rc = ezdb_build_from_archives_tsv(tmp_path, output_ezdb);
+    uint32_t* archive_id_map = NULL;
     if (rc == EZDB_OK && entry_count) {
-        Ezdb* db = NULL;
-        uint32_t* archive_id_map = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)(archive_count ? archive_count : 1u));
-        EzdbEntryRecord* remapped_entries = (EzdbEntryRecord*)calloc(entry_count, sizeof(EzdbEntryRecord));
-        if (!archive_id_map || !remapped_entries) {
+        archive_id_map = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)(archive_count ? archive_count : 1u));
+        if (!archive_id_map) {
             rc = EZDB_ERR_MEMORY;
         } else {
             for (uint32_t i = 0; i < archive_count; ++i) archive_id_map[i] = UINT32_MAX;
-            rc = ezdb_open(output_ezdb, &db);
-            for (uint32_t final_id = 0; rc == EZDB_OK && final_id < archive_count; ++final_id) {
-                EzdbArchiveResult ar;
-                rc = ezdb_get_archive(db, final_id, &ar);
-                if (rc != EZDB_OK) break;
-                for (uint32_t original_id = 0; original_id < archive_count; ++original_id) {
-                    if (archive_id_map[original_id] != UINT32_MAX) continue;
-                    if (archives[original_id].file_path &&
-                        strcmp(archives[original_id].file_path, ar.file_path) == 0 &&
-                        archives[original_id].file_ref_number == ar.file_ref_number &&
-                        archives[original_id].drive_letter == ar.drive_letter) {
-                        archive_id_map[original_id] = final_id;
-                        break;
-                    }
-                }
-                ezdb_free_archive_result(&ar);
-            }
-            if (db) ezdb_close(db);
+        }
+    }
+    if (rc == EZDB_OK) rc = ezdb_build_from_text_internal(tmp_path, output_ezdb, archive_id_map);
+    if (rc == EZDB_OK && entry_count) {
+        EzdbEntryRecord* remapped_entries = (EzdbEntryRecord*)calloc(entry_count, sizeof(EzdbEntryRecord));
+        if (!remapped_entries) {
+            rc = EZDB_ERR_MEMORY;
+        } else {
             for (uint32_t i = 0; rc == EZDB_OK && i < entry_count; ++i) {
                 if (entries[i].archive_id >= archive_count || archive_id_map[entries[i].archive_id] == UINT32_MAX) {
                     rc = EZDB_ERR_ARG;
@@ -3147,10 +3149,10 @@ int ezdb_build_snapshot(const EzdbArchiveRecord* archives,
             if (rc == EZDB_OK) rc = ezdb_append_entries_to_file(output_ezdb, remapped_entries, entry_count);
         }
         free(remapped_entries);
-        free(archive_id_map);
     } else if (rc == EZDB_OK) {
         rc = ezdb_append_entries_to_file(output_ezdb, entries, entry_count);
     }
+    free(archive_id_map);
     remove(tmp_path);
     free(tmp_path);
     return rc;

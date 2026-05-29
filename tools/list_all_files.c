@@ -32,7 +32,9 @@ typedef struct ScanContext {
 
 static void print_usage(void)
 {
-    fwprintf(stderr, L"Usage: ListAllFiles [-o output.txt] [-n limit] [roots...]\n");
+    fwprintf(stderr, L"Usage:\n");
+    fwprintf(stderr, L"  ListAllFiles [-o output.tsv] [-n limit] [roots...]\n");
+    fwprintf(stderr, L"  ListAllFiles sample -o output.tsv -n count [--seed value]\n");
 }
 
 static int enable_privilege(const wchar_t* privilege_name)
@@ -78,6 +80,14 @@ static int parse_u64(const wchar_t* text, uint64_t* out)
     if (!end || *end != L'\0') return 0;
     *out = (uint64_t)value;
     return 1;
+}
+
+static uint64_t splitmix64_next(uint64_t* state)
+{
+    uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
 }
 
 static wchar_t* xwcsdup(const wchar_t* text)
@@ -367,6 +377,150 @@ static int write_record(ScanContext* ctx, wchar_t drive, uint64_t file_ref, int6
     return 1;
 }
 
+static int write_sample_record(FILE* output, uint64_t index, uint64_t* rng_state)
+{
+    static const char* const dirs[] = {
+        "Documents", "Downloads", "Pictures", "Videos", "Music", "Projects",
+        "Archives", "Work", "Temp", "Backups", "Logs", "Source", "Data"
+    };
+    static const char* const zh_dirs[] = {
+        "文档", "下载", "图片", "视频", "音乐", "项目", "归档",
+        "工作", "临时", "备份", "日志", "源码", "数据"
+    };
+    static const char* const names[] = {
+        "report", "image", "archive", "invoice", "notes", "backup", "photo",
+        "dataset", "summary", "config", "readme", "build", "export", "index"
+    };
+    static const char* const zh_names[] = {
+        "报告", "图片", "归档", "发票", "笔记", "备份", "照片",
+        "数据集", "汇总", "配置", "说明", "构建", "导出", "索引"
+    };
+    static const char* const exts[] = {
+        "txt", "jpg", "png", "zip", "7z", "pdf", "docx", "xlsx", "log",
+        "json", "c", "cpp", "h", "md", "db", "bin"
+    };
+    uint64_t r1 = splitmix64_next(rng_state);
+    uint64_t r2 = splitmix64_next(rng_state);
+    uint64_t r3 = splitmix64_next(rng_state);
+    char drive = (char)('C' + (r1 % 4));
+    uint64_t file_ref = 0x100000000ULL + index * 17ULL + (r2 & 0xffffULL);
+    int64_t usn = (int64_t)(0x400000000ULL + index * 3ULL + (r3 & 0xffffULL));
+    uint64_t file_size = r1 % (512ULL * 1024ULL * 1024ULL);
+    uint64_t modified_time = 1577836800ULL + (r2 % 220752000ULL);
+    int use_zh = (r3 % 10) < 3;
+    const char* dir1 = use_zh
+        ? zh_dirs[r1 % (sizeof(zh_dirs) / sizeof(zh_dirs[0]))]
+        : dirs[r1 % (sizeof(dirs) / sizeof(dirs[0]))];
+    const char* dir2 = use_zh
+        ? zh_dirs[(r2 >> 8) % (sizeof(zh_dirs) / sizeof(zh_dirs[0]))]
+        : dirs[(r2 >> 8) % (sizeof(dirs) / sizeof(dirs[0]))];
+    const char* name = use_zh
+        ? zh_names[(r2 >> 16) % (sizeof(zh_names) / sizeof(zh_names[0]))]
+        : names[(r2 >> 16) % (sizeof(names) / sizeof(names[0]))];
+    const char* ext = exts[(r3 >> 24) % (sizeof(exts) / sizeof(exts[0]))];
+
+    return fprintf(output, "%c\t%llu\t%lld\t%c:\\Users\\sample\\%s\\%s\\%s_%08llu.%s\t%llu\t%llu\n",
+                   drive,
+                   (unsigned long long)file_ref,
+                   (long long)usn,
+                   drive,
+                   dir1,
+                   dir2,
+                   name,
+                   (unsigned long long)index,
+                   ext,
+                   (unsigned long long)file_size,
+                   (unsigned long long)modified_time) >= 0;
+}
+
+static int run_sample_command(int argc, wchar_t** argv)
+{
+    wchar_t* output_path = xwcsdup(L"sample_files.tsv");
+    uint64_t count = 0;
+    uint64_t seed = 0x123456789abcdef0ULL;
+    int has_count = 0;
+    FILE* output = NULL;
+    int exit_code = 0;
+
+    if (!output_path) return 1;
+    for (int i = 2; i < argc; ++i) {
+        if (wcscmp(argv[i], L"-o") == 0 || wcscmp(argv[i], L"--output") == 0) {
+            if (++i >= argc) {
+                fwprintf(stderr, L"Missing value for --output\n");
+                exit_code = 2;
+                goto done;
+            }
+            free(output_path);
+            output_path = xwcsdup(argv[i]);
+            if (!output_path) {
+                exit_code = 1;
+                goto done;
+            }
+        } else if (wcscmp(argv[i], L"-n") == 0 || wcscmp(argv[i], L"--count") == 0) {
+            if (++i >= argc) {
+                fwprintf(stderr, L"Missing value for --count\n");
+                exit_code = 2;
+                goto done;
+            }
+            if (!parse_u64(argv[i], &count)) {
+                fwprintf(stderr, L"count must be greater than or equal to 0\n");
+                exit_code = 2;
+                goto done;
+            }
+            has_count = 1;
+        } else if (wcscmp(argv[i], L"--seed") == 0) {
+            if (++i >= argc) {
+                fwprintf(stderr, L"Missing value for --seed\n");
+                exit_code = 2;
+                goto done;
+            }
+            if (!parse_u64(argv[i], &seed)) {
+                fwprintf(stderr, L"seed must be greater than or equal to 0\n");
+                exit_code = 2;
+                goto done;
+            }
+        } else {
+            fwprintf(stderr, L"Unknown sample option: %ls\n", argv[i]);
+            exit_code = 2;
+            goto done;
+        }
+    }
+    if (!has_count) {
+        fwprintf(stderr, L"Missing required sample count: -n count\n");
+        exit_code = 2;
+        goto done;
+    }
+    if (!ensure_parent_directory(output_path)) {
+        fwprintf(stderr, L"Failed to prepare output directory: %ls\n", output_path);
+        exit_code = 1;
+        goto done;
+    }
+
+    output = _wfopen(output_path, L"wb");
+    if (!output) {
+        fwprintf(stderr, L"Failed to open output: %ls\n", output_path);
+        exit_code = 1;
+        goto done;
+    }
+    for (uint64_t i = 0; i < count; ++i) {
+        if (!write_sample_record(output, i, &seed)) {
+            exit_code = 1;
+            break;
+        }
+    }
+    if (fclose(output) != 0) exit_code = 1;
+    output = NULL;
+    if (exit_code == 0) {
+        wprintf(L"Saved %llu sample records to: %ls\n", (unsigned long long)count, output_path);
+    }
+
+done:
+    if (output) fclose(output);
+    if (exit_code == 2) print_usage();
+    free(output_path);
+    return exit_code;
+}
+
 static int get_file_info_by_ref(HANDLE h_vol, uint64_t file_ref, uint64_t* out_size,
                                 uint64_t* out_mtime, wchar_t** out_path)
 {
@@ -513,6 +667,10 @@ int wmain(int argc, wchar_t** argv)
     ScanOptions opts;
     ScanContext ctx;
     int exit_code = 0;
+
+    if (argc >= 2 && wcscmp(argv[1], L"sample") == 0) {
+        return run_sample_command(argc, argv);
+    }
 
     if (!parse_args(argc, argv, &opts)) {
         print_usage();

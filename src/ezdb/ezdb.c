@@ -210,6 +210,29 @@ typedef struct QueryIndex {
     const EzdbDiskIndex* idx;
 } QueryIndex;
 
+typedef enum EzdbQueryNodeType {
+    EZDB_QUERY_TERM = 1,
+    EZDB_QUERY_WILDCARD = 2,
+    EZDB_QUERY_NOT = 3,
+    EZDB_QUERY_AND = 4,
+    EZDB_QUERY_OR = 5
+} EzdbQueryNodeType;
+
+typedef struct EzdbQueryNode {
+    EzdbQueryNodeType type;
+    char* text;
+    size_t text_len;
+    struct EzdbQueryNode* left;
+    struct EzdbQueryNode* right;
+} EzdbQueryNode;
+
+typedef struct EzdbQueryParser {
+    const char* text;
+    size_t len;
+    size_t pos;
+    int error;
+} EzdbQueryParser;
+
 struct Ezdb {
     FILE* fp;
     char* path;
@@ -2012,6 +2035,309 @@ static int contains_ascii_casefold_bytes(const char* text, size_t text_len, cons
     return 0;
 }
 
+static int query_is_space(unsigned char ch)
+{
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+static void query_skip_spaces(EzdbQueryParser* p)
+{
+    while (p->pos < p->len && query_is_space((unsigned char)p->text[p->pos])) ++p->pos;
+}
+
+static EzdbQueryNode* query_node_new(EzdbQueryNodeType type, EzdbQueryNode* left, EzdbQueryNode* right, char* text, size_t text_len)
+{
+    EzdbQueryNode* node = (EzdbQueryNode*)calloc(1, sizeof(EzdbQueryNode));
+    if (!node) {
+        free(text);
+        return NULL;
+    }
+    node->type = type;
+    node->left = left;
+    node->right = right;
+    node->text = text;
+    node->text_len = text_len;
+    return node;
+}
+
+static void query_node_free(EzdbQueryNode* node)
+{
+    if (!node) return;
+    query_node_free(node->left);
+    query_node_free(node->right);
+    free(node->text);
+    free(node);
+}
+
+static EzdbQueryNode* query_parse_or(EzdbQueryParser* p);
+
+static int query_starts_primary(EzdbQueryParser* p)
+{
+    query_skip_spaces(p);
+    if (p->pos >= p->len) return 0;
+    return p->text[p->pos] != ')' && p->text[p->pos] != '|';
+}
+
+static int query_text_has_wildcard(const char* text, size_t len)
+{
+    for (size_t i = 0; i < len; ++i) {
+        if (text[i] == '*' || text[i] == '?') return 1;
+    }
+    return 0;
+}
+
+static EzdbQueryNode* query_parse_primary(EzdbQueryParser* p)
+{
+    query_skip_spaces(p);
+    if (p->pos >= p->len) {
+        p->error = 1;
+        return NULL;
+    }
+    if (p->text[p->pos] == '(') {
+        ++p->pos;
+        EzdbQueryNode* inner = query_parse_or(p);
+        query_skip_spaces(p);
+        if (!inner || p->pos >= p->len || p->text[p->pos] != ')') {
+            query_node_free(inner);
+            p->error = 1;
+            return NULL;
+        }
+        ++p->pos;
+        return inner;
+    }
+    if (p->text[p->pos] == '"') {
+        size_t start = ++p->pos;
+        while (p->pos < p->len && p->text[p->pos] != '"') ++p->pos;
+        if (p->pos >= p->len) {
+            p->error = 1;
+            return NULL;
+        }
+        size_t len = p->pos - start;
+        char* text = ezdb_strdup_range(p->text + start, len);
+        ++p->pos;
+        if (!text) {
+            p->error = 1;
+            return NULL;
+        }
+        return query_node_new(EZDB_QUERY_TERM, NULL, NULL, text, len);
+    }
+    if (p->text[p->pos] == ')' || p->text[p->pos] == '|') {
+        p->error = 1;
+        return NULL;
+    }
+    size_t start = p->pos;
+    while (p->pos < p->len &&
+           !query_is_space((unsigned char)p->text[p->pos]) &&
+           p->text[p->pos] != '(' &&
+           p->text[p->pos] != ')' &&
+           p->text[p->pos] != '|' &&
+           p->text[p->pos] != '!') {
+        ++p->pos;
+    }
+    if (p->pos == start) {
+        p->error = 1;
+        return NULL;
+    }
+    size_t len = p->pos - start;
+    char* text = ezdb_strdup_range(p->text + start, len);
+    if (!text) {
+        p->error = 1;
+        return NULL;
+    }
+    return query_node_new(query_text_has_wildcard(text, len) ? EZDB_QUERY_WILDCARD : EZDB_QUERY_TERM,
+                          NULL,
+                          NULL,
+                          text,
+                          len);
+}
+
+static EzdbQueryNode* query_parse_not(EzdbQueryParser* p)
+{
+    query_skip_spaces(p);
+    if (p->pos < p->len && p->text[p->pos] == '!') {
+        ++p->pos;
+        EzdbQueryNode* child = query_parse_not(p);
+        if (!child) {
+            p->error = 1;
+            return NULL;
+        }
+        EzdbQueryNode* node = query_node_new(EZDB_QUERY_NOT, child, NULL, NULL, 0);
+        if (!node) {
+            query_node_free(child);
+            p->error = 1;
+        }
+        return node;
+    }
+    return query_parse_primary(p);
+}
+
+static EzdbQueryNode* query_parse_and(EzdbQueryParser* p)
+{
+    EzdbQueryNode* left = query_parse_not(p);
+    if (!left) return NULL;
+    while (!p->error && query_starts_primary(p)) {
+        EzdbQueryNode* right = query_parse_not(p);
+        if (!right) {
+            query_node_free(left);
+            return NULL;
+        }
+        EzdbQueryNode* parent = query_node_new(EZDB_QUERY_AND, left, right, NULL, 0);
+        if (!parent) {
+            query_node_free(left);
+            query_node_free(right);
+            p->error = 1;
+            return NULL;
+        }
+        left = parent;
+    }
+    return left;
+}
+
+static EzdbQueryNode* query_parse_or(EzdbQueryParser* p)
+{
+    EzdbQueryNode* left = query_parse_and(p);
+    if (!left) return NULL;
+    for (;;) {
+        query_skip_spaces(p);
+        if (p->pos >= p->len || p->text[p->pos] != '|') break;
+        ++p->pos;
+        EzdbQueryNode* right = query_parse_and(p);
+        if (!right) {
+            query_node_free(left);
+            return NULL;
+        }
+        EzdbQueryNode* parent = query_node_new(EZDB_QUERY_OR, left, right, NULL, 0);
+        if (!parent) {
+            query_node_free(left);
+            query_node_free(right);
+            p->error = 1;
+            return NULL;
+        }
+        left = parent;
+    }
+    return left;
+}
+
+static EzdbQueryNode* query_parse(const char* keyword)
+{
+    EzdbQueryParser p;
+    memset(&p, 0, sizeof(p));
+    p.text = keyword;
+    p.len = strlen(keyword);
+    query_skip_spaces(&p);
+    if (p.pos >= p.len) return NULL;
+    EzdbQueryNode* root = query_parse_or(&p);
+    query_skip_spaces(&p);
+    if (p.error || p.pos != p.len) {
+        query_node_free(root);
+        return NULL;
+    }
+    return root;
+}
+
+static int wildcard_match_here(const char* text, size_t text_len, const char* pattern, size_t pattern_len)
+{
+    size_t ti = 0, pi = 0;
+    size_t star_pi = SIZE_MAX, star_ti = 0;
+    while (ti < text_len) {
+        if (pi >= pattern_len) return 1;
+        if (pi < pattern_len && pattern[pi] == '*') {
+            while (pi < pattern_len && pattern[pi] == '*') ++pi;
+            if (pi >= pattern_len) return 1;
+            star_pi = pi;
+            star_ti = ti;
+            continue;
+        }
+        if (pi < pattern_len && pattern[pi] == '?') {
+            ti += (size_t)utf8_token_len((const unsigned char*)text + ti, text_len - ti);
+            ++pi;
+            continue;
+        }
+        if (pi < pattern_len &&
+            fold_ascii_byte((unsigned char)text[ti]) == fold_ascii_byte((unsigned char)pattern[pi])) {
+            ++ti;
+            ++pi;
+            continue;
+        }
+        if (star_pi != SIZE_MAX) {
+            star_ti += (size_t)utf8_token_len((const unsigned char*)text + star_ti, text_len - star_ti);
+            ti = star_ti;
+            pi = star_pi;
+            continue;
+        }
+        return 0;
+    }
+    while (pi < pattern_len && pattern[pi] == '*') ++pi;
+    return pi == pattern_len;
+}
+
+static int wildcard_contains_ascii_casefold(const char* text, size_t text_len, const char* pattern, size_t pattern_len)
+{
+    if (!pattern_len) return 1;
+    if (pattern[0] == '*') return wildcard_match_here(text, text_len, pattern, pattern_len);
+    for (size_t i = 0; i <= text_len; ) {
+        if (wildcard_match_here(text + i, text_len - i, pattern, pattern_len)) return 1;
+        if (i == text_len) break;
+        i += (size_t)utf8_token_len((const unsigned char*)text + i, text_len - i);
+    }
+    return 0;
+}
+
+static int query_match_path(const EzdbQueryNode* node, const char* path, size_t path_len)
+{
+    if (!node) return 1;
+    switch (node->type) {
+    case EZDB_QUERY_TERM:
+        return contains_ascii_casefold_bytes(path, path_len, node->text, node->text_len);
+    case EZDB_QUERY_WILDCARD:
+        return wildcard_contains_ascii_casefold(path, path_len, node->text, node->text_len);
+    case EZDB_QUERY_NOT:
+        return !query_match_path(node->left, path, path_len);
+    case EZDB_QUERY_AND:
+        return query_match_path(node->left, path, path_len) && query_match_path(node->right, path, path_len);
+    case EZDB_QUERY_OR:
+        return query_match_path(node->left, path, path_len) || query_match_path(node->right, path, path_len);
+    default:
+        return 0;
+    }
+}
+
+static int query_longest_literal_from_wildcard(const char* text, size_t len, const char** out_text, size_t* out_len)
+{
+    size_t best_start = 0, best_len = 0;
+    size_t start = 0, cur_len = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (text[i] == '*' || text[i] == '?') {
+            if (cur_len > best_len) {
+                best_start = start;
+                best_len = cur_len;
+            }
+            start = i + 1u;
+            cur_len = 0;
+        } else {
+            ++cur_len;
+        }
+    }
+    if (cur_len > best_len) {
+        best_start = start;
+        best_len = cur_len;
+    }
+    if (!best_len) return 0;
+    *out_text = text + best_start;
+    *out_len = best_len;
+    return 1;
+}
+
+static int query_build_candidate_keys(const char* text, size_t len, uint32_t** out_keys, uint32_t* out_count)
+{
+    if (!len || len > UINT32_MAX) {
+        *out_keys = NULL;
+        *out_count = 0;
+        return EZDB_OK;
+    }
+    return build_query_keys(text, out_keys, out_count);
+}
+
 static int record_contains_keyword(Ezdb* db, uint32_t id, const char* keyword, size_t key_len)
 {
     EzdbDeltaRecord* delta = find_delta_record(db, id);
@@ -2199,6 +2525,169 @@ static int load_intersected_postings(Ezdb* db, EzdbDiskIndex* index, uint64_t in
     }
     *out_ids = current;
     *out_count = current_count;
+    return EZDB_OK;
+}
+
+static int mark_literal_candidates(Ezdb* db, const char* literal, size_t literal_len, unsigned char* seen, int* any_marked)
+{
+    char* keyword = ezdb_strdup_range(literal, literal_len);
+    if (!keyword) return EZDB_ERR_MEMORY;
+    uint32_t* keys = NULL;
+    uint32_t key_count = 0;
+    int rc = query_build_candidate_keys(keyword, literal_len, &keys, &key_count);
+    if (rc != EZDB_OK) {
+        free(keyword);
+        return rc;
+    }
+    if (!key_count) {
+        free(keys);
+        free(keyword);
+        return EZDB_OK;
+    }
+
+    uint32_t* file_ids = NULL;
+    uint32_t file_count = 0;
+    uint32_t* dir_ids = NULL;
+    uint32_t dir_count = 0;
+    rc = load_intersected_postings(db, db->file_index, db->header.file_index_count, keys, key_count, &file_ids, &file_count);
+    if (rc == EZDB_OK) rc = load_intersected_postings(db, db->dir_index, db->header.dir_index_count, keys, key_count, &dir_ids, &dir_count);
+    free(keys);
+    if (rc != EZDB_OK) {
+        free(file_ids);
+        free(dir_ids);
+        free(keyword);
+        return rc;
+    }
+
+    for (uint32_t i = 0; i < file_count; ++i) {
+        if (file_ids[i] < db->header.base_file_count &&
+            bitset_get(db->active_bits, file_ids[i]) &&
+            !bitset_get(db->covered_base_bits, file_ids[i])) {
+            seen[file_ids[i] >> 3u] |= (unsigned char)(1u << (file_ids[i] & 7u));
+            *any_marked = 1;
+        }
+    }
+    for (uint32_t i = 0; i < dir_count; ++i) {
+        uint32_t dir_id = dir_ids[i];
+        if (dir_id >= db->header.dir_count) continue;
+        EzdbDiskDir* d = &db->dirs[dir_id];
+        uint32_t end = d->first_file_id + d->file_count;
+        if (end > db->header.base_file_count) end = (uint32_t)db->header.base_file_count;
+        for (uint32_t id = d->first_file_id; id < end; ++id) {
+            if (bitset_get(db->active_bits, id) && !bitset_get(db->covered_base_bits, id)) {
+                seen[id >> 3u] |= (unsigned char)(1u << (id & 7u));
+                *any_marked = 1;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < db->delta_count; ++i) {
+        EzdbDeltaRecord* delta = &db->deltas[i];
+        if (find_delta_record(db, delta->id) != delta) continue;
+        if (delta->type == EZDB_DELTA_DELETE || !bitset_get(db->active_bits, delta->id)) continue;
+        if (contains_ascii_casefold_bytes(delta->path, delta->path_len, keyword, literal_len)) {
+            seen[delta->id >> 3u] |= (unsigned char)(1u << (delta->id & 7u));
+            *any_marked = 1;
+        }
+    }
+
+    free(file_ids);
+    free(dir_ids);
+    free(keyword);
+    return EZDB_OK;
+}
+
+static int bitset_or_into(unsigned char* dst, const unsigned char* src, size_t size)
+{
+    for (size_t i = 0; i < size; ++i) dst[i] |= src[i];
+    return EZDB_OK;
+}
+
+static int bitset_and_into(unsigned char* dst, const unsigned char* src, size_t size)
+{
+    for (size_t i = 0; i < size; ++i) dst[i] &= src[i];
+    return EZDB_OK;
+}
+
+static int bitset_any(const unsigned char* data, size_t size)
+{
+    for (size_t i = 0; i < size; ++i) {
+        if (data[i]) return 1;
+    }
+    return 0;
+}
+
+static int query_build_candidate_bitset(Ezdb* db, EzdbQueryNode* node, unsigned char** out_bits, int* out_has_positive)
+{
+    *out_bits = NULL;
+    *out_has_positive = 0;
+    if (!node) return EZDB_OK;
+    size_t bit_bytes = ((size_t)db->header.file_count + 7u) / 8u;
+    if (node->type == EZDB_QUERY_NOT) return EZDB_OK;
+    if (node->type == EZDB_QUERY_TERM || node->type == EZDB_QUERY_WILDCARD) {
+        const char* literal = NULL;
+        size_t literal_len = 0;
+        if (node->type == EZDB_QUERY_TERM) {
+            literal = node->text;
+            literal_len = node->text_len;
+        } else if (!query_longest_literal_from_wildcard(node->text, node->text_len, &literal, &literal_len)) {
+            return EZDB_OK;
+        }
+        unsigned char* bits = (unsigned char*)calloc(bit_bytes ? bit_bytes : 1u, 1);
+        if (!bits) return EZDB_ERR_MEMORY;
+        int any_marked = 0;
+        int rc = mark_literal_candidates(db, literal, literal_len, bits, &any_marked);
+        if (rc != EZDB_OK) {
+            free(bits);
+            return rc;
+        }
+        *out_bits = bits;
+        *out_has_positive = 1;
+        return EZDB_OK;
+    }
+    if (node->type == EZDB_QUERY_AND || node->type == EZDB_QUERY_OR) {
+        unsigned char* left = NULL;
+        unsigned char* right = NULL;
+        int left_positive = 0;
+        int right_positive = 0;
+        int rc = query_build_candidate_bitset(db, node->left, &left, &left_positive);
+        if (rc == EZDB_OK) rc = query_build_candidate_bitset(db, node->right, &right, &right_positive);
+        if (rc != EZDB_OK) {
+            free(left);
+            free(right);
+            return rc;
+        }
+        if (node->type == EZDB_QUERY_AND) {
+            if (left_positive && right_positive) {
+                bitset_and_into(left, right, bit_bytes);
+                free(right);
+                *out_bits = left;
+                *out_has_positive = 1;
+            } else if (left_positive) {
+                *out_bits = left;
+                *out_has_positive = 1;
+                free(right);
+            } else if (right_positive) {
+                *out_bits = right;
+                *out_has_positive = 1;
+                free(left);
+            } else {
+                free(left);
+                free(right);
+            }
+        } else {
+            if (left_positive && right_positive) {
+                bitset_or_into(left, right, bit_bytes);
+                free(right);
+                *out_bits = left;
+                *out_has_positive = 1;
+            } else {
+                free(left);
+                free(right);
+                *out_bits = NULL;
+                *out_has_positive = 0;
+            }
+        }
+    }
     return EZDB_OK;
 }
 
@@ -2636,9 +3125,8 @@ void ezdb_free_result(EzdbSearchResult* result)
     memset(result, 0, sizeof(*result));
 }
 
-int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCallback callback, void* user_data)
+static int ezdb_search_plain(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCallback callback, void* user_data)
 {
-    if (!db || !keyword || !callback) return EZDB_ERR_ARG;
     size_t key_len = strlen(keyword);
     if (!key_len) return EZDB_OK;
     uint32_t* keys = NULL;
@@ -2713,6 +3201,57 @@ int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCa
     free(seen);
     free(file_ids);
     free(dir_ids);
+    return rc;
+}
+
+int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCallback callback, void* user_data)
+{
+    if (!db || !keyword || !callback) return EZDB_ERR_ARG;
+    while (query_is_space((unsigned char)*keyword)) ++keyword;
+    if (!*keyword) return EZDB_OK;
+
+    EzdbQueryNode* root = query_parse(keyword);
+    if (!root) return ezdb_search_plain(db, keyword, limit, callback, user_data);
+
+    unsigned char* seen = NULL;
+    int has_positive_candidates = 0;
+    int rc = query_build_candidate_bitset(db, root, &seen, &has_positive_candidates);
+    if (rc != EZDB_OK) {
+        query_node_free(root);
+        return rc;
+    }
+    size_t seen_size = ((size_t)db->header.file_count + 7u) / 8u;
+    int full_scan = !has_positive_candidates;
+    if (!full_scan && !bitset_any(seen, seen_size)) {
+        free(seen);
+        query_node_free(root);
+        return EZDB_OK;
+    }
+
+    uint32_t emitted = 0;
+    for (uint32_t id = 0; rc == EZDB_OK && id < db->header.file_count; ++id) {
+        if (limit && emitted >= limit) break;
+        if (full_scan) {
+            if (!bitset_get(db->active_bits, id)) continue;
+        } else if (!(seen[id >> 3u] & (unsigned char)(1u << (id & 7u)))) {
+            continue;
+        }
+        EzdbSearchResult result;
+        rc = build_result_path(db, id, &result);
+        if (rc == EZDB_ERR_NOT_FOUND) {
+            rc = EZDB_OK;
+            continue;
+        }
+        if (rc != EZDB_OK) break;
+        if (query_match_path(root, result.path, strlen(result.path))) {
+            callback(&result, user_data);
+            ++emitted;
+        }
+        ezdb_free_result(&result);
+    }
+
+    free(seen);
+    query_node_free(root);
     return rc;
 }
 

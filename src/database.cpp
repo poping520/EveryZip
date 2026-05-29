@@ -448,9 +448,9 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
     const bool hasFilter = !filter.empty();
 
     const char* sql = hasFilter
-                          ? "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number FROM archives "
+                          ? "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number FROM archives "
                             "WHERE file_path LIKE ? ESCAPE '\\' ORDER BY id DESC;"
-                          : "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number FROM archives ORDER BY id DESC;";
+                          : "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number FROM archives ORDER BY id DESC;";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK || !stmt)
@@ -483,7 +483,6 @@ bool Database::QueryArchives(const std::wstring& filter, std::vector<ArchiveFile
         f.modifiedTime = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
         f.usn = static_cast<USN>(sqlite3_column_int64(stmt, 4));
         f.fileRefNumber = static_cast<DWORDLONG>(sqlite3_column_int64(stmt, 5));
-        f.parentFileRefNumber = static_cast<DWORDLONG>(sqlite3_column_int64(stmt, 6));
 
         out->push_back(std::move(f));
     }
@@ -727,7 +726,7 @@ bool Database::QueryArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumb
 {
     if (!db_ || !out) return false;
 
-    const char* sql = "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number, parent_file_ref_number "
+    const char* sql = "SELECT drive_letter, file_path, file_size, modified_time, usn, file_ref_number "
                       "FROM archives WHERE drive_letter = ? AND file_ref_number = ?";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -748,7 +747,6 @@ bool Database::QueryArchiveByRefNumber(wchar_t driveLetter, uint64_t fileRefNumb
         out->modifiedTime = (uint64_t)sqlite3_column_int64(stmt, 3);
         out->usn = (USN)sqlite3_column_int64(stmt, 4);
         out->fileRefNumber = (DWORDLONG)sqlite3_column_int64(stmt, 5);
-        out->parentFileRefNumber = (DWORDLONG)sqlite3_column_int64(stmt, 6);
         found = true;
     }
     sqlite3_finalize(stmt);
@@ -769,7 +767,6 @@ bool Database::CreateArchivesTable(std::wstring* err)
                 id INTEGER PRIMARY KEY,
                 drive_letter TEXT NOT NULL,
                 file_ref_number INTEGER NOT NULL,
-                parent_file_ref_number INTEGER NOT NULL,
                 usn INTEGER NOT NULL,
                 file_path TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
@@ -787,7 +784,8 @@ bool Database::CreateArchivesTable(std::wstring* err)
         return false;
     }
 
-    if (ArchivesTableHasColumn(db_, "file_name")) {
+    if (ArchivesTableHasColumn(db_, "file_name") ||
+        ArchivesTableHasColumn(db_, "parent_file_ref_number")) {
         const char* migrateSql = R"(
             BEGIN IMMEDIATE;
             DROP INDEX IF EXISTS idx_file_name;
@@ -795,7 +793,6 @@ bool Database::CreateArchivesTable(std::wstring* err)
                 id INTEGER PRIMARY KEY,
                 drive_letter TEXT NOT NULL,
                 file_ref_number INTEGER NOT NULL,
-                parent_file_ref_number INTEGER NOT NULL,
                 usn INTEGER NOT NULL,
                 file_path TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
@@ -803,8 +800,8 @@ bool Database::CreateArchivesTable(std::wstring* err)
                 UNIQUE(drive_letter, file_ref_number)
             );
             INSERT INTO archives_new
-                (id, drive_letter, file_ref_number, parent_file_ref_number, usn, file_path, file_size, modified_time)
-                SELECT id, drive_letter, file_ref_number, parent_file_ref_number, usn, file_path, file_size, modified_time
+                (id, drive_letter, file_ref_number, usn, file_path, file_size, modified_time)
+                SELECT id, drive_letter, file_ref_number, usn, file_path, file_size, modified_time
                 FROM archives;
             DROP TABLE archives;
             ALTER TABLE archives_new RENAME TO archives;
@@ -844,11 +841,10 @@ bool Database::CreateArchivesTable(std::wstring* err)
 bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
 {
     const char* sql = R"(
-            INSERT INTO archives
-            (drive_letter, file_ref_number, parent_file_ref_number, usn, file_path, file_size, modified_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO archives
+            (drive_letter, file_ref_number, usn, file_path, file_size, modified_time)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(drive_letter, file_ref_number) DO UPDATE SET
-                parent_file_ref_number=excluded.parent_file_ref_number,
                 usn=excluded.usn,
                 file_path=excluded.file_path,
                 file_size=excluded.file_size,
@@ -867,11 +863,10 @@ bool Database::InsertOrUpdateArchive(const ArchiveFile_t& af)
     std::string pathUtf8 = WStringToUtf8(af.filePath);
     sqlite3_bind_text(stmt, 1, driveUtf8.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, af.fileRefNumber);
-    sqlite3_bind_int64(stmt, 3, af.parentFileRefNumber);
-    sqlite3_bind_int64(stmt, 4, af.usn);
-    sqlite3_bind_text(stmt, 5, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 6, af.fileSize);
-    sqlite3_bind_int64(stmt, 7, af.modifiedTime);
+    sqlite3_bind_int64(stmt, 3, af.usn);
+    sqlite3_bind_text(stmt, 4, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 5, af.fileSize);
+    sqlite3_bind_int64(stmt, 6, af.modifiedTime);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -902,10 +897,9 @@ bool Database::InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std:
 
     const char* sql = R"(
         INSERT INTO archives
-        (drive_letter, file_ref_number, parent_file_ref_number, usn, file_path, file_size, modified_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (drive_letter, file_ref_number, usn, file_path, file_size, modified_time)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(drive_letter, file_ref_number) DO UPDATE SET
-            parent_file_ref_number=excluded.parent_file_ref_number,
             usn=excluded.usn,
             file_path=excluded.file_path,
             file_size=excluded.file_size,
@@ -932,11 +926,10 @@ bool Database::InsertArchivesBatch(const std::vector<ArchiveFile_t>& files, std:
         std::string pathUtf8 = WStringToUtf8(af.filePath);
         sqlite3_bind_text(stmt, 1, driveUtf8.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 2, af.fileRefNumber);
-        sqlite3_bind_int64(stmt, 3, af.parentFileRefNumber);
-        sqlite3_bind_int64(stmt, 4, af.usn);
-        sqlite3_bind_text(stmt, 5, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 6, af.fileSize);
-        sqlite3_bind_int64(stmt, 7, af.modifiedTime);
+        sqlite3_bind_int64(stmt, 3, af.usn);
+        sqlite3_bind_text(stmt, 4, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 5, af.fileSize);
+        sqlite3_bind_int64(stmt, 6, af.modifiedTime);
 
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE)

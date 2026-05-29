@@ -18,8 +18,6 @@ struct ArchiveFile_t
     uint64_t modifiedTime = 0;
     // FileReferenceNumber
     DWORDLONG fileRefNumber = 0;
-    // ParentFileReferenceNumber
-    DWORDLONG parentFileRefNumber = 0;
     //
     USN usn = 0;
 };
@@ -29,7 +27,6 @@ struct UsnChangeRecord_t
 {
     wchar_t driveLetter = 0;
     DWORDLONG fileRefNumber = 0;
-    DWORDLONG parentFileRefNumber = 0;
     DWORD reason = 0;           // USN_REASON_* 标志
     std::wstring fileName;
     USN usn = 0;

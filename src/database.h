@@ -32,7 +32,6 @@ struct sqlite3;
  *   id                     INTEGER PRIMARY KEY
  *   drive_letter           TEXT NOT NULL
  *   file_ref_number        INTEGER NOT NULL
- *   parent_file_ref_number INTEGER NOT NULL
  *   usn                    INTEGER NOT NULL
  *   file_path              TEXT NOT NULL
  *   file_size              INTEGER NOT NULL

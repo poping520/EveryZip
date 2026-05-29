@@ -215,7 +215,6 @@ static bool ScanDriveByUsn(wchar_t driveLetter, std::vector<ArchiveFile_t>* out,
                 ArchiveFile_t af;
                 af.driveLetter = std::wstring(1, driveLetter);
                 af.fileRefNumber = rec->FileReferenceNumber;
-                af.parentFileRefNumber = rec->ParentFileReferenceNumber;
                 af.usn = rec->Usn;
 
                 uint64_t fileSize = 0;
@@ -368,7 +367,6 @@ bool FileScanner::ScanUsnJournal(wchar_t driveLetter, int64_t journalId, USN sta
                 UsnChangeRecord_t cr;
                 cr.driveLetter = driveLetter;
                 cr.fileRefNumber = rec->FileReferenceNumber;
-                cr.parentFileRefNumber = rec->ParentFileReferenceNumber;
                 cr.reason = rec->Reason;
                 cr.fileName.assign(fileName, fileNameLen);
                 cr.usn = rec->Usn;

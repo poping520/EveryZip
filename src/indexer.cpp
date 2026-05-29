@@ -678,7 +678,6 @@ void Indexer::Start(HWND hWnd) {
                         af.fileSize = fileSize;
                         af.modifiedTime = modifyTime;
                         af.fileRefNumber = cr.fileRefNumber;
-                        af.parentFileRefNumber = cr.parentFileRefNumber;
                         af.usn = cr.usn;
                         monDb.InsertOrUpdateArchive(af);
 

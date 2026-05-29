@@ -39,6 +39,14 @@ if(MSVC)
     target_compile_options(EzdbBench PRIVATE /utf-8)
 endif()
 
+add_executable(ListAllFiles
+        tools/list_all_files.c
+)
+
+if(MSVC)
+    target_compile_options(ListAllFiles PRIVATE /utf-8)
+endif()
+
 add_executable(EveryZip WIN32
         src/resource.h
         src/strings.rc

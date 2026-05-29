@@ -1,4 +1,5 @@
 #include "../src/ezdb/ezdb.h"
+#include "../external/sqlite/sqlite3.h"
 
 #include <windows.h>
 #include <psapi.h>
@@ -25,14 +26,20 @@ static void print_usage(void)
 {
     printf("Usage:\n");
     printf("  EzdbBench build <input.txt> <output.ezdb>\n");
+    printf("  EzdbBench build-archives <input.tsv> <output.ezdb>\n");
+    printf("  EzdbBench import-sqlite <everyzip.db> <output.ezdb>\n");
     printf("  EzdbBench info <db.ezdb>\n");
     printf("  EzdbBench get <db.ezdb> <id>\n");
+    printf("  EzdbBench get-archive <db.ezdb> <id>\n");
+    printf("  EzdbBench get-entry <db.ezdb> <id>\n");
     printf("  EzdbBench search <db.ezdb> <keyword> [limit]\n");
+    printf("  EzdbBench search-v2 <db.ezdb> <scope> <keyword> [limit]\n");
     printf("  EzdbBench open <db.ezdb> [limit]\n");
     printf("  EzdbBench insert <db.ezdb> <path> [size] [mtime]\n");
     printf("  EzdbBench insert-file <db.ezdb> <input.txt>\n");
     printf("  EzdbBench update <db.ezdb> <id> <path> [size] [mtime]\n");
     printf("  EzdbBench delete <db.ezdb> <id>\n");
+    printf("  EzdbBench delete-archive-ref <db.ezdb> <drive> <file_ref_number>\n");
     printf("  EzdbBench crud <input.txt> <output.ezdb>\n");
 }
 
@@ -66,6 +73,44 @@ static void on_result(const EzdbSearchResult* result, void* user_data)
     }
 }
 
+static void on_v2_result(const EzdbSearchV2Result* result, void* user_data)
+{
+    SearchStats* stats = (SearchStats*)user_data;
+    ++stats->total;
+    if (stats->printed < 20) {
+        if (result->kind == EZDB_RESULT_ARCHIVE) {
+            printf("[archive:%u] %c %llu %lld %s, %llu, %llu\n",
+                   result->id,
+                   result->drive_letter ? result->drive_letter : '-',
+                   (unsigned long long)result->file_ref_number,
+                   (long long)result->usn,
+                   result->archive_path ? result->archive_path : "",
+                   (unsigned long long)result->file_size,
+                   (unsigned long long)result->modified_time);
+        } else {
+            printf("[entry:%u archive:%u] %s :: %s, %lld, %llu, %llu raw=%u\n",
+                   result->id,
+                   result->archive_id,
+                   result->archive_path ? result->archive_path : "",
+                   result->entry_path ? result->entry_path : "",
+                   (long long)result->compressed_size,
+                   (unsigned long long)result->original_size,
+                   (unsigned long long)result->modified_time,
+                   result->entry_raw_path_len);
+        }
+        ++stats->printed;
+    }
+}
+
+static uint32_t parse_scope_arg(const char* text)
+{
+    if (!text || strcmp(text, "archive") == 0 || strcmp(text, "archives") == 0) return EZDB_SEARCH_ARCHIVE_PATH;
+    if (strcmp(text, "entry") == 0 || strcmp(text, "entries") == 0) return EZDB_SEARCH_ENTRY_PATH;
+    if (strcmp(text, "combined") == 0 || strcmp(text, "combo") == 0) return EZDB_SEARCH_COMBINED_PATH;
+    if (strcmp(text, "all") == 0) return EZDB_SEARCH_ALL;
+    return (uint32_t)strtoul(text, NULL, 0);
+}
+
 static int run_search_once(Ezdb* db, const char* keyword, uint32_t limit, const char* memory_prefix)
 {
     SearchStats stats;
@@ -75,6 +120,23 @@ static int run_search_once(Ezdb* db, const char* keyword, uint32_t limit, const 
     double search_elapsed = now_ms() - search_start;
     if (rc != 0) {
         fprintf(stderr, "search failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        return rc;
+    }
+    printf("search_ms: %.2f\n", search_elapsed);
+    printf("returned: %u\n", stats.total);
+    print_memory_usage(memory_prefix);
+    return 0;
+}
+
+static int run_search_v2_once(Ezdb* db, const char* keyword, uint32_t scope, uint32_t limit, const char* memory_prefix)
+{
+    SearchStats stats;
+    memset(&stats, 0, sizeof(stats));
+    double search_start = now_ms();
+    int rc = ezdb_search(db, keyword, scope, limit, on_v2_result, &stats);
+    double search_elapsed = now_ms() - search_start;
+    if (rc != 0) {
+        fprintf(stderr, "search-v2 failed: %s (%d)\n", ezdb_error_message(rc), rc);
         return rc;
     }
     printf("search_ms: %.2f\n", search_elapsed);
@@ -426,10 +488,15 @@ static int print_db_info(Ezdb* db, const char* memory_prefix)
     }
     printf("records: %u\n", stats.record_count);
     printf("active: %u\n", stats.active_count);
+    printf("entries: %u\n", stats.entry_count);
+    printf("active_entries: %u\n", stats.active_entry_count);
     printf("file_size: %llu bytes\n", (unsigned long long)stats.file_size);
     printf("records_size: %llu bytes\n", (unsigned long long)stats.records_size);
     printf("dirs_size: %llu bytes\n", (unsigned long long)stats.dirs_size);
     printf("names_size: %llu bytes\n", (unsigned long long)stats.names_size);
+    printf("archive_meta_size: %llu bytes\n", (unsigned long long)stats.archive_meta_size);
+    printf("entry_records_size: %llu bytes\n", (unsigned long long)stats.entry_records_size);
+    printf("raw_blob_size: %llu bytes\n", (unsigned long long)stats.raw_blob_size);
     printf("index_size: %llu bytes\n", (unsigned long long)stats.index_size);
     printf("postings_size: %llu bytes\n", (unsigned long long)stats.postings_size);
     print_memory_usage(memory_prefix);
@@ -652,6 +719,150 @@ static int run_delete_once(Ezdb* db, uint32_t id, const char* memory_prefix)
     return 0;
 }
 
+static void free_import_data(EzdbArchiveRecord* archives, uint32_t archive_count, EzdbEntryRecord* entries, uint32_t entry_count)
+{
+    if (archives) {
+        for (uint32_t i = 0; i < archive_count; ++i) free((void*)archives[i].file_path);
+    }
+    if (entries) {
+        for (uint32_t i = 0; i < entry_count; ++i) {
+            free((void*)entries[i].entry_path);
+            free((void*)entries[i].entry_raw_path);
+        }
+    }
+    free(archives);
+    free(entries);
+}
+
+static int run_import_sqlite(const char* sqlite_path, const char* output_ezdb)
+{
+    sqlite3* sdb = NULL;
+    sqlite3_stmt* stmt = NULL;
+    EzdbArchiveRecord* archives = NULL;
+    EzdbEntryRecord* entries = NULL;
+    uint32_t archive_count = 0, entry_count = 0;
+    uint32_t* id_map = NULL;
+    int max_archive_id = 0;
+    int rc = sqlite3_open_v2(sqlite_path, &sdb, SQLITE_OPEN_READONLY, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "sqlite open failed: %s\n", sdb ? sqlite3_errmsg(sdb) : sqlite_path);
+        if (sdb) sqlite3_close(sdb);
+        return 2;
+    }
+
+    double start = now_ms();
+    rc = sqlite3_prepare_v2(sdb, "SELECT COUNT(*), COALESCE(MAX(id),0) FROM archives", -1, &stmt, NULL);
+    if (rc != SQLITE_OK || sqlite3_step(stmt) != SQLITE_ROW) goto sqlite_fail;
+    archive_count = (uint32_t)sqlite3_column_int64(stmt, 0);
+    max_archive_id = sqlite3_column_int(stmt, 1);
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+
+    rc = sqlite3_prepare_v2(sdb, "SELECT COUNT(*) FROM entries", -1, &stmt, NULL);
+    if (rc != SQLITE_OK || sqlite3_step(stmt) != SQLITE_ROW) goto sqlite_fail;
+    entry_count = (uint32_t)sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+
+    archives = (EzdbArchiveRecord*)calloc(archive_count ? archive_count : 1u, sizeof(EzdbArchiveRecord));
+    entries = (EzdbEntryRecord*)calloc(entry_count ? entry_count : 1u, sizeof(EzdbEntryRecord));
+    id_map = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)(max_archive_id + 1));
+    if (!archives || !entries || !id_map) {
+        fprintf(stderr, "out of memory\n");
+        sqlite3_close(sdb);
+        free(id_map);
+        free_import_data(archives, archive_count, entries, entry_count);
+        return 2;
+    }
+    for (int i = 0; i <= max_archive_id; ++i) id_map[i] = UINT32_MAX;
+
+    rc = sqlite3_prepare_v2(sdb,
+                            "SELECT id, drive_letter, file_ref_number, usn, file_path, file_size, modified_time FROM archives ORDER BY id",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) goto sqlite_fail;
+    uint32_t ai = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        int sqlite_id = sqlite3_column_int(stmt, 0);
+        const unsigned char* drive = sqlite3_column_text(stmt, 1);
+        const unsigned char* path = sqlite3_column_text(stmt, 4);
+        if (ai >= archive_count || sqlite_id < 0 || sqlite_id > max_archive_id || !path) goto sqlite_fail;
+        id_map[sqlite_id] = ai;
+        archives[ai].drive_letter = drive && drive[0] ? (char)drive[0] : 0;
+        archives[ai].file_ref_number = (uint64_t)sqlite3_column_int64(stmt, 2);
+        archives[ai].usn = (int64_t)sqlite3_column_int64(stmt, 3);
+        archives[ai].file_path = _strdup((const char*)path);
+        archives[ai].file_size = (uint64_t)sqlite3_column_int64(stmt, 5);
+        archives[ai].modified_time = (uint64_t)sqlite3_column_int64(stmt, 6);
+        if (!archives[ai].file_path) goto sqlite_fail;
+        ++ai;
+    }
+    if (rc != SQLITE_DONE || ai != archive_count) goto sqlite_fail;
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+
+    rc = sqlite3_prepare_v2(sdb,
+                            "SELECT archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time FROM entries ORDER BY id",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) goto sqlite_fail;
+    uint32_t ei = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        int sqlite_archive_id = sqlite3_column_int(stmt, 0);
+        const unsigned char* entry_path = sqlite3_column_text(stmt, 1);
+        if (ei >= entry_count || sqlite_archive_id < 0 || sqlite_archive_id > max_archive_id ||
+            id_map[sqlite_archive_id] == UINT32_MAX || !entry_path) goto sqlite_fail;
+        entries[ei].archive_id = id_map[sqlite_archive_id];
+        entries[ei].entry_path = _strdup((const char*)entry_path);
+        const void* raw = sqlite3_column_blob(stmt, 2);
+        int raw_len = sqlite3_column_bytes(stmt, 2);
+        if (raw && raw_len > 0) {
+            void* copy = malloc((size_t)raw_len);
+            if (!copy) goto sqlite_fail;
+            memcpy(copy, raw, (size_t)raw_len);
+            entries[ei].entry_raw_path = copy;
+            entries[ei].entry_raw_path_len = (uint32_t)raw_len;
+        }
+        entries[ei].compressed_size = (int64_t)sqlite3_column_int64(stmt, 3);
+        entries[ei].original_size = (uint64_t)sqlite3_column_int64(stmt, 4);
+        entries[ei].modified_time = (uint64_t)sqlite3_column_int64(stmt, 5);
+        if (!entries[ei].entry_path) goto sqlite_fail;
+        ++ei;
+    }
+    if (rc != SQLITE_DONE || ei != entry_count) goto sqlite_fail;
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+    sqlite3_close(sdb);
+    sdb = NULL;
+
+    double load_elapsed = now_ms() - start;
+    printf("import_sqlite_load_ms: %.2f\n", load_elapsed);
+    printf("import_sqlite_archives: %u\n", archive_count);
+    printf("import_sqlite_entries: %u\n", entry_count);
+    print_memory_usage("import_sqlite_loaded");
+
+    start = now_ms();
+    int ezrc = ezdb_build_snapshot(archives, archive_count, entries, entry_count, output_ezdb);
+    double build_elapsed = now_ms() - start;
+    if (ezrc != 0) {
+        fprintf(stderr, "ezdb_build_snapshot failed: %s (%d)\n", ezdb_error_message(ezrc), ezrc);
+        free(id_map);
+        free_import_data(archives, archive_count, entries, entry_count);
+        return 2;
+    }
+    printf("import_sqlite_build_ms: %.2f\n", build_elapsed);
+    print_memory_usage("import_sqlite_after_build");
+    free(id_map);
+    free_import_data(archives, archive_count, entries, entry_count);
+    return 0;
+
+sqlite_fail:
+    fprintf(stderr, "sqlite import failed: %s\n", sdb ? sqlite3_errmsg(sdb) : "unknown");
+    if (stmt) sqlite3_finalize(stmt);
+    if (sdb) sqlite3_close(sdb);
+    free(id_map);
+    free_import_data(archives, archive_count, entries, entry_count);
+    return 2;
+}
+
 static int run_main(int argc, char** argv)
 {
     if (argc < 2) {
@@ -676,6 +887,31 @@ static int run_main(int argc, char** argv)
         return 0;
     }
 
+    if (strcmp(argv[1], "build-archives") == 0) {
+        if (argc != 4) {
+            print_usage();
+            return 1;
+        }
+        double start = now_ms();
+        int rc = ezdb_build_from_archives_tsv(argv[2], argv[3]);
+        double elapsed = now_ms() - start;
+        if (rc != 0) {
+            fprintf(stderr, "build-archives failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        printf("build ok: %.2f ms\n", elapsed);
+        print_memory_usage("build");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "import-sqlite") == 0) {
+        if (argc != 4) {
+            print_usage();
+            return 1;
+        }
+        return run_import_sqlite(argv[2], argv[3]);
+    }
+
     if (strcmp(argv[1], "info") == 0) {
         if (argc != 3) {
             print_usage();
@@ -696,10 +932,15 @@ static int run_main(int argc, char** argv)
         }
         printf("records: %u\n", stats.record_count);
         printf("active: %u\n", stats.active_count);
+        printf("entries: %u\n", stats.entry_count);
+        printf("active_entries: %u\n", stats.active_entry_count);
         printf("file_size: %llu bytes\n", (unsigned long long)stats.file_size);
         printf("records_size: %llu bytes\n", (unsigned long long)stats.records_size);
         printf("dirs_size: %llu bytes\n", (unsigned long long)stats.dirs_size);
         printf("names_size: %llu bytes\n", (unsigned long long)stats.names_size);
+        printf("archive_meta_size: %llu bytes\n", (unsigned long long)stats.archive_meta_size);
+        printf("entry_records_size: %llu bytes\n", (unsigned long long)stats.entry_records_size);
+        printf("raw_blob_size: %llu bytes\n", (unsigned long long)stats.raw_blob_size);
         printf("index_size: %llu bytes\n", (unsigned long long)stats.index_size);
         printf("postings_size: %llu bytes\n", (unsigned long long)stats.postings_size);
         print_memory_usage("info");
@@ -736,6 +977,71 @@ static int run_main(int argc, char** argv)
         return 0;
     }
 
+    if (strcmp(argv[1], "get-archive") == 0) {
+        if (argc != 4) {
+            print_usage();
+            return 1;
+        }
+        Ezdb* db = NULL;
+        int rc = ezdb_open(argv[2], &db);
+        if (rc != 0) {
+            fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        EzdbArchiveResult result;
+        rc = ezdb_get_archive(db, (uint32_t)strtoul(argv[3], NULL, 10), &result);
+        if (rc != 0) {
+            fprintf(stderr, "get-archive failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            ezdb_close(db);
+            return 2;
+        }
+        printf("[%u] %c %llu %lld %s, %llu, %llu\n",
+               result.id,
+               result.drive_letter ? result.drive_letter : '-',
+               (unsigned long long)result.file_ref_number,
+               (long long)result.usn,
+               result.file_path,
+               (unsigned long long)result.file_size,
+               (unsigned long long)result.modified_time);
+        ezdb_free_archive_result(&result);
+        print_memory_usage("get_archive");
+        ezdb_close(db);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "get-entry") == 0) {
+        if (argc != 4) {
+            print_usage();
+            return 1;
+        }
+        Ezdb* db = NULL;
+        int rc = ezdb_open(argv[2], &db);
+        if (rc != 0) {
+            fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        EzdbEntryResult result;
+        rc = ezdb_get_entry(db, (uint32_t)strtoul(argv[3], NULL, 10), &result);
+        if (rc != 0) {
+            fprintf(stderr, "get-entry failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            ezdb_close(db);
+            return 2;
+        }
+        printf("[%u archive:%u] %s :: %s, %lld, %llu, %llu raw=%u\n",
+               result.id,
+               result.archive_id,
+               result.archive_path,
+               result.entry_path,
+               (long long)result.compressed_size,
+               (unsigned long long)result.original_size,
+               (unsigned long long)result.modified_time,
+               result.entry_raw_path_len);
+        ezdb_free_entry_result(&result);
+        print_memory_usage("get_entry");
+        ezdb_close(db);
+        return 0;
+    }
+
     if (strcmp(argv[1], "search") == 0) {
         if (argc < 4 || argc > 5) {
             print_usage();
@@ -753,6 +1059,32 @@ static int run_main(int argc, char** argv)
 
         printf("open_ms: %.2f\n", open_elapsed);
         rc = run_search_once(db, argv[3], limit, "search");
+        if (rc != 0) {
+            ezdb_close(db);
+            return 2;
+        }
+        ezdb_close(db);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "search-v2") == 0) {
+        if (argc < 5 || argc > 6) {
+            print_usage();
+            return 1;
+        }
+        uint32_t scope = parse_scope_arg(argv[3]);
+        uint32_t limit = argc == 6 ? (uint32_t)strtoul(argv[5], NULL, 10) : 100;
+        Ezdb* db = NULL;
+        double open_start = now_ms();
+        int rc = ezdb_open(argv[2], &db);
+        double open_elapsed = now_ms() - open_start;
+        if (rc != 0) {
+            fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+
+        printf("open_ms: %.2f\n", open_elapsed);
+        rc = run_search_v2_once(db, argv[4], scope, limit, "search");
         if (rc != 0) {
             ezdb_close(db);
             return 2;
@@ -957,6 +1289,31 @@ static int run_main(int argc, char** argv)
         }
         printf("delete_ms: %.2f\n", elapsed);
         print_memory_usage("delete");
+        ezdb_close(db);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "delete-archive-ref") == 0) {
+        if (argc != 5) {
+            print_usage();
+            return 1;
+        }
+        Ezdb* db = NULL;
+        int rc = ezdb_open(argv[2], &db);
+        if (rc != 0) {
+            fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        double start = now_ms();
+        rc = ezdb_delete_archive_by_ref(db, argv[3][0], parse_u64_arg(argv[4], 0));
+        double elapsed = now_ms() - start;
+        if (rc != 0) {
+            fprintf(stderr, "delete-archive-ref failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            ezdb_close(db);
+            return 2;
+        }
+        printf("delete_archive_ref_ms: %.2f\n", elapsed);
+        print_memory_usage("delete_archive_ref");
         ezdb_close(db);
         return 0;
     }

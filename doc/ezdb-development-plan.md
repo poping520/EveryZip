@@ -1,85 +1,113 @@
-# ezdb 自定义路径索引数据库需求与设计
+# ezdb 自定义索引数据库需求与设计
 
 ## 1. 背景与目标
 
-`ezdb` 是 EveryZip 面向“大量文件路径索引和快速搜索”的自定义数据库格式。它不追求通用 SQL 能力，而是针对 `path + size + modified_time` 这类路径记录做极致的构建、搜索、空间和运行时内存优化。
+`ezdb` 是 EveryZip 面向“大量文件路径、归档文件和归档内部条目快速搜索”的自定义数据库格式。它不追求通用 SQL 能力，而是针对 EveryZip 的核心业务数据做紧凑存储、快速构建和低延迟搜索。
 
-当前格式版本为 `EZDB0007`，不兼容 v1-v6。旧 `.ezdb` 文件需要重新构建。
+当前格式版本为 `EZDB0008`，不兼容 v1-v7。旧 `.ezdb` 文件需要重新构建。
 
 核心目标：
 
 - 文件扩展名为 `.ezdb`。
 - 核心库使用 C 语言实现，在 Windows 上编译运行。
-- 保存文件路径记录：`path`、`size`、`modified_time`。
+- 支持单项 archives 数据：本机压缩/归档文件。
+- 支持双项 archives + entries 数据：归档文件及其内部文件条目。
+- 支持 archive path、entry path、archive + entry 组合搜索。
 - 支持 build、open、info、get、search、insert、update、delete。
 - 支持事务批量写入和 `insert_many`。
-- 支持 500 万到千万级路径数据的快速搜索，常见热查询目标 300ms 以内。
+- 支持百万到千万级路径数据快速搜索，常见热查询目标 300ms 以内。
 - 通过目录树、字符串复用、压缩 records、压缩 postings 降低磁盘占用。
 - 打开后不常驻完整 path 数组，只按需重建返回结果路径。
-- 文件头和 section 预留扩展能力，后续可保存其他类型数据。
-
-第一阶段以独立库和 `EzdbBench` 命令行工具验证格式、空间和搜索性能；暂不直接替换 EveryZip 主程序现有 SQLite 数据库，也不接入 UI。
+- 第一阶段只开发 ezdb 和 `EzdbBench`，暂不替换 EveryZip 主程序 SQLite，也不改 UI。
 
 ## 2. 数据模型
 
-每条文件记录包含：
+### 2.1 Archives
+
+每条 archive 记录对应 EveryZip `archives` 表的一行：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | `uint32_t` | 记录内部编号，从 0 开始递增。 |
-| `path` | UTF-8 字符串 | 文件完整路径，例如 `C:\Program Files\app\a.dll`。 |
-| `size` | `uint64_t` | 文件字节大小。 |
-| `modified_time` | `uint64_t` | 文件最后修改时间，Unix 秒级时间戳。 |
-| `flags` | `uint32_t` | 删除标记、扩展标记等。 |
+| `id` | `uint32_t` | ezdb 内部 archive id，从 0 开始。 |
+| `drive_letter` | `char` | 盘符，例如 `C`。 |
+| `file_ref_number` | `uint64_t` | NTFS file reference number。 |
+| `usn` | `int64_t` | USN Journal 位置。 |
+| `file_path` | UTF-8 字符串 | 归档文件完整路径。 |
+| `file_size` | `uint64_t` | 文件字节大小。 |
+| `modified_time` | `uint64_t` | 文件修改时间，原样保存调用方输入值。 |
 
-完整路径拆成目录和文件名：
+archive path 仍拆成目录和文件名：
 
 ```text
-C:\Program Files\App\bin\a.dll
+C:\Program Files\App\bin\a.zip
 dir  = C:\Program Files\App\bin
-name = a.dll
+name = a.zip
 ```
 
-这样可以复用目录组件和常见文件名，记录区只保存 `dir_id + name_offset/name_len`，返回结果时再按需重建完整路径。
+构建阶段按目录树 DFS 顺序重排 archive id，使目录命中可扩展为连续 archive id range。
+
+### 2.2 Entries
+
+每条 entry 记录对应 EveryZip `entries` 表的一行：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | `uint32_t` | ezdb 内部 entry id，从 0 开始。 |
+| `archive_id` | `uint32_t` | 关联的 ezdb archive id。 |
+| `entry_path` | UTF-8 字符串 | 规范化后的归档内部条目路径。 |
+| `entry_raw_path` | BLOB | 可选，仅非 UTF-8 原始条目路径需要原始字节定位时保存。 |
+| `compressed_size` | `int64_t` | 压缩后大小，允许 `-1` 表示不可得。 |
+| `original_size` | `uint64_t` | 原始大小。 |
+| `modified_time` | `uint64_t` | 条目修改时间，原样保存调用方输入值。 |
+
+删除 archive 时，这个 archive 对应的 entries 在搜索和读取语义上级联失效。
 
 ## 3. 文件格式
 
 `.ezdb` 使用固定文件头加分段 section：
 
 ```text
-+------------------+
-| EzdbHeader       |
-+------------------+
-| file records     |
-+------------------+
-| dir records      |
-+------------------+
-| string pool      |
-+------------------+
-| postings         |
-+------------------+
-| index            |
-+------------------+
-| append delta log |
-+------------------+
-| reserved / ext   |
-+------------------+
++----------------------+
+| EzdbHeader           |
++----------------------+
+| archive file records |
++----------------------+
+| archive metadata     |
++----------------------+
+| dir records          |
++----------------------+
+| string pool          |
++----------------------+
+| archive postings     |
++----------------------+
+| archive indexes      |
++----------------------+
+| entry records        |
++----------------------+
+| entry raw/blob pool  |
++----------------------+
+| entry postings       |
++----------------------+
+| entry index          |
++----------------------+
+| append delta log     |
++----------------------+
 ```
 
 文件头保存：
 
-- magic：固定为 `EZDB0007`。
-- base_file_count：压缩基座中的文件记录数。
-- file_count：逻辑文件记录总数，包含 delta log 中追加的新 id。
-- active_count：未删除记录数。
-- dir_count：目录节点数量。
-- 各 section 的 offset、size、压缩标记和原始大小。
+- magic：固定为 `EZDB0008`。
+- `file_count` / `active_count`：archive 逻辑记录数和活跃数。
+- `entry_count` / `active_entry_count`：entry 逻辑记录数和活跃数。
+- archive records、archive metadata、dir records、string pool 的 offset/size/raw_size/flags。
+- archive file index、archive dir index、entry index 的 offset/count。
+- postings section 的 offset/size，entry postings 追加在同一 postings 基址后。
+- entry records、raw/blob pool 的 offset/size/raw_size/flags。
 - delta offset/size：append-only 增删改日志位置和大小。
-- reserved offset/size：未来扩展区域。
 
-### 3.1 Records
+### 3.1 Archive Records
 
-file records 使用 compact varint 磁盘编码，section 可选 zlib 压缩。打开数据库时通过 zlib 流式解码，直接填充列式内存数组：
+archive path records 使用 compact varint 磁盘编码，section 可选 zlib 压缩。打开数据库时通过 zlib 流式解码成列式数组：
 
 ```text
 parent_dir_id[]        uint32_t
@@ -87,22 +115,31 @@ name_offset[]          uint32_t
 name_len[]             uint16_t
 size32[]               uint32_t，超过 32 位时进入 overflow 表
 modified_time32[]      uint32_t，超过 32 位时进入 overflow 表
+archive_meta[]         file_ref_number + usn + drive_letter
 ```
 
-这样避免常驻 `EzdbDiskFile[record]` 结构数组，也不需要在 open 时分配完整 raw records 临时缓冲。
+### 3.2 Entries
 
-### 3.2 Directories And Names
+entries 使用固定记录数组加 blob pool：
 
-`dir records` 保存目录树节点：父目录 id、组件名 offset/len、该目录子树对应的连续 file-id range。构建阶段按目录树 DFS 顺序重排文件记录，使目录命中可直接扩展为 `first_file_id + file_count`。
+```text
+archive_id
+entry_path_offset / entry_path_len
+raw_offset / raw_len
+compressed_size
+original_size
+modified_time
+```
 
-`string pool` 保存目录组件名和文件名，按完整字符串去重。文件记录和目录记录只保存 offset/len。
+`entry_path` 和 `entry_raw_path` 都保存在 raw/blob pool 中；`entry_path` 追加 NUL 方便内部字符串处理，`entry_raw_path` 按原始字节保存。
 
 ### 3.3 Index And Postings
 
-搜索索引拆成两类：
+搜索索引拆成三类：
 
-- 文件名 gram 索引：gram -> file id postings。
-- 目录组件 gram 索引：gram -> dir id postings。
+- archive 文件名 gram 索引：gram -> archive id postings。
+- archive 目录组件 gram 索引：gram -> dir id postings，再扩展为 archive id range。
+- entry path gram 索引：gram -> entry id postings。
 
 索引 entry：
 
@@ -112,6 +149,7 @@ typedef struct EzdbDiskIndex {
     uint32_t count;
     uint32_t container_type;
     uint32_t encoded_size;
+    uint32_t raw_size;
     uint64_t offset;
 } EzdbDiskIndex;
 ```
@@ -120,7 +158,7 @@ gram 以 UTF-8 token 为单位生成：
 
 - ASCII 字符按单字节 token 处理，并做 ASCII casefold。
 - 非 ASCII 字符按完整 UTF-8 codepoint token 处理，支持中文路径搜索。
-- 1/2/3 token gram 同时用于文件名索引和目录组件索引。
+- 1/2/3 token gram 同时用于 archive 和 entry 索引。
 
 postings 使用自适应容器：
 
@@ -132,12 +170,16 @@ postings 使用自适应容器：
 
 ## 4. 搜索设计
 
-搜索语义已从单关键词路径子串搜索升级为查询表达式搜索。`ezdb_search_path` 仍是唯一公开入口，调用方不需要更换 API。
+搜索语义支持查询表达式。`ezdb_search_path` 保留为 archive-only 兼容入口；新增 `ezdb_search` 支持 scope 参数。
 
-- `index.js` 匹配完整路径中包含 `index.js` 的文件。
-- `.dll` 匹配后缀或文件名中包含 `.dll` 的文件。
-- `node_modules` 匹配目录路径中包含 `node_modules` 的文件。
-- `设计`、`方案` 等中文关键词按 UTF-8 token gram 命中。
+scope：
+
+| Scope | 说明 |
+| --- | --- |
+| `EZDB_SEARCH_ARCHIVE_PATH` | 只搜索 `archives.file_path`。 |
+| `EZDB_SEARCH_ENTRY_PATH` | 只搜索 `entries.entry_path`。 |
+| `EZDB_SEARCH_COMBINED_PATH` | 搜索 archive path + entry path 的组合。 |
+| `EZDB_SEARCH_ALL` | archive-only 结果 + entry-only 结果。 |
 
 支持的查询语法：
 
@@ -152,92 +194,101 @@ postings 使用自适应容器：
 | `词1 | 词2` | OR，任意一个匹配即可 | `发票 | 收据` |
 | `( ... )` | 分组组合条件 | `(发票 | 收据) 报销` |
 
-语法优先级为：括号最高，其次 `!`，再空格 AND，最后 `|` OR。引号内的 `!`、`|`、`(`、`)`、`*`、`?` 按普通字符匹配。语法错误时降级为旧的“整段 keyword 普通包含搜索”，避免调用方因为用户输入错误直接收到错误码。
-
 查询流程：
 
 ```text
-输入 keyword
+输入 keyword + scope
   |
   +-- 解析为查询 AST
   +-- 从正向 term/phrase/wildcard 中提取可索引 literal
-  +-- 复用 file index 和 dir index 生成候选 bitset
-  +-- AND 分支取候选交集，OR 分支取候选并集，NOT 只做最终过滤
-  +-- 没有正向 literal 时允许全库扫描，并在 limit > 0 时提前停止
-  +-- 对候选完整路径做 AST 最终匹配
-  +-- 只为最终结果构造 path 并 callback
+  +-- archive scope：复用 file index + dir index 生成 archive 候选 bitset
+  +-- entry scope：复用 entry index 生成 entry 候选 bitset
+  +-- combined scope：entry index 候选 + archive 命中扩展到 entries
+  +-- AND 分支取交集，OR 分支取并集，NOT 只做最终过滤
+  +-- 没有正向 literal 时允许全量扫描，并在 limit > 0 时提前停止
+  +-- 对候选完整字符串做 AST 最终匹配
+  +-- 只为最终结果构造路径并 callback
 ```
 
-高频短词，例如 `a`，仍走索引，但如果 `limit=0` 返回接近全库，耗时主要来自候选确认和结果回调。纯排除或纯通配符查询，例如 `!草稿`、`*`、`??`，允许全库扫描，属于性能例外场景。
+combined scope 中，每个 term/wildcard 可以命中 archive path 或 entry path；最终匹配使用 `archive_path + '\n' + entry_path`，不会把短语跨字段边界当作连续路径。
 
 ## 5. CRUD 设计
 
-v7 使用“压缩基座 + append-only delta log + write transaction”：
+v8 延续“压缩基座 + append-only delta log + write transaction”：
 
-- build 完成后的 records、dirs、strings、index、postings 作为不可变压缩基座。
-- insert/update/delete 追加 delta log，不在基座中间移动数据。
+- build 完成后的 records、dirs、strings、indexes、postings 作为不可变压缩基座。
+- archive insert/update/delete 追加 delta log，不在基座中间移动数据。
 - 单条写入默认保持“调用成功返回前持久化”。
 - 批量写入通过事务延迟 flush，commit 时一次性写 batch frame、更新 header 并落盘。
 - open 时 replay 已提交 delta batch，构建 id 覆盖层和 tombstone。
+- `ezdb_delete_archive_by_ref` 根据 `drive_letter + file_ref_number` 删除 archive，并让其 entries 级联失效。
 
-v7 已实现：
+已实现：
 
 - `ezdb_insert`
 - `ezdb_update`
 - `ezdb_delete`
+- `ezdb_upsert_archive`
+- `ezdb_delete_archive_by_ref`
 - `ezdb_begin_write`
 - `ezdb_commit_write`
 - `ezdb_rollback_write`
 - `ezdb_insert_many`
 
-批量插入时会预分配 active bitset、delta 数组和 delta hash bucket，避免逐条扩容。后续需要增加 compact，把 delta log 吸收到新的压缩基座中。
+后续仍需要实现 compact，把 delta log 吸收到新的压缩基座中，并让大规模 entry 更新也支持更完整的增量索引。
 
 ## 6. 内存设计
 
 打开数据库时加载：
 
-- compact file records 解码后的列式文件记录数组。
+- archive compact records 解码后的列式数组。
+- archive metadata。
+- entry records。
+- raw/blob pool。
 - 目录记录表。
 - 字符串池。
-- 文件名索引和目录组件索引。
+- archive 文件名索引、archive 目录组件索引、entry path 索引。
 - delta 覆盖层、active bitset、covered_base_bits。
 
 按需读取：
 
 - postings container。
-- 返回结果对应的完整 path。
+- 返回结果对应的 archive path、entry path、raw bytes 副本。
 
 设计原则：
 
-- 不常驻完整 path 数组。
-- 搜索候选去重使用 bitset，530 万文件约 0.63 MB。
-- 查询只为最终结果分配完整 path。
-- 大规模 delta 会增加常驻内存，需要通过 compact 或 delta 压缩继续优化。
+- 不常驻完整 archive path 数组。
+- 搜索候选去重使用 bitset。
+- 查询只为最终结果构造路径和结果对象。
+- entry raw bytes 只在 `get-entry` 或结果需要时复制给调用方。
 
 ## 7. 空间设计
 
 当前主要空间来源：
 
-- records：compact varint 文件记录。
-- dirs：目录记录和目录组件。
-- names：文件名字符串池。
-- postings：文件名和目录组件 1/2/3-gram 倒排表。
-- index：gram 到 postings 的映射。
-- delta：在线增删改日志，批量插入时保存新增完整 path。
+- records：compact varint archive path 记录。
+- archive metadata：盘符、file reference number、USN。
+- dirs：archive 目录记录和目录组件。
+- names：archive 文件名与目录组件字符串池。
+- entries：entry 固定记录数组。
+- raw/blob pool：entry_path 和 entry_raw_path。
+- postings：archive 文件名、archive 目录组件、entry_path 的 1/2/3-gram 倒排表。
+- indexes：gram 到 postings 的映射。
+- delta：在线增删改日志。
 
-已完成的主要空间优化：
+已完成的空间优化：
 
-- 完整路径改为目录树 + 文件名存储。
-- 文件 id 按目录树 DFS 顺序分配，目录命中转换为 file-id range。
-- records 使用 compact varint 和 zlib section 压缩。
-- string pool 保存目录组件和文件名，避免重复完整路径。
+- archive 完整路径改为目录树 + 文件名存储。
+- archive id 按目录树 DFS 顺序分配，目录命中转换为 archive id range。
+- archive records 使用 compact varint 和 zlib section 压缩。
+- entry records 和 raw/blob pool 使用 zlib section 压缩。
 - postings 使用 array/range/bitset 自适应容器，并按 container 独立压缩。
 - open 阶段 records 流式解压成列式数组，降低临时内存和常驻内存。
 
 后续空间优化方向：
 
 - 实现 compact，吸收大规模 delta log。
-- delta path 增加字符串池或块压缩。
+- entry path/raw blob 增加字符串复用、分块压缩或按页加载。
 - size/mtime 使用 block base-delta 或按页懒加载。
 - 字符串池按页加载或增加块压缩。
 - 高频 postings 支持更细粒度懒展开。
@@ -246,10 +297,10 @@ v7 已实现：
 
 ### 8.1 目标
 
-- 500k 数据：常见关键词、目录词、不存在词搜索稳定在 300ms 以内。
-- 500 万到千万级数据：热查询目标 300ms 以内。
-- 极高频短词 `limit=0` 允许以返回量为主要成本单独记录。
-- 500K 批量插入目标从分钟级降到秒级到十几秒级。
+- 100k archive-only 样本用于快速功能回归。
+- 3200k archive-only 样本用于大数据量构建和搜索性能验证。
+- `everyzip.db` SQLite 样本用于 archives + entries 双项导入和搜索验证。
+- 常见 archive、entry、combined 热查询目标 300ms 以内。
 
 ### 8.2 工具
 
@@ -257,14 +308,22 @@ v7 已实现：
 
 ```text
 EzdbBench build <input.txt> <output.ezdb>
+EzdbBench build-archives <input.tsv> <output.ezdb>
+EzdbBench import-sqlite <everyzip.db> <output.ezdb>
 EzdbBench info <db.ezdb>
 EzdbBench get <db.ezdb> <id>
+EzdbBench get-archive <db.ezdb> <id>
+EzdbBench get-entry <db.ezdb> <id>
 EzdbBench search <db.ezdb> <keyword> [limit]
-EzdbBench open <db.ezdb>
-EzdbBench insert-file <db.ezdb> <input.txt> [--transaction]
+EzdbBench search-v2 <db.ezdb> <archive|entry|combined|all> <keyword> [limit]
+EzdbBench open <db.ezdb> [limit]
+EzdbBench insert <db.ezdb> <path> [size] [mtime]
+EzdbBench insert-file <db.ezdb> <input.txt>
+EzdbBench update <db.ezdb> <id> <path> [size] [mtime]
+EzdbBench delete <db.ezdb> <id>
+EzdbBench delete-archive-ref <db.ezdb> <drive> <file_ref_number>
+EzdbBench crud <input.txt> <output.ezdb>
 ```
-
-`open` 会进入交互模式，打开一次 `.ezdb` 后可反复搜索。
 
 查询语法回归脚本：
 
@@ -272,102 +331,77 @@ EzdbBench insert-file <db.ezdb> <input.txt> [--transaction]
 python tools\ezdb_query_syntax_tests.py --bench cmake-build-codex-release\EzdbBench.exe
 ```
 
-脚本会使用 `test_data\files_query_syntax.txt` 构建小型测试库，并验证普通词、AND、短语、通配符、排除、OR、分组、字面特殊符号、全库扫描类查询和错误语法降级。
+### 8.3 当前 v8 Release 结果
 
-### 8.3 当前 530 万样本 v7 Release 结果
+#### 100k archive-only
 
-测试输入：`test_data\files_5300K.txt`  
-基座输出：`test_data\files_5300K_v7_final.ezdb`  
-批量插入测试库：`test_data\files_5300K_v7_insert500k_final.ezdb`
-
-构建指标：
+测试输入：`test_data\list_files_100k.tsv`  
+输出：`test_data\list_files_100k_v8_entryidx.ezdb`
 
 | 指标 | 数值 |
 | --- | ---: |
-| 记录数 | 5,299,514 |
-| 原始 txt | 777,734,595 bytes / 741.71 MB |
-| ezdb v7 基座文件 | 146,861,300 bytes / 140.06 MB |
-| 构建耗时 | 19,226 ms / 19.23s |
-| 构建峰值 working set | 1,245.05 MB |
-| 构建结束 working set | 8.14 MB |
-| 构建结束 private | 2.20 MB |
+| archives | 100,000 |
+| entries | 0 |
+| 构建耗时 | 631 ms |
+| 文件大小 | 9,555,967 bytes / 9.11 MB |
+| 构建峰值 working set | 47.34 MB |
+| info private | 11.10 MB |
 
-构建阶段耗时：
+#### 3200k archive-only
 
-| 阶段 | ms |
-| --- | ---: |
-| parse/tree | 5,828 |
-| dfs | 43 |
-| write base | 1,793 |
-| file index | 10,581 |
-| dir index | 928 |
-| internal total | 19,226 |
-
-section 体积：
-
-| section | MB | 占比 |
-| --- | ---: | ---: |
-| records | 29.71 | 21.21% |
-| dirs | 4.04 | 2.89% |
-| names | 11.59 | 8.27% |
-| index | 3.23 | 2.31% |
-| postings | 91.49 | 65.32% |
-| total | 140.06 | 100.00% |
-
-500K 批量插入指标：
+测试输入：`test_data\list_files_3200k.tsv`  
+输出：`test_data\list_files_3200k_v8_entryidx.ezdb`
 
 | 指标 | 数值 |
 | --- | ---: |
-| 插入源 | `test_data\files_500k.txt` |
-| 解析记录 | 500,000 |
-| open | 389 ms |
-| parse | 202 ms |
-| insert/commit | 903 ms / 0.90s |
-| total | 1,494 ms / 1.49s |
-| 吞吐 | 553,709.86 rows/s |
-| first_id / last_id | 5,299,514 / 5,799,513 |
-| 插入后 records | 5,799,514 |
-| 插入后 active | 5,799,514 |
-| delta 增长 | 66,788,758 bytes / 63.69 MB |
-| 插入后文件大小 | 213,650,058 bytes / 203.75 MB |
-| 插入后进程峰值 working set | 323.13 MB |
-| reopen info private | 250.70 MB |
+| archives | 3,221,428 |
+| entries | 0 |
+| 构建耗时 | 14,488 ms / 14.49s |
+| 文件大小 | 151,120,729 bytes / 144.12 MB |
+| 构建峰值 working set | 930.15 MB |
+| open | 426-436 ms |
+| info private | 197.41 MB |
 
-插入 500K 后查询性能：
+抽测查询：
 
-| 关键词 | limit | open_ms | search_ms | returned | private MB |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `a` | 20 | 546 | 78 | 20 | 252.42 |
-| `index.js` | 20 | 532 | 87 | 20 | 252.88 |
-| `metadata.bin` | 20 | 557 | 70 | 20 | 251.32 |
-| `设计` | 20 | 559 | 70 | 3 | 251.40 |
-| `zzznotfoundzzz` | 20 | 547 | 73 | 0 | 251.39 |
+| scope | keyword | limit | search_ms | returned |
+| --- | --- | ---: | ---: | ---: |
+| archive | `index` | 20 | 4 | 20 |
+| archive | `zzznotfoundzzz` | 20 | 0 | 0 |
+| archive | `a` | 20 | 29 | 20 |
 
-搜索语法增强后的 530 万基座 Release 抽测：
+#### everyzip.db 双项导入
 
-| 关键词 | limit | open_ms | search_ms | returned | private MB |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `a` | 20 | 417 | 44 | 20 | 164.77 |
-| `index.js` | 20 | 418 | 21 | 20 | 164.05 |
-| `.dll` | 20 | 397 | 2 | 20 | 163.41 |
-| `metadata.bin` | 20 | 397 | 12 | 20 | 163.46 |
-| `node_modules` | 20 | 395 | 24 | 20 | 164.23 |
-| `Program Files` | 20 | 399 | 13 | 20 | 164.44 |
-| `设计` | 20 | 402 | 5 | 3 | 164.09 |
-| `方案` | 20 | 394 | 11 | 18 | 164.07 |
-| `zzznotfoundzzz` | 20 | 398 | 7 | 0 | 164.09 |
-| `index.js .json` | 20 | 391 | 35 | 20 | 164.09 |
-| `.dll | metadata.bin` | 20 | 398 | 4 | 20 | 164.07 |
-| `node_modules !cache` | 20 | 400 | 9 | 20 | 163.62 |
-| `(设计 | 方案)` | 20 | 400 | 3 | 20 | 163.46 |
+测试输入：`test_data\everyzip.db`  
+输出：`test_data\everyzip_v8_entryidx.ezdb`
 
-结论：
+| 指标 | 数值 |
+| --- | ---: |
+| archives | 3,476 |
+| entries | 547,902 |
+| SQLite 读取耗时 | 157 ms |
+| ezdb 构建耗时 | 2,094 ms |
+| 文件大小 | 21,532,464 bytes / 20.54 MB |
+| 构建峰值 working set | 365.23 MB |
+| info private | 54.17 MB |
+| `entry_raw_path` 回读 | 已验证，示例 raw=12 |
 
-- v7 基座在 530 万样本上约 140.06 MB，明显小于原始 txt。
-- 常见查询、中文查询和不存在词在插入 500K delta 后仍保持 300ms 内。
-- 500K 批量插入从 v6 逐条强制落盘的分钟级问题降到约 1.49s。
-- 搜索语法增强不改变 `.ezdb` 文件格式，530 万基座上的普通查询和新语法抽测仍保持 300ms 内。
-- 大规模 delta 主要问题变为磁盘增长和 reopen 后常驻内存增长，下一步应优先实现 compact 与 delta 压缩。
+抽测查询：
+
+| scope | keyword | limit | search_ms | returned |
+| --- | --- | ---: | ---: | ---: |
+| entry | `kwpsaitablestyle` | 5 | 1 | 5 |
+| combined | `download.7z diff_resource_file` | 5 | 4 | 5 |
+| combined | `kwpsaitablestyle diff_resource_file` | 5 | 4 | 1 |
+| entry | `zzznotfoundzzz` | 5 | 0 | 0 |
+
+级联删除验证：
+
+- 对 `test_data\everyzip_v8_entryidx_delete_test.ezdb` 删除 archive id `3474` 后，顺序执行 combined 查询 `kwpsaitablestyle diff_resource_file` 返回 0。
+
+查询语法回归：
+
+- `tools\ezdb_query_syntax_tests.py` 全部通过。
 
 ## 9. C API
 
@@ -375,22 +409,43 @@ section 体积：
 
 ```c
 int ezdb_build_from_text(const char* input_txt, const char* output_ezdb);
+int ezdb_build_from_archives_tsv(const char* input_tsv, const char* output_ezdb);
+int ezdb_build_snapshot(const EzdbArchiveRecord* archives,
+                        uint32_t archive_count,
+                        const EzdbEntryRecord* entries,
+                        uint32_t entry_count,
+                        const char* output_ezdb);
+
 int ezdb_open(const char* path, Ezdb** out_db);
 void ezdb_close(Ezdb* db);
 
-uint32_t ezdb_count(Ezdb* db);
-uint32_t ezdb_active_count(Ezdb* db);
+uint32_t ezdb_archive_count(Ezdb* db);
+uint32_t ezdb_active_archive_count(Ezdb* db);
+uint32_t ezdb_entry_count(Ezdb* db);
+uint32_t ezdb_active_entry_count(Ezdb* db);
 uint64_t ezdb_file_size(Ezdb* db);
 int ezdb_stats(Ezdb* db, EzdbStats* out_stats);
 
-int ezdb_get_by_id(Ezdb* db, uint32_t id, EzdbSearchResult* out_result);
-void ezdb_free_result(EzdbSearchResult* result);
+int ezdb_get_archive(Ezdb* db, uint32_t id, EzdbArchiveResult* out_result);
+int ezdb_get_entry(Ezdb* db, uint32_t id, EzdbEntryResult* out_result);
+void ezdb_free_archive_result(EzdbArchiveResult* result);
+void ezdb_free_entry_result(EzdbEntryResult* result);
+
+int ezdb_search(Ezdb* db,
+                const char* keyword,
+                uint32_t scope,
+                uint32_t limit,
+                EzdbSearchV2Callback callback,
+                void* user_data);
 
 int ezdb_search_path(Ezdb* db,
                      const char* keyword,
                      uint32_t limit,
                      EzdbSearchCallback callback,
                      void* user_data);
+
+int ezdb_upsert_archive(Ezdb* db, const EzdbArchiveRecord* record, uint32_t* out_id);
+int ezdb_delete_archive_by_ref(Ezdb* db, char drive_letter, uint64_t file_ref_number);
 
 int ezdb_begin_write(Ezdb* db, uint32_t flags);
 int ezdb_commit_write(Ezdb* db);
@@ -407,27 +462,31 @@ const char* ezdb_error_message(int code);
 API 约定：
 
 - 返回值使用整数错误码。
-- 查询结果字符串由 `ezdb` 分配，调用方用 `ezdb_free_result` 释放。
+- 查询结果字符串和 raw bytes 由 `ezdb` 分配，调用方使用对应 free API 释放。
 - 搜索使用 callback，避免一次性分配巨大结果数组。
+- `ezdb_search_path` 是兼容旧 path-only 使用方式的 archive-only 包装。
 - 单条写入成功返回前已持久化；事务内写入延迟到 `ezdb_commit_write`。
 - 只读打开时写接口返回 `EZDB_ERR_READ_ONLY`。
 
 ## 10. 编码与兼容性
 
-- 输入 txt 按 UTF-8 读取。
+- 输入文本按 UTF-8 读取。
 - `.ezdb` 内部路径字符串按 UTF-8 保存。
 - `EzdbBench` 在 Windows 下使用宽字符命令行转 UTF-8，避免中文参数被本地代码页破坏。
 - 当前索引按 UTF-8 token 建 1/2/3-gram，中文路径可以被索引搜索。
 - 当前大小写折叠只处理 ASCII。
 - `?` 通配符按 UTF-8 字符匹配，一个中文字符算一个字符。
+- `modified_time` 不做 epoch/FILETIME 转换，调用方传入什么就保存什么。
+- `entry_raw_path` 只保存和回传，不参与搜索。
 - 完整 Unicode casefold 暂不作为当前目标，后续如有需要再引入 Unicode 规范化表或额外 normalized key。
 
 ## 11. 已知限制
 
-- v7 不兼容 v1-v6 `.ezdb` 文件。
-- 目录记录、字符串池和索引仍在 open 后整体常驻。
+- v8 不兼容 v1-v7 `.ezdb` 文件。
+- 目录记录、字符串池、entry records、raw/blob pool 和索引仍在 open 后整体常驻。
+- entry path 当前没有目录树压缩，主要依赖 raw/blob section 压缩和 postings 索引。
 - 目录索引基于路径组件，不为任意跨组件子串单独建索引。
-- 高频 1 字节关键词可能返回接近全库，`limit=0` 耗时主要由结果遍历决定。
+- 高频 1 字节关键词可能返回接近全库，`limit=0` 耗时主要由候选确认和结果回调决定。
 - 纯排除和纯通配符查询允许全库扫描，`limit=0` 在大库上可能明显慢于普通索引查询。
 - batch frame 具备 committed replay 语义，但还没有 CRC、自动截断不完整 delta 和并发读写控制。
 - 大规模 delta 会增加磁盘占用和 reopen 后常驻内存，需要 compact 或独立 delta 压缩索引。
@@ -437,9 +496,10 @@ API 约定：
 优先级从高到低：
 
 1. 实现 compact：重建干净基座，吸收 delta log，丢弃 tombstone 和 stale 版本。
-2. 为 delta path 增加字符串复用或块压缩，降低批量插入后的文件增长。
-3. 增强崩溃恢复：batch CRC、打开时截断半截 frame、写入错误回滚。
-4. 优化大 delta 覆盖层内存：delta path arena 压缩、按页加载或独立 delta 索引。
-5. 优化高频短词 `limit > 0` 的候选展开，尽早停止 range/bitset 扫描。
-6. 评估 Windows mmap，让 records、strings、postings 支持更细粒度懒加载。
-7. 在 EveryZip 中增加实验开关，先用于文件路径搜索，再评估替换部分 SQLite 查询。
+2. 增强崩溃恢复：batch CRC、打开时截断半截 frame、写入错误回滚。
+3. 优化 entry path/raw blob：字符串复用、按页加载、块压缩或 mmap。
+4. 增强 entry 增量写入：支持替换某个 archive 的 entries 并维护增量 entry index。
+5. 优化大 delta 覆盖层内存：delta path arena 压缩、按页加载或独立 delta 索引。
+6. 优化高频短词 `limit > 0` 的候选展开，尽早停止 range/bitset 扫描。
+7. 评估 Windows mmap，让 records、strings、postings 支持更细粒度懒加载。
+8. 在 EveryZip 中增加实验开关，先用于文件路径搜索，再评估替换部分 SQLite 查询。

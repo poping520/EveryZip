@@ -1,6 +1,7 @@
 .idea
 .vscode
 build
+external/7z
+external/zlib
 cmake-build-*
 test_data/*
-!test_data/files_query_syntax.txt

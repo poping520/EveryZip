@@ -86,17 +86,13 @@ bool Indexer::EnsureDatabaseReady() {
     }
 
     std::wstring err;
-    Database db;
-    if (!db.Open(dbPath_, &err)) {
-        LOG_WARN(L"Database::Open failed: %s", err.c_str());
+    auto store = CreateIndexStore();
+    if (!store->OpenOrCreate(dbPath_, &err)) {
+        LOG_WARN(L"IndexStore::Open failed: %s", err.c_str());
         return false;
     }
-    if (!db.CreateArchivesTable(&err)) {
-        LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
-        return false;
-    }
-    if (!db.CreateEntriesTable(&err)) {
-        LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
+    if (!store->EnsureSchema(&err, false)) {
+        LOG_WARN(L"IndexStore::EnsureSchema failed: %s", err.c_str());
         return false;
     }
     return true;
@@ -205,19 +201,14 @@ static ParsedArchiveResult ParseArchiveEntriesOnly(const ArchiveFile_t& a,
     return result;
 }
 
-void Indexer::ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const std::wstring& parserType) {
-    int64_t archiveId = db.GetArchiveIdByPath(a.filePath);
+void Indexer::ParseAndStoreArchive(IndexStore& store, const ArchiveFile_t& a, const std::wstring& parserType) {
+    int64_t archiveId = store.GetArchiveIdByPath(a.filePath);
     ParsedArchiveResult parsed = ParseArchiveEntriesOnly(a, archiveId, parserType);
     if (!parsed.ok) return;
 
     std::wstring entryErr;
-    if (!db.DeleteEntriesByArchiveId(archiveId, &entryErr)) {
-        LOG_WARN(L"DeleteEntriesByArchiveId failed: %s", entryErr.c_str());
-    }
-    if (!parsed.entries.empty()) {
-        if (!db.InsertEntriesBatch(parsed.entries, &entryErr)) {
-            LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
-        }
+    if (!store.ReplaceArchiveEntriesByArchiveId(archiveId, parsed.entries, &entryErr)) {
+        LOG_WARN(L"ReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
     }
 }
 
@@ -307,25 +298,22 @@ void Indexer::Start(HWND hWnd) {
 
         if (!cancel_.load() && scanOk) {
             stage_.store((int)Stage::SyncingDatabase);
-            Database db;
-            if (!db.Open(dbPath_, &err)) {
-                LOG_WARN(L"Database::Open failed: %s", err.c_str());
-            } else if (!db.CreateArchivesTable(&err)) {
-                LOG_WARN(L"CreateArchivesTable failed: %s", err.c_str());
-            } else if (!db.CreateEntriesTable(&err)) {
-                LOG_WARN(L"CreateEntriesTable failed: %s", err.c_str());
-            } else if (!db.CreateConfigsTable(&err)) {
-                LOG_WARN(L"CreateConfigsTable failed: %s", err.c_str());
+            auto store = CreateIndexStore();
+            if (!store->OpenOrCreate(dbPath_, &err)) {
+                LOG_WARN(L"IndexStore::Open failed: %s", err.c_str());
+            } else if (!store->EnsureSchema(&err, true)) {
+                LOG_WARN(L"IndexStore::EnsureSchema failed: %s", err.c_str());
             } else {
+                bool writeTxn = false;
                 std::vector<ArchiveFile_t> old;
-                if (!db.QueryArchives(L"", &old, &err)) {
+                if (!store->QueryArchives(L"", &old, &err)) {
                     LOG_WARN(L"QueryArchives failed: %s", err.c_str());
                 } else {
                     static const char kSevenZipSizePolicyKey[] = "sevenzip_size_policy_version";
                     static const char kSevenZipSizePolicyVersion[] = "2";
                     std::string sevenZipPolicyVersion;
                     const bool reparseSevenZip =
-                        !db.GetConfigValue(kSevenZipSizePolicyKey, &sevenZipPolicyVersion) ||
+                        !store->GetConfigValue(kSevenZipSizePolicyKey, &sevenZipPolicyVersion) ||
                         sevenZipPolicyVersion != kSevenZipSizePolicyVersion;
 
                     struct OldInfo {
@@ -341,6 +329,12 @@ void Indexer::Start(HWND hWnd) {
 
                     for (const auto& o : old) {
                         oldMap.emplace(makeKey(o), OldInfo{ o, false });
+                    }
+
+                    if (store->BeginWrite(&err)) {
+                        writeTxn = true;
+                    } else {
+                        LOG_WARN(L"IndexStore::BeginWrite failed: %s", err.c_str());
                     }
 
                     std::vector<ArchiveFile_t> upserts;
@@ -367,7 +361,7 @@ void Indexer::Start(HWND hWnd) {
                         if (changed) {
                             if (!prev.filePath.empty()) {
                                 std::wstring delErr;
-                                if (!db.DeleteEntriesByArchivePath(prev.filePath, &delErr)) {
+                                if (!store->DeleteEntriesByArchivePath(prev.filePath, &delErr)) {
                                     LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", delErr.c_str());
                                 }
                             }
@@ -382,19 +376,19 @@ void Indexer::Start(HWND hWnd) {
                         if (kv.second.seen) continue;
 
                         if (!prev.driveLetter.empty()) {
-                            db.DeleteArchiveByRefNumber(prev.driveLetter[0], (uint64_t)prev.fileRefNumber);
+                            store->DeleteArchiveByRef(prev.driveLetter[0], (uint64_t)prev.fileRefNumber);
                         }
                         if (!prev.filePath.empty()) {
                             std::wstring delErr;
-                            if (!db.DeleteEntriesByArchivePath(prev.filePath, &delErr)) {
+                            if (!store->DeleteEntriesByArchivePath(prev.filePath, &delErr)) {
                                 LOG_WARN(L"DeleteEntriesByArchivePath failed: %s", delErr.c_str());
                             }
                         }
                     }
 
                     if (!cancel_.load() && !upserts.empty()) {
-                        if (!db.InsertArchivesBatch(upserts, &err)) {
-                            LOG_WARN(L"InsertArchivesBatch failed: %s", err.c_str());
+                        if (!store->UpsertArchives(upserts, &err)) {
+                            LOG_WARN(L"UpsertArchives failed: %s", err.c_str());
                         }
                     }
 
@@ -410,7 +404,7 @@ void Indexer::Start(HWND hWnd) {
                         std::vector<int64_t> archiveIds;
                         archiveIds.reserve(parseTotal);
                         for (const auto& a : toParse) {
-                            archiveIds.push_back(db.GetArchiveIdByPath(a.filePath));
+                            archiveIds.push_back(store->GetArchiveIdByPath(a.filePath));
                         }
 
                         const uint32_t resolvedParseThreads = ResolveParseThreadCount(parseThreadCount_);
@@ -483,14 +477,9 @@ void Indexer::Start(HWND hWnd) {
                             if (!hasResult) continue;
                             if (!cancel_.load() && result.ok) {
                                 std::wstring entryErr;
-                                if (!db.DeleteEntriesByArchiveId(result.archiveId, &entryErr)) {
-                                    LOG_WARN(L"DeleteEntriesByArchiveId failed: %s", entryErr.c_str());
-                                }
-                                if (!result.entries.empty()) {
-                                    parsedEntryCount += result.entries.size();
-                                    if (!db.InsertEntriesBatch(result.entries, &entryErr)) {
-                                        LOG_WARN(L"InsertEntriesBatch failed: %s", entryErr.c_str());
-                                    }
+                                parsedEntryCount += result.entries.size();
+                                if (!store->ReplaceArchiveEntriesByArchiveId(result.archiveId, result.entries, &entryErr)) {
+                                    LOG_WARN(L"ReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
                                 }
                             }
                             ++parseDone;
@@ -520,7 +509,7 @@ void Indexer::Start(HWND hWnd) {
 
                     if (reparseSevenZip && !cancel_.load()) {
                         std::wstring cfgErr;
-                        if (!db.SaveConfigValue(kSevenZipSizePolicyKey, kSevenZipSizePolicyVersion, &cfgErr)) {
+                        if (!store->SaveConfigValue(kSevenZipSizePolicyKey, kSevenZipSizePolicyVersion, &cfgErr)) {
                             LOG_WARN(L"Save sevenzip size policy version failed: %s", cfgErr.c_str());
                         }
                     }
@@ -532,10 +521,18 @@ void Indexer::Start(HWND hWnd) {
                     for (wchar_t dl : drives) {
                         JournalInfo ji;
                         if (FileScanner::QueryJournalInfo(dl, &ji, &err)) {
-                            db.SaveJournalUsn(dl, ji.journalId, ji.nextUsn, &err);
+                            store->SaveJournalUsn(dl, ji.journalId, ji.nextUsn, &err);
                             LOG_INFO(L"Saved Journal USN for drive %c: journalId=%lld, nextUsn=%lld",
                                      dl, (long long)ji.journalId, (long long)ji.nextUsn);
                         }
+                    }
+                }
+
+                if (writeTxn) {
+                    if (cancel_.load()) {
+                        store->RollbackWrite();
+                    } else if (!store->CommitWrite(&err)) {
+                        LOG_WARN(L"IndexStore::CommitWrite failed: %s", err.c_str());
                     }
                 }
 
@@ -553,15 +550,15 @@ void Indexer::Start(HWND hWnd) {
         // ═══════════════════════════════════════════════════════════
         LOG_INFO(L"Entering USN Journal monitoring loop");
 
-        Database monDb;
+        auto monitorStore = CreateIndexStore();
         {
             std::wstring monErr;
-            if (!monDb.Open(dbPath_, &monErr)) {
-                LOG_WARN(L"Monitor: Database::Open failed: %s", monErr.c_str());
+            if (!monitorStore->OpenOrCreate(dbPath_, &monErr)) {
+                LOG_WARN(L"Monitor: IndexStore::Open failed: %s", monErr.c_str());
             }
         }
 
-        while (!cancel_.load() && monDb.IsOpen()) {
+        while (!cancel_.load() && monitorStore->IsOpen()) {
             // 每 2 秒检查一次变化
             for (int i = 0; i < 20 && !cancel_.load(); ++i) {
                 Sleep(100);
@@ -578,7 +575,7 @@ void Indexer::Start(HWND hWnd) {
                 // 读取上次保存的 Journal 位置
                 int64_t savedJournalId = 0;
                 USN savedNextUsn = 0;
-                monDb.GetJournalUsn(dl, &savedJournalId, &savedNextUsn);
+                monitorStore->GetJournalUsn(dl, &savedJournalId, &savedNextUsn);
 
                 if (savedJournalId == 0 && savedNextUsn == 0) {
                     // 没有保存过，跳过（等待下次全量扫描）
@@ -599,7 +596,7 @@ void Indexer::Start(HWND hWnd) {
                 if (changes.empty()) {
                     // 即使没有归档文件变化，也更新 USN 位置避免重复扫描
                     if (newNextUsn > savedNextUsn) {
-                        monDb.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
+                        monitorStore->SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
                     }
                     continue;
                 }
@@ -629,13 +626,13 @@ void Indexer::Start(HWND hWnd) {
                     if (isDelete || isRenameOld) {
                         // 文件被删除或重命名（旧名）：从数据库中移除
                         ArchiveFile_t oldAf;
-                        if (monDb.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                        if (monitorStore->GetArchiveByRef(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
                             LOG_INFO(L"Monitor: Archive deleted/renamed: %s", oldAf.filePath.c_str());
                             if (!oldAf.filePath.empty()) {
                                 std::wstring delErr;
-                                monDb.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                monitorStore->DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
                             }
-                            monDb.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
+                            monitorStore->DeleteArchiveByRef(dl, (uint64_t)cr.fileRefNumber);
                             anyChanged = true;
                         }
                     } else {
@@ -649,12 +646,12 @@ void Indexer::Start(HWND hWnd) {
                                                                   &fileSize, &modifyTime, &fullPath)) {
                             // 文件可能已被删除，清理数据库
                             ArchiveFile_t oldAf;
-                            if (monDb.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                            if (monitorStore->GetArchiveByRef(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
                                 if (!oldAf.filePath.empty()) {
                                     std::wstring delErr;
-                                    monDb.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                    monitorStore->DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
                                 }
-                                monDb.DeleteArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber);
+                                monitorStore->DeleteArchiveByRef(dl, (uint64_t)cr.fileRefNumber);
                                 anyChanged = true;
                             }
                             continue;
@@ -664,10 +661,10 @@ void Indexer::Start(HWND hWnd) {
 
                         // 先删除旧的条目（如果路径变了）
                         ArchiveFile_t oldAf;
-                        if (monDb.QueryArchiveByRefNumber(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
+                        if (monitorStore->GetArchiveByRef(dl, (uint64_t)cr.fileRefNumber, &oldAf)) {
                             if (!oldAf.filePath.empty() && oldAf.filePath != fullPath) {
                                 std::wstring delErr;
-                                monDb.DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
+                                monitorStore->DeleteEntriesByArchivePath(oldAf.filePath, &delErr);
                             }
                         }
 
@@ -679,13 +676,13 @@ void Indexer::Start(HWND hWnd) {
                         af.modifiedTime = modifyTime;
                         af.fileRefNumber = cr.fileRefNumber;
                         af.usn = cr.usn;
-                        monDb.InsertOrUpdateArchive(af);
+                        monitorStore->UpsertArchive(af);
 
                         // 重新解析归档文件内容
                         LOG_INFO(L"Monitor: Re-parsing archive: %s", fullPath.c_str());
                         stage_.store((int)Stage::ParsingArchives);
                         PostParseProgress(hWnd, 0, 1);
-                        ParseAndStoreArchive(monDb, af, GetParserTypeForPath(af.filePath, archiveFormatRules_));
+                        ParseAndStoreArchive(*monitorStore, af, GetParserTypeForPath(af.filePath, archiveFormatRules_));
                         PostParseProgress(hWnd, 1, 1);
                         stage_.store((int)Stage::IdleMonitoring);
                         anyChanged = true;
@@ -698,7 +695,7 @@ void Indexer::Start(HWND hWnd) {
 
                 // 更新 Journal USN 位置
                 if (newNextUsn > savedNextUsn) {
-                    monDb.SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
+                    monitorStore->SaveJournalUsn(dl, savedJournalId, newNextUsn, &err);
                 }
             }
 

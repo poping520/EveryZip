@@ -684,9 +684,9 @@ static void LoadRowsFromDbAndRefreshAsyncInternal(HWND hWnd, MainWindowState* s,
         result->generation = generation;
 
         std::wstring err;
-        Database db;
-        if (!db.Open(dbPath, &err)) {
-            LOG_WARN(L"Database::Open failed: %s", err.c_str());
+        auto store = CreateIndexStore();
+        if (!store->OpenOrCreate(dbPath, &err)) {
+            LOG_WARN(L"IndexStore::Open failed: %s", err.c_str());
             if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
                 s->pendingRowLoads.fetch_sub(1);
                 delete result;
@@ -694,10 +694,10 @@ static void LoadRowsFromDbAndRefreshAsyncInternal(HWND hWnd, MainWindowState* s,
             return;
         }
 
-        db.CreateEntriesTable(&err);
+        store->EnsureSchema(&err, false);
 
         // 只查询 rowid 列表（36万条 ≈ 3MB，而非 1.4GB 的完整数据）
-        if (!db.QueryEntryIds(filter, sortCol, sortAsc, &result->rowIds, &err)) {
+        if (!store->QueryEntryIds(filter, sortCol, sortAsc, &result->rowIds, &err)) {
             LOG_WARN(L"QueryEntryIds failed: %s", err.c_str());
             if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
                 s->pendingRowLoads.fetch_sub(1);
@@ -707,7 +707,7 @@ static void LoadRowsFromDbAndRefreshAsyncInternal(HWND hWnd, MainWindowState* s,
         }
 
         result->entryCount = (int64_t)result->rowIds.size();
-        result->archiveCount = db.GetArchiveCount();
+        result->archiveCount = store->GetArchiveCount();
 
         if (s->shuttingDown.load() || !PostMessageW(hWnd, WM_APP_ROWS_READY, 0, (LPARAM)result)) {
             s->pendingRowLoads.fetch_sub(1);
@@ -1089,13 +1089,13 @@ static void HideArchiveTooltip(MainWindowState* s) {
     s->archiveTooltipText.clear();
 }
 
-static int64_t GetRowIdByListItem(MainWindowState* s, int item) {
-    if (!s || item < 0) return 0;
+static StoreEntryId GetRowIdByListItem(MainWindowState* s, int item) {
+    if (!s || item < 0) return kInvalidStoreEntryId;
     std::lock_guard<std::mutex> lk(s->rowsMutex);
     if (item >= 0 && item < (int)s->rowIds.size()) {
         return s->rowIds[item];
     }
-    return 0;
+    return kInvalidStoreEntryId;
 }
 
 static void UpdateArchiveTooltip(HWND hList, MainWindowState* s, LPARAM lParam) {
@@ -1110,8 +1110,8 @@ static void UpdateArchiveTooltip(HWND hList, MainWindowState* s, LPARAM lParam) 
         return;
     }
 
-    const int64_t rowId = GetRowIdByListItem(s, item);
-    if (rowId <= 0) {
+    const StoreEntryId rowId = GetRowIdByListItem(s, item);
+    if (rowId == kInvalidStoreEntryId) {
         HideArchiveTooltip(s);
         return;
     }
@@ -1489,13 +1489,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case IDM_CTX_PROPERTIES: {
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
             if (iItem < 0) return 0;
-            int64_t rowId = 0;
+            StoreEntryId rowId = kInvalidStoreEntryId;
             {
                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                 if (iItem >= 0 && iItem < (int)s->rowIds.size())
                     rowId = s->rowIds[iItem];
             }
-            if (rowId <= 0) return 0;
+            if (rowId == kInvalidStoreEntryId) return 0;
             const CachedRow* cr = s->rowCache.Get(rowId);
             if (!cr || cr->archivePath.empty()) return 0;
             // 调用 Windows Shell 文件属性对话框
@@ -1513,13 +1513,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // 获取选中条目的归档路径和条目路径
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
             if (iItem < 0) return 0;
-            int64_t rowId = 0;
+            StoreEntryId rowId = kInvalidStoreEntryId;
             {
                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                 if (iItem >= 0 && iItem < (int)s->rowIds.size())
                     rowId = s->rowIds[iItem];
             }
-            if (rowId <= 0) return 0;
+            if (rowId == kInvalidStoreEntryId) return 0;
             const CachedRow* cr = s->rowCache.Get(rowId);
             if (!cr || cr->archivePath.empty()) return 0;
             std::wstring archivePath = cr->archivePath;
@@ -1583,13 +1583,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case IDM_CTX_COPY_ARCHIVE: {
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
             if (iItem < 0) return 0;
-            int64_t rowId = 0;
+            StoreEntryId rowId = kInvalidStoreEntryId;
             {
                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                 if (iItem >= 0 && iItem < (int)s->rowIds.size())
                     rowId = s->rowIds[iItem];
             }
-            if (rowId <= 0) return 0;
+            if (rowId == kInvalidStoreEntryId) return 0;
             const CachedRow* cr = s->rowCache.Get(rowId);
             if (!cr) return 0;
             std::wstring text;
@@ -1617,13 +1617,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case IDM_CTX_OPEN_ARCHIVE: {
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
             if (iItem < 0) return 0;
-            int64_t rowId = 0;
+            StoreEntryId rowId = kInvalidStoreEntryId;
             {
                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                 if (iItem >= 0 && iItem < (int)s->rowIds.size())
                     rowId = s->rowIds[iItem];
             }
-            if (rowId <= 0) return 0;
+            if (rowId == kInvalidStoreEntryId) return 0;
             const CachedRow* cr = s->rowCache.Get(rowId);
             if (!cr || cr->archivePath.empty()) return 0;
             ShellExecuteW(hWnd, L"open", cr->archivePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -1633,13 +1633,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // 获取当前选中项的归档文件路径
             int iItem = ListView_GetNextItem(s->hList, -1, LVNI_SELECTED);
             if (iItem < 0) return 0;
-            int64_t rowId = 0;
+            StoreEntryId rowId = kInvalidStoreEntryId;
             {
                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                 if (iItem >= 0 && iItem < (int)s->rowIds.size())
                     rowId = s->rowIds[iItem];
             }
-            if (rowId <= 0) return 0;
+            if (rowId == kInvalidStoreEntryId) return 0;
             const CachedRow* cr = s->rowCache.Get(rowId);
             if (!cr || cr->archivePath.empty()) return 0;
             // 使用 Explorer /select 打开文件夹并选中归档文件
@@ -1802,7 +1802,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int iSub = pdi->item.iSubItem;
 
                 // 获取 rowid
-                int64_t rowId = 0;
+                StoreEntryId rowId = kInvalidStoreEntryId;
                 {
                     std::lock_guard<std::mutex> lk(s->rowsMutex);
                     if (iItem < 0 || iItem >= (int)s->rowIds.size()) return 0;
@@ -1918,14 +1918,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         std::wstring text;
                         int iconIdx = 0;
                         {
-                            int64_t rowId = 0;
+                            StoreEntryId rowId = kInvalidStoreEntryId;
                             {
                                 std::lock_guard<std::mutex> lk(s->rowsMutex);
                                 if (iItem >= 0 && iItem < (int)s->rowIds.size()) {
                                     rowId = s->rowIds[iItem];
                                 }
                             }
-                            if (rowId > 0) {
+                            if (rowId != kInvalidStoreEntryId) {
                                 const CachedRow* cr = s->rowCache.Get(rowId);
                                 if (cr) {
                                     switch (iSubItem) {

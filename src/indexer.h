@@ -9,8 +9,8 @@
 #include <thread>
 #include <vector>
 
-#include "database.h"
 #include "file_scanner.h"
+#include "index_store.h"
 #include "config/user_config.h"
 
 class Indexer {
@@ -88,7 +88,7 @@ private:
      * @param db 已打开的数据库连接。
      * @param a 待解析的归档文件记录。
      */
-    static void ParseAndStoreArchive(Database& db, const ArchiveFile_t& a, const std::wstring& parserType);
+    static void ParseAndStoreArchive(IndexStore& store, const ArchiveFile_t& a, const std::wstring& parserType);
 
     /**
      * 获取所有需要监控的 NTFS 盘符列表。

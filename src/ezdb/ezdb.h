@@ -106,6 +106,21 @@ typedef struct EzdbStats {
     uint64_t postings_size;
 } EzdbStats;
 
+typedef struct EzdbEntryQuery {
+    const char* keyword;
+    uint32_t scope;
+    int sort_column;
+    int sort_ascending;
+    uint32_t offset;
+    uint32_t limit;
+} EzdbEntryQuery;
+
+typedef struct EzdbEntryQueryPage {
+    uint64_t total_count;
+    uint32_t returned_count;
+    uint32_t* ids;
+} EzdbEntryQueryPage;
+
 typedef void (*EzdbSearchCallback)(const EzdbSearchResult* result, void* user_data);
 typedef void (*EzdbSearchV2Callback)(const EzdbSearchV2Result* result, void* user_data);
 
@@ -132,12 +147,16 @@ int ezdb_get_by_id(Ezdb* db, uint32_t id, EzdbSearchResult* out_result);
 void ezdb_free_result(EzdbSearchResult* result);
 int ezdb_get_archive(Ezdb* db, uint32_t id, EzdbArchiveResult* out_result);
 int ezdb_get_entry(Ezdb* db, uint32_t id, EzdbEntryResult* out_result);
+int ezdb_get_archive_by_ref(Ezdb* db, char drive_letter, uint64_t file_ref_number, EzdbArchiveResult* out_result);
 void ezdb_free_archive_result(EzdbArchiveResult* result);
 void ezdb_free_entry_result(EzdbEntryResult* result);
 void ezdb_free_search_v2_result(EzdbSearchV2Result* result);
+void ezdb_free_entry_query_page(EzdbEntryQueryPage* page);
 
 int ezdb_search_path(Ezdb* db, const char* keyword, uint32_t limit, EzdbSearchCallback callback, void* user_data);
 int ezdb_search(Ezdb* db, const char* keyword, uint32_t scope, uint32_t limit, EzdbSearchV2Callback callback, void* user_data);
+int ezdb_query_entries(Ezdb* db, const EzdbEntryQuery* query, EzdbEntryQueryPage* out_page);
+int ezdb_get_entries_batch(Ezdb* db, const uint32_t* ids, uint32_t count, EzdbEntryResult* out_results);
 
 int ezdb_begin_write(Ezdb* db, uint32_t flags);
 int ezdb_commit_write(Ezdb* db);
@@ -148,7 +167,12 @@ int ezdb_insert(Ezdb* db, const EzdbFileRecord* record, uint32_t* out_id);
 int ezdb_update(Ezdb* db, uint32_t id, const EzdbFileRecord* record);
 int ezdb_delete(Ezdb* db, uint32_t id);
 int ezdb_upsert_archive(Ezdb* db, const EzdbArchiveRecord* record, uint32_t* out_id);
+int ezdb_upsert_archives(Ezdb* db, const EzdbArchiveRecord* records, uint32_t count, uint32_t* out_ids);
 int ezdb_delete_archive_by_ref(Ezdb* db, char drive_letter, uint64_t file_ref_number);
+int ezdb_replace_archive_entries(Ezdb* db, uint32_t archive_id, const EzdbEntryRecord* entries, uint32_t entry_count);
+int ezdb_get_meta(Ezdb* db, const char* key, char** out_value);
+int ezdb_put_meta(Ezdb* db, const char* key, const char* value);
+int ezdb_compact(Ezdb* db);
 
 const char* ezdb_error_message(int code);
 

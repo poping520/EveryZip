@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(EveryZip LANGUAGES C CXX)
 
+enable_testing()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -55,6 +57,15 @@ add_executable(TestFileTracker
         ../external/sqlite/sqlite3.c
 )
 
+add_executable(TestIndexStore
+        test_index_store.cpp
+        ../src/index_store.cpp
+        ../src/database.cpp
+        ../src/string_utils.cpp
+        ../src/logger.cpp
+        ../external/sqlite/sqlite3.c
+)
+
 add_executable(QueryDB
         query_db.cpp
         ../external/sqlite/sqlite3.c
@@ -93,6 +104,16 @@ target_include_directories(TestFileTracker PRIVATE
         ../external/sqlite
 )
 
+target_include_directories(TestIndexStore PRIVATE
+        ../src
+        ../src/ezdb
+        ../external/sqlite
+)
+
+target_link_libraries(TestIndexStore PRIVATE
+        ezdb
+)
+
 target_include_directories(QueryDB PRIVATE
         ../external/sqlite
 )
@@ -118,6 +139,7 @@ target_compile_definitions(TestConfig PRIVATE UNICODE _UNICODE)
 target_compile_definitions(TestSevenZip PRIVATE UNICODE _UNICODE)
 target_compile_definitions(TestRar PRIVATE UNICODE _UNICODE)
 target_compile_definitions(TestFileTracker PRIVATE UNICODE _UNICODE)
+target_compile_definitions(TestIndexStore PRIVATE UNICODE _UNICODE)
 
 everyzip_configure_test_target(TestZip)
 everyzip_configure_test_target(TestSevenZip)
@@ -126,5 +148,8 @@ everyzip_configure_test_target(TestUsnScan)
 everyzip_configure_test_target(TestMftScan)
 everyzip_configure_test_target(TestFdb)
 everyzip_configure_test_target(TestFileTracker)
+everyzip_configure_test_target(TestIndexStore)
 everyzip_configure_test_target(QueryDB)
 everyzip_configure_test_target(TestConfig)
+
+add_test(NAME TestIndexStore COMMAND TestIndexStore)

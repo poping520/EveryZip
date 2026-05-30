@@ -4,10 +4,11 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
-#include "database.h"
+#include "index_store.h"
 #include "icon_cache.h"
 
 /** ListView 行缓存项（按需从数据库加载，缓存可见行数据）。 */
@@ -47,7 +48,7 @@ public:
      * @param rowId entries 表中的行标识。
      * @return 缓存项指针；查询失败时返回 nullptr。
      */
-    const CachedRow* Get(int64_t rowId);
+    const CachedRow* Get(StoreEntryId rowId);
 
     /** 清空行数据缓存（排序或搜索条件变化时调用）。 */
     void Clear();
@@ -61,10 +62,10 @@ private:
 
     size_t maxSize_;
     std::wstring dbPath_;
-    Database cacheDb_;
+    std::unique_ptr<IndexStore> cacheStore_;
     bool dbOpen_ = false;
     IconCache* iconCache_ = nullptr;
 
-    std::unordered_map<int64_t, CachedRow> cache_;
-    std::deque<int64_t> lru_;
+    std::unordered_map<StoreEntryId, CachedRow> cache_;
+    std::deque<StoreEntryId> lru_;
 };

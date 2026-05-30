@@ -29,6 +29,22 @@ CASES = [
 ]
 
 
+SAMPLE_ROWS = [
+    r"D:\测试\报销\发票_合同_甲方_张小明_第一章_用户协议.txt,100,1700000001",
+    r"D:\测试\报销\发票_合同_甲方_张大明_第二章.txt,101,1700000002",
+    r"D:\测试\报销\发票_张三明_第三章_a*b.txt,102,1700000003",
+    r"D:\测试\报销\收据_第?章.txt,103,1700000004",
+    r"D:\测试\报销\收据_其他.txt,104,1700000005",
+]
+
+
+def ensure_sample(path):
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(SAMPLE_ROWS) + "\n", encoding="utf-8")
+
+
 def run(args):
     completed = subprocess.run(
         args,
@@ -62,6 +78,7 @@ def main():
         return 2
 
     db = Path(args.db)
+    ensure_sample(SAMPLE)
     run([str(bench), "build", str(SAMPLE), str(db)])
 
     failed = 0

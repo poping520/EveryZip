@@ -139,7 +139,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     LOG_INFO("wWinMain start");
 
     std::wstring exeDir = GetExeDir();
-    std::wstring dbPath = exeDir + L"\\everyzip.db";
+    std::wstring dbPath = exeDir + L"\\everyzip.ezdb";
     std::wstring configPath = exeDir + L"\\everyzip.cfg";
 
     const bool p1 = Indexer::EnablePrivilege(SE_MANAGE_VOLUME_NAME);

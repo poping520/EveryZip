@@ -11,9 +11,9 @@
 #include <thread>
 #include <vector>
 
-#include "../database.h"
 #include "../config/user_config.h"
 #include "../icon_cache.h"
+#include "../index_store.h"
 #include "../indexer.h"
 #include "../row_cache.h"
 
@@ -26,7 +26,7 @@ std::wstring LS(HINSTANCE hInstance, UINT id, LANGID languageId);
 // ── 异步加载结果（后台线程只查询 rowid 列表，传递到 UI 线程）──
 struct AsyncLoadResult {
     uint64_t generation = 0;
-    std::vector<int64_t> rowIds;
+    std::vector<StoreEntryId> rowIds;
     int64_t archiveCount = 0;
     int64_t entryCount = 0;
 };
@@ -58,7 +58,7 @@ struct MainWindowState {
     HFONT hBoldFont = nullptr;
 
     // ListView 数据源
-    std::vector<int64_t> rowIds;
+    std::vector<StoreEntryId> rowIds;
     std::mutex rowsMutex;
     int64_t totalEntryCount = 0;
 

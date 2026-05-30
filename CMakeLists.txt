@@ -8,6 +8,7 @@ project(EveryZip LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "Disable zlib example targets" FORCE)
 add_subdirectory(external/zlib)
 
 add_library(ezdb STATIC
@@ -61,6 +62,8 @@ add_executable(EveryZip WIN32
         src/file_scanner.h
         src/file_scanner.cpp
  
+        src/index_store.h
+        src/index_store.cpp
         src/database.h
         src/database.cpp
         src/logger.cpp
@@ -208,6 +211,7 @@ target_link_libraries(unrar_static PUBLIC
 )
 
 target_include_directories(EveryZip PRIVATE
+        src/ezdb
         external/sqlite
         external/zlib
         external/zlib/contrib/minizip
@@ -228,6 +232,7 @@ if(MSVC)
 endif()
 
 target_link_libraries(EveryZip PRIVATE
+        ezdb
         comctl32
         shlwapi
         winhttp
@@ -236,4 +241,5 @@ target_link_libraries(EveryZip PRIVATE
         unrar_static
 )
 
+enable_testing()
 add_subdirectory(test)

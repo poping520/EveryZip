@@ -4,7 +4,10 @@
 
 #include "string_utils.h"
 
-RowCache::RowCache(size_t maxSize) : maxSize_(maxSize) {}
+RowCache::RowCache(size_t maxSize)
+    : maxSize_(maxSize), cacheStore_(CreateIndexStore())
+{
+}
 
 void RowCache::SetDbPath(const std::wstring& dbPath) {
     dbPath_ = dbPath;
@@ -17,14 +20,14 @@ void RowCache::SetIconCache(IconCache* iconCache) {
 void RowCache::EnsureDbOpen() {
     if (!dbOpen_) {
         std::wstring err;
-        dbOpen_ = cacheDb_.Open(dbPath_, &err);
+        dbOpen_ = cacheStore_->OpenOrCreate(dbPath_, &err);
         if (dbOpen_) {
-            cacheDb_.SetBusyTimeout(500);
+            cacheStore_->SetBusyTimeout(500);
         }
     }
 }
 
-const CachedRow* RowCache::Get(int64_t rowId) {
+const CachedRow* RowCache::Get(StoreEntryId rowId) {
     // 缓存命中：提升到 LRU 队列头部
     auto it = cache_.find(rowId);
     if (it != cache_.end()) {
@@ -41,7 +44,7 @@ const CachedRow* RowCache::Get(int64_t rowId) {
     if (!dbOpen_) return nullptr;
 
     ArchiveEntry_t entry;
-    if (!cacheDb_.QueryEntryById(rowId, &entry)) {
+    if (!cacheStore_->QueryEntryById(rowId, &entry)) {
         return nullptr;
     }
 
@@ -62,7 +65,7 @@ const CachedRow* RowCache::Get(int64_t rowId) {
 
     // 超出容量时淘汰最旧的
     while (cache_.size() > maxSize_ && !lru_.empty()) {
-        int64_t oldest = lru_.back();
+        StoreEntryId oldest = lru_.back();
         lru_.pop_back();
         cache_.erase(oldest);
     }
@@ -73,11 +76,11 @@ const CachedRow* RowCache::Get(int64_t rowId) {
 void RowCache::Clear() {
     cache_.clear();
     lru_.clear();
-    cacheDb_.Close();
+    cacheStore_->Close();
     dbOpen_ = false;
 }
 
 void RowCache::Close() {
-    cacheDb_.Close();
+    cacheStore_->Close();
     dbOpen_ = false;
 }

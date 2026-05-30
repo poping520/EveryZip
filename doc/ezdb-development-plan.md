@@ -4,7 +4,7 @@
 
 `ezdb` 是 EveryZip 面向“大量文件路径、归档文件和归档内部条目快速搜索”的自定义数据库格式。它不追求通用 SQL 能力，而是针对 EveryZip 的核心业务数据做紧凑存储、快速构建和低延迟搜索。
 
-当前格式版本为 `EZDB0008`，不兼容 v1-v7。旧 `.ezdb` 文件需要重新构建。
+当前格式版本为 `EZDB0009`，不兼容 v1-v8。旧 `.ezdb` 文件需要重新构建。
 
 核心目标：
 
@@ -82,9 +82,11 @@ name = a.zip
 +----------------------+
 | archive indexes      |
 +----------------------+
-| entry records        |
+| entry core records   |
 +----------------------+
-| entry raw/blob pool  |
+| entry detail pages   |
++----------------------+
+| entry raw/blob pages |
 +----------------------+
 | entry postings       |
 +----------------------+
@@ -96,13 +98,13 @@ name = a.zip
 
 文件头保存：
 
-- magic：固定为 `EZDB0008`。
+- magic：固定为 `EZDB0009`。
 - `file_count` / `active_count`：archive 逻辑记录数和活跃数。
 - `entry_count` / `active_entry_count`：entry 逻辑记录数和活跃数。
 - archive records、archive metadata、dir records、string pool 的 offset/size/raw_size/flags。
 - archive file index、archive dir index、entry index 的 offset/count。
 - postings section 的 offset/size，entry postings 追加在同一 postings 基址后。
-- entry records、raw/blob pool 的 offset/size/raw_size/flags。
+- entry core、entry detail page index、raw/blob page index 的 offset/size/count/flags。
 - delta offset/size：append-only 增删改日志位置和大小。
 
 ### 3.1 Archive Records
@@ -120,18 +122,26 @@ archive_meta[]         file_ref_number + usn + drive_letter
 
 ### 3.2 Entries
 
-entries 使用固定记录数组加 blob pool：
+entries 拆成打开阶段常驻的轻量 core、按需读取的 detail pages、按需读取的 blob pages：
 
 ```text
-archive_id
-entry_path_offset / entry_path_len
-raw_offset / raw_len
-compressed_size
-original_size
-modified_time
+entry core:
+  archive_id
+  entry_path_offset / entry_path_len
+
+entry detail page:
+  archive_id
+  entry_path_offset / entry_path_len
+  raw_offset / raw_len
+  compressed_size
+  original_size
+  modified_time
+
+entry raw/blob page:
+  entry_path bytes + optional entry_raw_path bytes
 ```
 
-`entry_path` 和 `entry_raw_path` 都保存在 raw/blob pool 中；`entry_path` 追加 NUL 方便内部字符串处理，`entry_raw_path` 按原始字节保存。
+`entry_path` 和 `entry_raw_path` 都保存在逻辑 raw/blob 空间中，磁盘上按 256 KiB 原始页独立压缩。搜索最终确认和 `get-entry` 只加载命中的少数 blob page；entry detail page 默认按 4096 条 entry 独立压缩，只有返回结果或回读 entry 时才加载。
 
 ### 3.3 Index And Postings
 
@@ -214,7 +224,7 @@ combined scope 中，每个 term/wildcard 可以命中 archive path 或 entry pa
 
 ## 5. CRUD 设计
 
-v8 延续“压缩基座 + append-only delta log + write transaction”：
+v9 延续“压缩基座 + append-only delta log + write transaction”：
 
 - build 完成后的 records、dirs、strings、indexes、postings 作为不可变压缩基座。
 - archive insert/update/delete 追加 delta log，不在基座中间移动数据。
@@ -243,8 +253,8 @@ v8 延续“压缩基座 + append-only delta log + write transaction”：
 
 - archive compact records 解码后的列式数组。
 - archive metadata。
-- entry records。
-- raw/blob pool。
+- entry core 列式数组：`archive_id`、`entry_path_offset`、`entry_path_len`。
+- entry detail page index 和 raw/blob page index。
 - 目录记录表。
 - 字符串池。
 - archive 文件名索引、archive 目录组件索引、entry path 索引。
@@ -253,11 +263,15 @@ v8 延续“压缩基座 + append-only delta log + write transaction”：
 按需读取：
 
 - postings container。
+- entry detail pages：返回结果或 `get-entry` 需要 size/mtime/raw offset 时加载，LRU 缓存最近页。
+- raw/blob pages：候选确认、返回 entry path 或 raw bytes 时加载，LRU 缓存最近页。
 - 返回结果对应的 archive path、entry path、raw bytes 副本。
 
 设计原则：
 
 - 不常驻完整 archive path 数组。
+- 不常驻完整 entry detail 记录和 entry path/raw blob。
+- 保留 entry gram/postings 热索引常驻，优先保护查询延迟。
 - 搜索候选去重使用 bitset。
 - 查询只为最终结果构造路径和结果对象。
 - entry raw bytes 只在 `get-entry` 或结果需要时复制给调用方。
@@ -270,8 +284,9 @@ v8 延续“压缩基座 + append-only delta log + write transaction”：
 - archive metadata：盘符、file reference number、USN。
 - dirs：archive 目录记录和目录组件。
 - names：archive 文件名与目录组件字符串池。
-- entries：entry 固定记录数组。
-- raw/blob pool：entry_path 和 entry_raw_path。
+- entry core：打开阶段常驻的轻量 entry 列。
+- entry detail pages：按 entry id 分页压缩的完整 entry 记录。
+- raw/blob pages：按原始 256 KiB 页独立压缩的 entry_path 和 entry_raw_path。
 - postings：archive 文件名、archive 目录组件、entry_path 的 1/2/3-gram 倒排表。
 - indexes：gram 到 postings 的映射。
 - delta：在线增删改日志。
@@ -281,14 +296,15 @@ v8 延续“压缩基座 + append-only delta log + write transaction”：
 - archive 完整路径改为目录树 + 文件名存储。
 - archive id 按目录树 DFS 顺序分配，目录命中转换为 archive id range。
 - archive records 使用 compact varint 和 zlib section 压缩。
-- entry records 和 raw/blob pool 使用 zlib section 压缩。
+- entry core 使用独立 zlib section 压缩。
+- entry detail 与 raw/blob pool 使用 page 化 zlib 压缩，打开时只读页目录。
 - postings 使用 array/range/bitset 自适应容器，并按 container 独立压缩。
 - open 阶段 records 流式解压成列式数组，降低临时内存和常驻内存。
 
 后续空间优化方向：
 
 - 实现 compact，吸收大规模 delta log。
-- entry path/raw blob 增加字符串复用、分块压缩或按页加载。
+- entry path/raw blob 增加字符串复用，降低 v9 page 化后的磁盘增量。
 - size/mtime 使用 block base-delta 或按页懒加载。
 - 字符串池按页加载或增加块压缩。
 - 高频 postings 支持更细粒度懒展开。
@@ -403,6 +419,48 @@ python tools\ezdb_query_syntax_tests.py --bench cmake-build-codex-release\EzdbBe
 
 - `tools\ezdb_query_syntax_tests.py` 全部通过。
 
+### 8.4 当前 v9 Release 结果
+
+测试输入：`test_data\everyzip_300k_5m.db`
+
+输出：`test_data\everyzip_300k_5m_import_v9_mem.ezdb`
+
+| 指标 | 数值 |
+| --- | ---: |
+| archives | 300,000 |
+| entries | 5,000,000 |
+| 文件大小 | 110,436,456 bytes / 105.32 MB |
+| info working set | 88.18 MB |
+| info peak working set | 144.64 MB |
+| info private | 85.30 MB |
+| entry core section | 25,918,964 bytes / 24.72 MB |
+| raw/blob pages | 15,562,920 bytes / 14.84 MB |
+| index section | 114,816 bytes / 0.11 MB |
+| postings section | 1,372,090 bytes / 1.31 MB |
+
+相对 `everyzip_300k_5m_import_v8_bench.ezdb`：
+
+| 指标 | v8 | v9 |
+| --- | ---: | ---: |
+| 文件大小 | 80.38 MB | 105.32 MB |
+| info private | 504.76 MB | 85.30 MB |
+| info peak working set | 520.25 MB | 144.64 MB |
+| entry `index` search | 19 ms | 14 ms |
+| combined `download diff_resource_file` search | 147 ms | 182 ms |
+| combined `kwpsaitablestyle diff_resource_file` search | 176 ms | 170 ms |
+
+回读验证：
+
+| 命令 | 结果 | private |
+| --- | --- | ---: |
+| `get-archive 0` | 成功 | 85.31 MB |
+| `get-entry 0` | 成功，包含 raw path | 86.52 MB |
+| `get-entry 4999999` | 成功 | 85.63 MB |
+
+级联删除验证：
+
+- 临时副本删除 archive ref `C + 10000000000` 后，combined 查询 `kwpsaitablestyle_0000000` 返回 0。
+
 ## 9. C API
 
 公开接口位于 `src/ezdb/ezdb.h`。
@@ -482,9 +540,9 @@ API 约定：
 
 ## 11. 已知限制
 
-- v8 不兼容 v1-v7 `.ezdb` 文件。
-- 目录记录、字符串池、entry records、raw/blob pool 和索引仍在 open 后整体常驻。
-- entry path 当前没有目录树压缩，主要依赖 raw/blob section 压缩和 postings 索引。
+- v9 不兼容 v1-v8 `.ezdb` 文件。
+- 目录记录、字符串池、entry core 和索引仍在 open 后整体常驻。
+- entry detail 与 raw/blob pool 已按页懒加载，但 entry path 当前没有目录树压缩，主要依赖 page 压缩和 postings 索引。
 - 目录索引基于路径组件，不为任意跨组件子串单独建索引。
 - 高频 1 字节关键词可能返回接近全库，`limit=0` 耗时主要由候选确认和结果回调决定。
 - 纯排除和纯通配符查询允许全库扫描，`limit=0` 在大库上可能明显慢于普通索引查询。
@@ -497,9 +555,10 @@ API 约定：
 
 1. 实现 compact：重建干净基座，吸收 delta log，丢弃 tombstone 和 stale 版本。
 2. 增强崩溃恢复：batch CRC、打开时截断半截 frame、写入错误回滚。
-3. 优化 entry path/raw blob：字符串复用、按页加载、块压缩或 mmap。
-4. 增强 entry 增量写入：支持替换某个 archive 的 entries 并维护增量 entry index。
-5. 优化大 delta 覆盖层内存：delta path arena 压缩、按页加载或独立 delta 索引。
-6. 优化高频短词 `limit > 0` 的候选展开，尽早停止 range/bitset 扫描。
-7. 评估 Windows mmap，让 records、strings、postings 支持更细粒度懒加载。
-8. 在 EveryZip 中增加实验开关，先用于文件路径搜索，再评估替换部分 SQLite 查询。
+3. 优化导入/构建阶段峰值内存：当前大样本构建峰值仍约 3.7 GB，尚未做流式构建。
+4. 优化 entry path/raw blob：字符串复用、更细粒度页策略或 mmap。
+5. 增强 entry 增量写入：支持替换某个 archive 的 entries 并维护增量 entry index。
+6. 优化大 delta 覆盖层内存：delta path arena 压缩、按页加载或独立 delta 索引。
+7. 优化高频短词 `limit > 0` 的候选展开，尽早停止 range/bitset 扫描。
+8. 评估 Windows mmap，让 records、strings、postings 支持更细粒度懒加载。
+9. 在 EveryZip 中增加实验开关，先用于文件路径搜索，再评估替换部分 SQLite 查询。

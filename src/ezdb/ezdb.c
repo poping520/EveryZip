@@ -255,11 +255,6 @@ typedef struct StringHashEntry {
     uint32_t next;
 } StringHashEntry;
 
-typedef struct GramPair {
-    uint32_t key;
-    uint32_t id;
-} GramPair;
-
 typedef struct PostingBuildEntry {
     uint32_t key;
     uint32_t* ids;
@@ -497,11 +492,6 @@ static uint32_t make_gram_key_from_span(const char* text, uint32_t offset, uint3
     return EZDB_TOKEN_HASHED | (token_count << 24) | hash;
 }
 
-static uint32_t fnv1a_string(const char* text)
-{
-    return fnv1a_bytes(text, strlen(text));
-}
-
 static int parse_line(char* line, char** out_path, uint64_t* out_size, uint64_t* out_mtime)
 {
     size_t len = strlen(line);
@@ -612,11 +602,6 @@ static int find_or_add_string(const char* text,
     *entry_count += 1;
     *out_offset = offset;
     return EZDB_OK;
-}
-
-static int dir_component_equals(const char* a, const char* b)
-{
-    return strcmp(a, b) == 0;
 }
 
 static uint32_t find_or_add_dir(BuildDir** dirs,
@@ -779,15 +764,6 @@ static int u32_compare(const void* a, const void* b)
     uint32_t bv = *(const uint32_t*)b;
     if (av == bv) return 0;
     return av < bv ? -1 : 1;
-}
-
-static int gram_pair_compare(const void* a, const void* b)
-{
-    const GramPair* pa = (const GramPair*)a;
-    const GramPair* pb = (const GramPair*)b;
-    if (pa->key != pb->key) return pa->key < pb->key ? -1 : 1;
-    if (pa->id != pb->id) return pa->id < pb->id ? -1 : 1;
-    return 0;
 }
 
 static int posting_entry_key_compare(const void* a, const void* b)
@@ -1189,11 +1165,6 @@ static int add_text_grams_to_builder(PostingBuilder* builder, const char* text, 
     return EZDB_OK;
 }
 
-static int add_text_grams(PostingBuilder* builder, const char* text, uint32_t id)
-{
-    return add_text_grams_to_builder(builder, text, id, 0);
-}
-
 static int count_text_grams(PostingBuilder* builder, const char* text, uint32_t id)
 {
     return add_text_grams_to_builder(builder, text, id, 1);
@@ -1269,40 +1240,6 @@ static int read_varuint_mem(const unsigned char* data, uint32_t size, uint32_t* 
         }
         shift += 7u;
         if (shift >= 35u) return EZDB_ERR_FORMAT;
-    }
-    return EZDB_ERR_FORMAT;
-}
-
-static int read_mem_varuint(const unsigned char** p, const unsigned char* end, uint32_t* out)
-{
-    uint32_t value = 0;
-    int shift = 0;
-    for (int i = 0; i < 5; ++i) {
-        if (*p >= end) return EZDB_ERR_IO;
-        unsigned char ch = *(*p)++;
-        value |= (uint32_t)(ch & 0x7fu) << shift;
-        if (!(ch & 0x80u)) {
-            *out = value;
-            return EZDB_OK;
-        }
-        shift += 7;
-    }
-    return EZDB_ERR_FORMAT;
-}
-
-static int read_mem_varuint64(const unsigned char** p, const unsigned char* end, uint64_t* out)
-{
-    uint64_t value = 0;
-    int shift = 0;
-    for (int i = 0; i < 10; ++i) {
-        if (*p >= end) return EZDB_ERR_IO;
-        unsigned char ch = *(*p)++;
-        value |= (uint64_t)(ch & 0x7fu) << shift;
-        if (!(ch & 0x80u)) {
-            *out = value;
-            return EZDB_OK;
-        }
-        shift += 7;
     }
     return EZDB_ERR_FORMAT;
 }
@@ -4469,12 +4406,98 @@ static int ezdb_id_vec_push(EzdbIdVec* vec, uint32_t id)
     return EZDB_OK;
 }
 
-static void ezdb_collect_entry_ids_cb(const EzdbSearchV2Result* result, void* user_data)
+static int ezdb_entry_matches_query_scope(Ezdb* db,
+                                          EzdbQueryNode* root,
+                                          const char* keyword,
+                                          uint32_t scope,
+                                          uint32_t archive_id,
+                                          const char* entry_path,
+                                          uint32_t entry_path_len,
+                                          int* out_matched)
 {
-    EzdbIdVec* vec = (EzdbIdVec*)user_data;
-    if (result && result->kind == EZDB_RESULT_ENTRY) {
-        (void)ezdb_id_vec_push(vec, result->id);
+    *out_matched = 0;
+    if (scope & EZDB_SEARCH_ENTRY_PATH) {
+        if (ezdb_query_matches_text(root, keyword, entry_path, entry_path_len)) {
+            *out_matched = 1;
+            return EZDB_OK;
+        }
     }
+    if (!(scope & (EZDB_SEARCH_ARCHIVE_PATH | EZDB_SEARCH_COMBINED_PATH))) return EZDB_OK;
+
+    EzdbSearchResult archive;
+    int rc = build_result_path(db, archive_id, &archive);
+    if (rc == EZDB_ERR_NOT_FOUND) return EZDB_OK;
+    if (rc != EZDB_OK) return rc;
+
+    if (scope & EZDB_SEARCH_ARCHIVE_PATH) {
+        *out_matched = ezdb_query_matches_text(root, keyword, archive.path, strlen(archive.path));
+    }
+    if (!*out_matched && (scope & EZDB_SEARCH_COMBINED_PATH)) {
+        size_t archive_len = strlen(archive.path);
+        size_t combo_len = archive_len + 1u + entry_path_len;
+        char* combo = (char*)malloc(combo_len + 1u);
+        if (!combo) {
+            ezdb_free_result(&archive);
+            return EZDB_ERR_MEMORY;
+        }
+        memcpy(combo, archive.path, archive_len);
+        combo[archive_len] = '\n';
+        memcpy(combo + archive_len + 1u, entry_path, entry_path_len);
+        combo[combo_len] = '\0';
+        *out_matched = ezdb_query_matches_text(root, keyword, combo, combo_len);
+        free(combo);
+    }
+    ezdb_free_result(&archive);
+    return EZDB_OK;
+}
+
+static int ezdb_collect_matching_entry_ids(Ezdb* db, const char* keyword, uint32_t scope, EzdbIdVec* vec)
+{
+    if (!(scope & (EZDB_SEARCH_ARCHIVE_PATH | EZDB_SEARCH_ENTRY_PATH | EZDB_SEARCH_COMBINED_PATH))) return EZDB_OK;
+
+    EzdbQueryNode* root = query_parse(keyword);
+    unsigned char* entry_seen = NULL;
+    int has_entry_candidates = 0;
+    uint32_t candidate_scope = scope;
+    if (scope & EZDB_SEARCH_ARCHIVE_PATH) candidate_scope |= EZDB_SEARCH_COMBINED_PATH;
+    int rc = query_build_entry_candidate_bitset(db, root, keyword, candidate_scope, &entry_seen, &has_entry_candidates);
+    if (rc != EZDB_OK) {
+        query_node_free(root);
+        return rc;
+    }
+    size_t entry_seen_size = ((size_t)db->header.entry_count + 7u) / 8u;
+    int full_entry_scan = !has_entry_candidates;
+    if (!full_entry_scan && !bitset_any(entry_seen, entry_seen_size)) {
+        free(entry_seen);
+        query_node_free(root);
+        return EZDB_OK;
+    }
+
+    for (uint32_t id = 0; rc == EZDB_OK && id < db->header.entry_count; ++id) {
+        if (full_entry_scan) {
+            if (!bitset_get(db->active_entry_bits, id)) continue;
+        } else if (!(entry_seen[id >> 3u] & (unsigned char)(1u << (id & 7u)))) {
+            continue;
+        }
+        uint32_t archive_id = db->entry_archive_ids[id];
+        if (archive_id >= db->header.file_count || !bitset_get(db->active_bits, archive_id)) continue;
+        char* entry_path = entry_path_copy_by_id(db, id);
+        if (!entry_path) continue;
+        int matched = 0;
+        rc = ezdb_entry_matches_query_scope(db,
+                                            root,
+                                            keyword,
+                                            scope,
+                                            archive_id,
+                                            entry_path,
+                                            db->entry_path_lens[id],
+                                            &matched);
+        free(entry_path);
+        if (rc == EZDB_OK && matched) rc = ezdb_id_vec_push(vec, id);
+    }
+    free(entry_seen);
+    query_node_free(root);
+    return rc;
 }
 
 static const char* ezdb_basename(const char* path)
@@ -4580,7 +4603,7 @@ int ezdb_query_entries(Ezdb* db, const EzdbEntryQuery* query, EzdbEntryQueryPage
         }
     } else {
         uint32_t scope = query->scope ? query->scope : EZDB_SEARCH_COMBINED_PATH;
-        rc = ezdb_search(db, keyword, scope, 0, ezdb_collect_entry_ids_cb, &vec);
+        rc = ezdb_collect_matching_entry_ids(db, keyword, scope, &vec);
     }
     if (rc != EZDB_OK) {
         free(vec.ids);

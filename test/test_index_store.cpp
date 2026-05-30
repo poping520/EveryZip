@@ -97,6 +97,87 @@ static int RunStoreCase(const wchar_t* name, std::unique_ptr<IndexStore> store)
     return 0;
 }
 
+static int ExpectEzdbScopeResult(IndexStore* store,
+                                 EntrySearchScope scope,
+                                 const std::wstring& filter,
+                                 const std::wstring& expectedArchivePath,
+                                 const std::string& expectedEntryPath)
+{
+    EntryQuerySpec query;
+    query.filter = filter;
+    query.scope = scope;
+    query.limit = 10;
+    EntryQueryPage page;
+    std::wstring err;
+    if (!store->QueryEntriesPage(query, &page, &err)) return Fail("ezdb scope query failed");
+    if (page.totalCount != 1 || page.ids.size() != 1) return Fail("ezdb scope query count mismatch");
+
+    ArchiveEntry_t loadedEntry;
+    if (!store->QueryEntryById(page.ids[0], &loadedEntry)) return Fail("ezdb scope entry lookup failed");
+    if (loadedEntry.archivePath != expectedArchivePath || loadedEntry.entryPathUtf8 != expectedEntryPath) {
+        return Fail("ezdb scope entry mismatch");
+    }
+    return 0;
+}
+
+static int RunEzdbEntryScopeCase()
+{
+    const std::wstring dbPath = MakeTempDbPath(L"everyzip_entry_scope_test.ezdb");
+    DeleteFileW(dbPath.c_str());
+    DeleteFileW((dbPath + L".meta").c_str());
+
+    auto store = CreateEzdbIndexStore();
+    std::wstring err;
+    if (!store->OpenOrCreate(dbPath, &err)) return Fail("ezdb scope open failed");
+
+    ArchiveFile_t archiveA;
+    archiveA.driveLetter = L'S';
+    archiveA.filePath = L"S:\\EveryZipTest\\scope_archive.zip";
+    archiveA.fileSize = 100;
+    archiveA.modifiedTime = 200;
+    archiveA.fileRefNumber = 1001;
+    archiveA.usn = 2001;
+    if (!store->UpsertArchive(archiveA)) return Fail("ezdb scope archive A upsert failed");
+    const int64_t archiveAId = store->GetArchiveIdByPath(archiveA.filePath);
+    if (archiveAId == kInvalidStoreEntryId) return Fail("ezdb scope archive A id failed");
+
+    ArchiveEntry_t entryA;
+    entryA.archiveId = archiveAId;
+    entryA.entryPathUtf8 = "folder/archive_child.txt";
+    entryA.compressedSize = 10;
+    entryA.originalSize = 20;
+    entryA.modifiedTime = 30;
+    if (!store->ReplaceArchiveEntriesByArchiveId(archiveAId, { entryA }, &err)) return Fail("ezdb scope entry A write failed");
+
+    ArchiveFile_t archiveB;
+    archiveB.driveLetter = L'S';
+    archiveB.filePath = L"S:\\EveryZipTest\\plain.zip";
+    archiveB.fileSize = 300;
+    archiveB.modifiedTime = 400;
+    archiveB.fileRefNumber = 1002;
+    archiveB.usn = 2002;
+    if (!store->UpsertArchive(archiveB)) return Fail("ezdb scope archive B upsert failed");
+    const int64_t archiveBId = store->GetArchiveIdByPath(archiveB.filePath);
+    if (archiveBId == kInvalidStoreEntryId) return Fail("ezdb scope archive B id failed");
+
+    ArchiveEntry_t entryB;
+    entryB.archiveId = archiveBId;
+    entryB.entryPathUtf8 = "folder/scope_archive_entry.txt";
+    entryB.compressedSize = 11;
+    entryB.originalSize = 21;
+    entryB.modifiedTime = 31;
+    if (!store->ReplaceArchiveEntriesByArchiveId(archiveBId, { entryB }, &err)) return Fail("ezdb scope entry B write failed");
+
+    if (ExpectEzdbScopeResult(store.get(), EntrySearchScope::ArchivePath, L"scope_archive", archiveA.filePath, entryA.entryPathUtf8) != 0) return 1;
+    if (ExpectEzdbScopeResult(store.get(), EntrySearchScope::EntryPath, L"scope_archive", archiveB.filePath, entryB.entryPathUtf8) != 0) return 1;
+    if (ExpectEzdbScopeResult(store.get(), EntrySearchScope::Combined, L"scope_archive archive_child", archiveA.filePath, entryA.entryPathUtf8) != 0) return 1;
+
+    store->Close();
+    DeleteFileW(dbPath.c_str());
+    DeleteFileW((dbPath + L".meta").c_str());
+    return 0;
+}
+
 static int RunSQLiteImportCase()
 {
     const std::wstring sqlitePath = MakeTempDbPath(L"everyzip_index_store_import.db");
@@ -161,6 +242,7 @@ int main()
 {
     if (RunStoreCase(L"everyzip_index_store_test.db", CreateSQLiteIndexStore()) != 0) return 1;
     if (RunStoreCase(L"everyzip_index_store_test.ezdb", CreateEzdbIndexStore()) != 0) return 1;
+    if (RunEzdbEntryScopeCase() != 0) return 1;
     if (RunSQLiteImportCase() != 0) return 1;
     return 0;
 }

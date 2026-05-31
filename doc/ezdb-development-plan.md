@@ -4,7 +4,7 @@
 
 `ezdb` 是 EveryZip 面向“大量文件路径、归档文件和归档内部条目快速搜索”的自定义数据库格式。它不追求通用 SQL 能力，而是针对 EveryZip 的核心业务数据做紧凑存储、快速构建和低延迟搜索。
 
-当前格式版本为 `EZDB0010`，不兼容 v1-v9。旧 `.ezdb` 文件需要重新构建。
+当前格式版本为 `EZDB0011`，不兼容 v1-v10。旧 `.ezdb` 文件需要重新构建。
 
 核心目标：
 
@@ -15,6 +15,8 @@
 - 支持 archive path、entry path、archive + entry 组合搜索。
 - 支持 build、open、info、get、search、insert、update、delete。
 - 支持事务批量写入和 `insert_many`。
+- 支持压缩包 entries 边解析边入库，避免全量 entries 常驻内存后再一次性导入。
+- 支持 entry delta 增量索引与后台 compact，使解析中 `.ezdb` 持续增长并可在解析后吸收到干净基座。
 - 支持百万到千万级路径数据快速搜索，常见热查询目标 300ms 以内。
 - 通过目录树、字符串复用、压缩 records、压缩 postings 降低磁盘占用。
 - 打开后不常驻完整 path 数组，只按需重建返回结果路径。
@@ -100,14 +102,15 @@ name = a.zip
 
 文件头保存：
 
-- magic：固定为 `EZDB0010`。
+- magic：固定为 `EZDB0011`。
 - `file_count` / `active_count`：archive 逻辑记录数和活跃数。
 - `entry_count` / `active_entry_count`：entry 逻辑记录数和活跃数。
+- `base_entry_count`：压缩基座中的 entry 数量；大于该值的 active entry 来自 delta log。
 - archive records、archive metadata、dir records、string pool 的 offset/size/raw_size/flags。
 - archive file index、archive dir index、entry index 的 offset/count。
 - postings section 的 offset/size，entry postings 追加在同一 postings 基址后。
 - entry core、entry detail page index、raw/blob page index 的 offset/size/count/flags。
-- delta offset/size：append-only 增删改日志位置和大小。
+- delta offset/size：append-only archive CRUD、entry replace/append 日志位置和大小。
 
 ### 3.1 Archive Records
 
@@ -145,6 +148,8 @@ entry raw/blob page:
 
 `entry_path` 和 `entry_raw_path` 都保存在逻辑 raw/blob 空间中，磁盘上按 256 KiB 原始页独立压缩。搜索最终确认和 `get-entry` 只加载命中的少数 blob page；entry detail page 默认按 4096 条 entry 独立压缩，只有返回结果或回读 entry 时才加载。
 
+v11 中，新解析出来的 entries 可以先写入 delta entry frame。delta entry 的 path/raw bytes 保存在 delta frame 内，打开或追加时建立轻量引用；后台 compact 后再重新写入 entry core、detail pages、raw/blob pages 和压缩 entry postings。
+
 ### 3.3 Index And Postings
 
 搜索索引拆成三类：
@@ -152,6 +157,7 @@ entry raw/blob page:
 - archive 文件名 gram 索引：gram -> archive id postings。
 - archive 目录组件 gram 索引：gram -> dir id postings，再扩展为 archive id range。
 - entry path gram 索引：gram -> entry id postings。
+- delta entry path 内存 gram 索引：解析追加或 replay delta 时建立，查询时与压缩基座 entry index 合并。
 
 索引 entry：
 
@@ -214,8 +220,8 @@ scope：
   +-- 解析为查询 AST
   +-- 从正向 term/phrase/wildcard 中提取可索引 literal
   +-- archive scope：复用 file index + dir index 生成 archive 候选 bitset
-  +-- entry scope：复用 entry index 生成 entry 候选 bitset
-  +-- combined scope：entry index 候选 + archive 命中扩展到 entries
+  +-- entry scope：复用 base entry index + delta entry index 生成 entry 候选 bitset
+  +-- combined scope：entry index 候选 + archive 命中扩展到 active entries
   +-- AND 分支取交集，OR 分支取并集，NOT 只做最终过滤
   +-- 没有正向 literal 时允许全量扫描，并在 limit > 0 时提前停止
   +-- 对候选完整字符串做 AST 最终匹配
@@ -264,7 +270,7 @@ SQLite 导入时：
 
 ### 5.2 ezdb CRUD
 
-v10 延续“压缩基座 + append-only delta log + write transaction”：
+v11 延续“压缩基座 + append-only delta log + write transaction”，并把 archive entries 替换升级为 C 层增量写入：
 
 - build 完成后的 records、dirs、strings、indexes、postings 作为不可变压缩基座。
 - archive insert/update/delete 追加 delta log，不在基座中间移动数据。
@@ -272,6 +278,11 @@ v10 延续“压缩基座 + append-only delta log + write transaction”：
 - 批量写入通过事务延迟 flush，commit 时一次性写 batch frame、更新 header 并落盘。
 - open 时 replay 已提交 delta batch，构建 id 覆盖层和 tombstone。
 - `ezdb_delete_archive_by_ref` 根据 `drive_letter + file_ref_number` 删除 archive，并让其 entries 级联失效。
+- `ezdb_begin_replace_archive_entries` 先写入 archive entry delete delta，旧 entries 立即失效。
+- `ezdb_append_archive_entries` 按批追加 delta entry frame，并同步维护 active entries、delta entry refs 和 delta entry gram index。
+- `ezdb_finish_replace_archive_entries` 完成该 archive 的 entry 替换；`ezdb_abort_replace_archive_entries` 用于失败时终止未完成批次。
+- `ezdb_replace_archive_entries` 作为一次性包装保留，内部走 begin / append / finish。
+- `ezdb_compact` 流式读取当前 active archives / active entries，生成新的压缩快照并原子替换当前 `.ezdb`，compact 后 delta size 和 delta entry count 归零。
 
 已实现：
 
@@ -290,10 +301,14 @@ v10 延续“压缩基座 + append-only delta log + write transaction”：
 - `ezdb_commit_write`
 - `ezdb_rollback_write`
 - `ezdb_insert_many`
+- `ezdb_begin_replace_archive_entries`
+- `ezdb_append_archive_entries`
+- `ezdb_finish_replace_archive_entries`
+- `ezdb_abort_replace_archive_entries`
+- `ezdb_replace_archive_entries`
+- `ezdb_compact`
 
-`ezdb_replace_archive_entries` 目前仍返回只读错误；主程序替换某个 archive 的 entries 时由 `EzdbIndexStore` 在 store 层加载当前快照、替换内存集合并重建 `.ezdb.tmp` 后原子替换。这个实现先保证主程序 SQLite 替代路径完整，但还不是最终的低峰值、细粒度 entry delta 方案。
-
-后续仍需要实现 compact，把 delta log 吸收到新的压缩基座中，并让大规模 entry 更新也支持更完整的增量索引。
+EveryZip 的解析流程使用 parser `ForEachEntry` 回调边解析边攒小批量 entries，`Indexer` 再通过 `IndexStore` batch entry replacement 写入 ezdb。首次扫描不再把整个压缩包 entry 列表放入内存后统一导入，也不再在全量解析期间长期持有全局写事务；因此 `everyzip.ezdb` 会在解析过程中持续增长，解析结束或监控变更后由后台 compact 吸收 delta。
 
 ## 6. 内存设计
 
@@ -307,6 +322,7 @@ v10 延续“压缩基座 + append-only delta log + write transaction”：
 - 字符串池。
 - archive 文件名索引、archive 目录组件索引、entry path 索引。
 - delta 覆盖层、active bitset、covered_base_bits。
+- delta entry refs、delta entry path/raw arena 和 delta entry 内存 gram 索引。
 
 按需读取：
 
@@ -323,6 +339,8 @@ v10 延续“压缩基座 + append-only delta log + write transaction”：
 - 搜索候选去重使用 bitset。
 - 查询只为最终结果构造路径和结果对象。
 - entry raw bytes 只在 `get-entry` 或结果需要时复制给调用方。
+- 解析导入阶段只保留当前 parser batch、当前写入 batch 和 ezdb 必要覆盖层，不保留全量 archive entries vector。
+- compact 后 delta entry refs 和 delta entry 内存索引被压缩基座替代，降低 reopen 成本和常驻内存。
 
 ## 7. 空间设计
 
@@ -348,14 +366,16 @@ v10 延续“压缩基座 + append-only delta log + write transaction”：
 - entry detail 与 raw/blob pool 使用 page 化 zlib 压缩，打开时只读页目录。
 - postings 使用 array/range/bitset 自适应容器，并按 container 独立压缩。
 - open 阶段 records 流式解压成列式数组，降低临时内存和常驻内存。
+- entry delta 支持边解析边追加，解析中只产生 append-only delta log。
+- compact 已支持把 active archives/entries 流式重写为干净基座，吸收 tombstone、stale 版本和 entry delta。
 
 后续空间优化方向：
 
-- 实现 compact，吸收大规模 delta log。
 - entry path/raw blob 增加字符串复用，降低 v9 page 化后的磁盘增量。
 - size/mtime 使用 block base-delta 或按页懒加载。
 - 字符串池按页加载或增加块压缩。
 - 高频 postings 支持更细粒度懒展开。
+- delta log 增加 CRC 和截断恢复，避免崩溃后保留半截 frame。
 
 ## 8. 性能验证
 
@@ -387,6 +407,8 @@ EzdbBench update <db.ezdb> <id> <path> [size] [mtime]
 EzdbBench delete <db.ezdb> <id>
 EzdbBench delete-archive-ref <db.ezdb> <drive> <file_ref_number>
 EzdbBench crud <input.txt> <output.ezdb>
+EzdbBench live-entry-append <output.ezdb> <entry_count> [batch_size]
+EzdbBench compact <db.ezdb>
 ```
 
 查询语法回归脚本：
@@ -548,6 +570,59 @@ python tools\ezdb_query_syntax_tests.py --bench cmake-build-codex-release\tools\
 - `TestIndexStore` 覆盖 SQLiteIndexStore、EzdbIndexStore 和旧 SQLite 自动导入路径。
 - `tools\ezdb_query_syntax_tests.py` 会在缺少本地样本文件时自动生成小样本，避免 `test_data\files_query_syntax.txt` 被 `.gitignore` 排除导致回归脚本失效。
 
+### 8.6 当前 v11 streaming entry delta / compact 结果
+
+v11 的重点验证是“entries 边解析边入库”和“解析后 compact 吸收 delta”。本轮实现验证命令：
+
+```text
+cmake --build cmake-build-codex-release --config Release --target EveryZip TestIndexStore EzdbBench
+ctest --test-dir cmake-build-codex-release -C Release --output-on-failure
+python tools\ezdb_query_syntax_tests.py --bench cmake-build-codex-release\tools\Release\EzdbBench.exe
+```
+
+验证结果均通过。
+
+100k live append smoke：
+
+```text
+EzdbBench live-entry-append test_data\codex_tmp\live_append_100k_final.ezdb 100000 4096
+```
+
+| 阶段 | 指标 | 数值 |
+| --- | --- | ---: |
+| append 后 | 文件大小 | 7,702,445 bytes / 7.35 MB |
+| append 后 | delta_entries | 100,000 |
+| append 后 | delta_size | 7,700,032 bytes / 7.34 MB |
+| append 后 | append_ms | 2,936 ms |
+| append 后 | `live_file_00099999` 查询 | 3 ms |
+| append 后 | info private | 47.17 MB |
+| compact | compact_ms | 1,689 ms |
+| compact 后 | 文件大小 | 1,463,971 bytes / 1.40 MB |
+| compact 后 | base_entries | 100,000 |
+| compact 后 | delta_entries / delta_size | 0 / 0 |
+| compact 后 | reopen open_ms | 3 ms |
+| compact 后 | `live_file_00099999` 查询 | 9 ms |
+| compact 后 | search private | 8.74 MB |
+
+10k quick smoke：
+
+| 阶段 | 指标 | 数值 |
+| --- | --- | ---: |
+| append 后 | append_ms | 156 ms |
+| append 后 | 文件大小 | 772,445 bytes / 0.74 MB |
+| append 后 | 查询 | 1 ms |
+| compact | compact_ms | 190 ms |
+| compact 后 | 文件大小 | 245,037 bytes / 0.23 MB |
+| compact 后 | base_entries | 10,000 |
+| compact 后 | delta_entries / delta_size | 0 / 0 |
+| compact 后 | info private | 1.96 MB |
+
+结论：
+
+- parser / Indexer / EzdbIndexStore 已支持 entries 批量流式写入，解析过程中 `.ezdb` 不再长期停留在 1 KB。
+- delta entry 查询路径可在 compact 前命中新增 entries；compact 后 entries 被吸收到压缩基座。
+- compact 后 reopen 成本、常驻内存和文件体积明显下降；后续重点转向崩溃恢复、compact 触发阈值和 UI 查询分页。
+
 ## 9. C API
 
 公开接口位于 `src/ezdb/ezdb.h`。
@@ -558,6 +633,11 @@ int ezdb_build_snapshot(const EzdbArchiveRecord* archives,
                         const EzdbEntryRecord* entries,
                         uint32_t entry_count,
                         const char* output_ezdb);
+
+int ezdb_build_snapshot_stream_entries(const EzdbArchiveRecord* archives,
+                                       uint32_t archive_count,
+                                       EzdbEntryStream* entry_stream,
+                                       const char* output_ezdb);
 
 int ezdb_open(const char* path, Ezdb** out_db);
 void ezdb_close(Ezdb* db);
@@ -595,6 +675,10 @@ int ezdb_get_entries_batch(Ezdb* db, const uint32_t* ids, uint32_t count, EzdbEn
 int ezdb_upsert_archive(Ezdb* db, const EzdbArchiveRecord* record, uint32_t* out_id);
 int ezdb_upsert_archives(Ezdb* db, const EzdbArchiveRecord* records, uint32_t count, uint32_t* out_ids);
 int ezdb_delete_archive_by_ref(Ezdb* db, char drive_letter, uint64_t file_ref_number);
+int ezdb_begin_replace_archive_entries(Ezdb* db, uint32_t archive_id);
+int ezdb_append_archive_entries(Ezdb* db, uint32_t archive_id, const EzdbEntryRecord* entries, uint32_t entry_count);
+int ezdb_finish_replace_archive_entries(Ezdb* db, uint32_t archive_id);
+int ezdb_abort_replace_archive_entries(Ezdb* db, uint32_t archive_id);
 int ezdb_replace_archive_entries(Ezdb* db, uint32_t archive_id, const EzdbEntryRecord* entries, uint32_t entry_count);
 
 int ezdb_begin_write(Ezdb* db, uint32_t flags);
@@ -623,9 +707,11 @@ API 约定：
 - `ezdb_search_path` 是兼容旧 path-only 使用方式的 archive-only 包装。
 - `ezdb_query_entries` 返回 entry id page 和 total count；主程序排序分页由 `EzdbIndexStore` 继续封装。
 - `ezdb_get_entries_batch` 用于批量回读 UI 当前页或 row cache 命中的 entry。
+- `ezdb_build_snapshot_stream_entries` 允许调用方通过 `EzdbEntryStream` 边读取 entries 边构建 snapshot，避免构建阶段持有全量 entry 数组。
+- entry replacement 支持 begin / append / finish / abort；EveryZip 解析压缩包时按 batch append。
+- `ezdb_stats` 返回 base / delta entry 数量和 delta size，用于观察 compact 前后的状态。
 - 单条写入成功返回前已持久化；事务内写入延迟到 `ezdb_commit_write`。
 - 只读打开时写接口返回 `EZDB_ERR_READ_ONLY`。
-- v10 当前 `ezdb_replace_archive_entries` 仍未在 C 层实现细粒度 entry delta；主程序通过 store 层 snapshot rebuild 完成替换。
 
 ## 10. 编码与兼容性
 
@@ -641,15 +727,14 @@ API 约定：
 
 ## 11. 已知限制
 
-- v10 不兼容 v1-v9 `.ezdb` 文件。
+- v11 不兼容 v1-v10 `.ezdb` 文件。
 - 目录记录、字符串池、entry core 和索引仍在 open 后整体常驻。
 - entry detail 与 raw/blob pool 已按页懒加载，但 entry path 当前没有目录树压缩，主要依赖 page 压缩和 postings 索引。
 - 目录索引基于路径组件，不为任意跨组件子串单独建索引。
 - 高频 1 字节关键词可能返回接近全库，`limit=0` 耗时主要由候选确认和结果回调决定。
 - 纯排除和纯通配符查询允许全库扫描，`limit=0` 在大库上可能明显慢于普通索引查询。
 - batch frame 具备 committed replay 语义，但还没有 CRC、自动截断不完整 delta 和并发读写控制。
-- 大规模 delta 会增加磁盘占用和 reopen 后常驻内存，需要 compact 或独立 delta 压缩索引。
-- 主程序替换 archive entries 当前由 `EzdbIndexStore` 重建完整 snapshot 完成，不适合长期高频、大规模增量更新。
+- compact 前大规模 delta 仍会增加磁盘占用和 reopen 后 delta replay 成本；后台 compact 已接入，但极端中断或频繁变化场景仍需要更稳的触发阈值和恢复策略。
 - meta 仍保存为旁路 `.meta` 文件，不是嵌入 `.ezdb` 主文件的单文件事务区。
 - UI 当前仍主要加载完整 entry id 列表；`IndexStore::QueryEntriesPage` 已具备分页接口，但主窗口还没有完全切到查询会话/分页模型。
 
@@ -657,13 +742,11 @@ API 约定：
 
 优先级从高到低：
 
-1. 实现 C 层 entry delta：支持按 archive 替换 entries，并维护增量 entry index，移除 store 层完整 snapshot rebuild。
-2. 实现 compact：重建干净基座，吸收 delta log，丢弃 tombstone 和 stale 版本。
-3. 增强崩溃恢复：batch CRC、打开时截断半截 frame、写入错误回滚。
-4. 将 meta 嵌入 `.ezdb` 或设计同目录事务文件，避免 `.meta` 旁路文件与主库提交点分离。
-5. 优化导入/构建阶段峰值内存：当前大样本导入峰值仍约 3.7 GB，尚未做流式构建。
-6. 推进 UI 查询会话/分页模型，减少主窗口一次性持有全部 entry id。
-7. 优化 entry path/raw blob：字符串复用、更细粒度页策略或 mmap。
-8. 优化大 delta 覆盖层内存：delta path arena 压缩、按页加载或独立 delta 索引。
-9. 优化高频短词 `limit > 0` 的候选展开，尽早停止 range/bitset 扫描。
-10. 评估 Windows mmap，让 records、strings、postings 支持更细粒度懒加载。
+1. 增强崩溃恢复：batch CRC、打开时截断半截 frame、写入错误回滚。
+2. 优化后台 compact 触发策略：按 delta size、delta entry count、空闲时间和监控变更频率动态决策。
+3. 将 meta 嵌入 `.ezdb` 或设计同目录事务文件，避免 `.meta` 旁路文件与主库提交点分离。
+4. 推进 UI 查询会话/分页模型，减少主窗口一次性持有全部 entry id。
+5. 优化大 delta 覆盖层内存：delta path arena 压缩、按页加载或独立 delta 索引。
+6. 优化 entry path/raw blob：字符串复用、更细粒度页策略或 mmap。
+7. 优化高频短词 `limit > 0` 的候选展开，尽早停止 range/bitset 扫描。
+8. 评估 Windows mmap，让 records、strings、postings 支持更细粒度懒加载。

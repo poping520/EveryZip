@@ -21,6 +21,25 @@ cmake --build build --config Debug
 
 > 需要管理员权限运行（USN Journal 访问）。
 
+## 测试数据生成
+
+仓库提供了一个独立 Python 工具，用于生成真实 ZIP 测试数据：
+
+```powershell
+python .\tools\generate_zip_test_data.py `
+  --output-root G:\EveryZipTestData `
+  --zip-count 15000 `
+  --entry-count 5300000 `
+  --clean `
+  --compact-names `
+  --report-json G:\EveryZipTestData\report.json
+```
+
+- `--compact-names` 适合大规模数据，能显著降低 ZIP 名称元数据带来的空间开销。
+- 默认会把中文名称比例控制在约 `30%`。
+- 建议先用较小样本试跑，例如 `--zip-count 300 --entry-count 100000`，确认目标机器磁盘空间足够。
+- 仅校验已有数据时可加 `--verify-only`。
+
 ## 技术栈
 
 - **语言**: C++17 / Win32 API

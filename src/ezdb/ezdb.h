@@ -124,8 +124,6 @@ typedef struct EzdbEntryQueryPage {
 typedef void (*EzdbSearchCallback)(const EzdbSearchResult* result, void* user_data);
 typedef void (*EzdbSearchV2Callback)(const EzdbSearchV2Result* result, void* user_data);
 
-int ezdb_build_from_text(const char* input_txt, const char* output_ezdb);
-int ezdb_build_from_archives_tsv(const char* input_tsv, const char* output_ezdb);
 int ezdb_build_snapshot(const EzdbArchiveRecord* archives,
                         uint32_t archive_count,
                         const EzdbEntryRecord* entries,

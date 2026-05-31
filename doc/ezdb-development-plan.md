@@ -553,8 +553,6 @@ python tools\ezdb_query_syntax_tests.py --bench cmake-build-codex-release\tools\
 公开接口位于 `src/ezdb/ezdb.h`。
 
 ```c
-int ezdb_build_from_text(const char* input_txt, const char* output_ezdb);
-int ezdb_build_from_archives_tsv(const char* input_tsv, const char* output_ezdb);
 int ezdb_build_snapshot(const EzdbArchiveRecord* archives,
                         uint32_t archive_count,
                         const EzdbEntryRecord* entries,
@@ -614,6 +612,8 @@ int ezdb_compact(Ezdb* db);
 
 const char* ezdb_error_message(int code);
 ```
+
+`build` / `build-archives` 是工具层测试入口：文本和 TSV 解析只保留在 `EzdbBench`，核心 `ezdb` 库只接收结构化 `EzdbArchiveRecord` / `EzdbEntryRecord` 快照输入。
 
 API 约定：
 

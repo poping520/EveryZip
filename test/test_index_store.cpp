@@ -185,6 +185,7 @@ static int RunSQLiteImportCase()
     DeleteFileW(sqlitePath.c_str());
     DeleteFileW(ezdbPath.c_str());
     DeleteFileW((ezdbPath + L".meta").c_str());
+    DeleteFileW((ezdbPath + L".tmp.archives.tmp.tsv").c_str());
 
     {
         auto source = CreateSQLiteIndexStore();
@@ -218,6 +219,9 @@ static int RunSQLiteImportCase()
         if (!imported->OpenOrCreate(ezdbPath, &err)) return Fail("ezdb import open failed");
         if (imported->GetArchiveCount() != 1) return Fail("ezdb import archive count mismatch");
         if (imported->GetEntryCount(L"imported") != 1) return Fail("ezdb import entry count mismatch");
+        if (GetFileAttributesW((ezdbPath + L".tmp.archives.tmp.tsv").c_str()) != INVALID_FILE_ATTRIBUTES) {
+            return Fail("ezdb import leaked archive temp tsv");
+        }
 
         std::string value;
         if (!imported->GetConfigValue("import_key", &value) || value != "import_value") {
@@ -235,6 +239,7 @@ static int RunSQLiteImportCase()
     DeleteFileW((sqlitePath + L"-shm").c_str());
     DeleteFileW(ezdbPath.c_str());
     DeleteFileW((ezdbPath + L".meta").c_str());
+    DeleteFileW((ezdbPath + L".tmp.archives.tmp.tsv").c_str());
     return 0;
 }
 

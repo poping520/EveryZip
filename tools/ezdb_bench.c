@@ -15,6 +15,12 @@ typedef struct SearchStats {
     uint32_t total;
 } SearchStats;
 
+typedef struct LoadedArchives {
+    EzdbArchiveRecord* records;
+    uint32_t count;
+    uint32_t cap;
+} LoadedArchives;
+
 static char* trim_ascii(char* text);
 
 static double now_ms(void)
@@ -210,15 +216,126 @@ static int parse_record_line(char* line, EzdbFileRecord* out_record)
     return 1;
 }
 
+static void free_loaded_archives(LoadedArchives* loaded)
+{
+    if (!loaded) return;
+    if (loaded->records) {
+        for (uint32_t i = 0; i < loaded->count; ++i) free((void*)loaded->records[i].file_path);
+    }
+    free(loaded->records);
+    loaded->records = NULL;
+    loaded->count = 0;
+    loaded->cap = 0;
+}
+
+static int push_loaded_archive(LoadedArchives* loaded, const EzdbArchiveRecord* record)
+{
+    if (loaded->count == loaded->cap) {
+        uint32_t next = loaded->cap ? loaded->cap * 2u : 1024u;
+        EzdbArchiveRecord* records = (EzdbArchiveRecord*)realloc(loaded->records, sizeof(EzdbArchiveRecord) * (size_t)next);
+        if (!records) return 0;
+        loaded->records = records;
+        loaded->cap = next;
+    }
+    loaded->records[loaded->count] = *record;
+    loaded->records[loaded->count].file_path = _strdup(record->file_path);
+    if (!loaded->records[loaded->count].file_path) return 0;
+    ++loaded->count;
+    return 1;
+}
+
+static int parse_archive_tsv_line_for_bench(char* line, EzdbArchiveRecord* out_record)
+{
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+
+    char* fields[6];
+    char* cursor = line;
+    for (int i = 0; i < 6; ++i) {
+        fields[i] = cursor;
+        if (i < 5) {
+            char* tab = strchr(cursor, '\t');
+            if (!tab) return 0;
+            *tab = '\0';
+            cursor = tab + 1;
+        }
+    }
+    if (!fields[3][0]) return 0;
+    memset(out_record, 0, sizeof(*out_record));
+    out_record->drive_letter = fields[0][0] ? fields[0][0] : 0;
+    out_record->file_ref_number = (uint64_t)_strtoui64(fields[1], NULL, 10);
+    out_record->usn = (int64_t)_strtoi64(fields[2], NULL, 10);
+    out_record->file_path = fields[3];
+    out_record->file_size = (uint64_t)_strtoui64(fields[4], NULL, 10);
+    out_record->modified_time = (uint64_t)_strtoui64(fields[5], NULL, 10);
+    return 1;
+}
+
+static int load_text_archives(const char* input_txt, LoadedArchives* loaded)
+{
+    FILE* in = fopen(input_txt, "rb");
+    if (!in) return 0;
+    char line[32768];
+    while (fgets(line, sizeof(line), in)) {
+        EzdbFileRecord file_record;
+        EzdbArchiveRecord archive_record;
+        if (!parse_record_line(line, &file_record)) continue;
+        memset(&archive_record, 0, sizeof(archive_record));
+        archive_record.file_path = file_record.path;
+        archive_record.file_size = file_record.size;
+        archive_record.modified_time = file_record.modified_time;
+        if (!push_loaded_archive(loaded, &archive_record)) {
+            fclose(in);
+            return 0;
+        }
+    }
+    fclose(in);
+    return 1;
+}
+
+static int load_archive_tsv(const char* input_tsv, LoadedArchives* loaded)
+{
+    FILE* in = fopen(input_tsv, "rb");
+    if (!in) return 0;
+    char line[32768];
+    while (fgets(line, sizeof(line), in)) {
+        EzdbArchiveRecord archive_record;
+        if (!parse_archive_tsv_line_for_bench(line, &archive_record)) continue;
+        if (!push_loaded_archive(loaded, &archive_record)) {
+            fclose(in);
+            return 0;
+        }
+    }
+    fclose(in);
+    return 1;
+}
+
+static int build_from_loaded_archives(LoadedArchives* loaded, const char* output_ezdb, const char* error_prefix)
+{
+    int rc = ezdb_build_snapshot(loaded->records, loaded->count, NULL, 0, output_ezdb);
+    if (rc != 0) {
+        fprintf(stderr, "%s failed: %s (%d)\n", error_prefix, ezdb_error_message(rc), rc);
+        return 2;
+    }
+    return 0;
+}
+
 static int run_crud_bench(const char* input_txt, const char* output_ezdb)
 {
     DeleteFileA(output_ezdb);
-    double start = now_ms();
-    int rc = ezdb_build_from_text(input_txt, output_ezdb);
-    double build_elapsed = now_ms() - start;
-    if (rc != 0) {
-        fprintf(stderr, "build failed: %s (%d)\n", ezdb_error_message(rc), rc);
+    LoadedArchives loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    if (!load_text_archives(input_txt, &loaded)) {
+        fprintf(stderr, "build failed: unable to read %s\n", input_txt);
+        free_loaded_archives(&loaded);
         return 2;
+    }
+    double start = now_ms();
+    int rc = build_from_loaded_archives(&loaded, output_ezdb, "build");
+    double build_elapsed = now_ms() - start;
+    free_loaded_archives(&loaded);
+    if (rc != 0) {
+        return rc;
     }
     printf("crud_build_ms: %.2f\n", build_elapsed);
     print_memory_usage("crud_build");
@@ -875,12 +992,19 @@ static int run_main(int argc, char** argv)
             print_usage();
             return 1;
         }
-        double start = now_ms();
-        int rc = ezdb_build_from_text(argv[2], argv[3]);
-        double elapsed = now_ms() - start;
-        if (rc != 0) {
-            fprintf(stderr, "build failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        LoadedArchives loaded;
+        memset(&loaded, 0, sizeof(loaded));
+        if (!load_text_archives(argv[2], &loaded)) {
+            fprintf(stderr, "build failed: unable to read %s\n", argv[2]);
+            free_loaded_archives(&loaded);
             return 2;
+        }
+        double start = now_ms();
+        int rc = build_from_loaded_archives(&loaded, argv[3], "build");
+        double elapsed = now_ms() - start;
+        free_loaded_archives(&loaded);
+        if (rc != 0) {
+            return rc;
         }
         printf("build ok: %.2f ms\n", elapsed);
         print_memory_usage("build");
@@ -892,12 +1016,19 @@ static int run_main(int argc, char** argv)
             print_usage();
             return 1;
         }
-        double start = now_ms();
-        int rc = ezdb_build_from_archives_tsv(argv[2], argv[3]);
-        double elapsed = now_ms() - start;
-        if (rc != 0) {
-            fprintf(stderr, "build-archives failed: %s (%d)\n", ezdb_error_message(rc), rc);
+        LoadedArchives loaded;
+        memset(&loaded, 0, sizeof(loaded));
+        if (!load_archive_tsv(argv[2], &loaded)) {
+            fprintf(stderr, "build-archives failed: unable to read %s\n", argv[2]);
+            free_loaded_archives(&loaded);
             return 2;
+        }
+        double start = now_ms();
+        int rc = build_from_loaded_archives(&loaded, argv[3], "build-archives");
+        double elapsed = now_ms() - start;
+        free_loaded_archives(&loaded);
+        if (rc != 0) {
+            return rc;
         }
         printf("build ok: %.2f ms\n", elapsed);
         print_memory_usage("build");

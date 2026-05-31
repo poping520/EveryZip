@@ -21,6 +21,8 @@ public:
     std::wstring ArchivePath() const override;
 
     bool ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) override;
+    bool ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                      std::string* error) override;
 
     bool ExtractEntry(const std::string& entry_path,
                       const std::wstring& dest_dir,

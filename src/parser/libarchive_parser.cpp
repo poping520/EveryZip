@@ -66,7 +66,18 @@ bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         return false;
     }
     out_entries->clear();
+    return ForEachEntry([&](const ArchiveEntry_t& entry) {
+        out_entries->push_back(entry);
+        return true;
+    }, error);
+}
 
+bool LibArchiveParser::ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                                    std::string* error) {
+    if (!visitor) {
+        if (error) *error = "visitor is null";
+        return false;
+    }
     if (archive_path_.empty()) {
         if (error) *error = "archive is not open";
         return false;
@@ -107,7 +118,11 @@ bool LibArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
             if (tm_ptr) e.modifiedTime = LocalTmToFileTimeValue(*tm_ptr);
         }
 
-        out_entries->push_back(std::move(e));
+        if (!visitor(e)) {
+            if (error) *error = "entry visitor stopped";
+            archive_read_free(a);
+            return false;
+        }
         archive_read_data_skip(a);
     }
 

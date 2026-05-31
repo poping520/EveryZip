@@ -43,6 +43,8 @@ public:
      * @return 枚举成功返回 true，否则返回 false。
      */
     bool ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) override;
+    bool ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                      std::string* error) override;
 
     /**
      * 将 ZIP 归档内指定条目解压到目标目录。

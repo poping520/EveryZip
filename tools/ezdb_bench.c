@@ -34,6 +34,7 @@ static void print_usage(void)
     printf("  EzdbBench build <input.txt> <output.ezdb>\n");
     printf("  EzdbBench build-archives <input.tsv> <output.ezdb>\n");
     printf("  EzdbBench import-sqlite <everyzip.db> <output.ezdb>\n");
+    printf("  EzdbBench live-entry-append <output.ezdb> <entry_count> [batch_size]\n");
     printf("  EzdbBench info <db.ezdb>\n");
     printf("  EzdbBench get <db.ezdb> <id>\n");
     printf("  EzdbBench get-archive <db.ezdb> <id>\n");
@@ -46,6 +47,7 @@ static void print_usage(void)
     printf("  EzdbBench update <db.ezdb> <id> <path> [size] [mtime]\n");
     printf("  EzdbBench delete <db.ezdb> <id>\n");
     printf("  EzdbBench delete-archive-ref <db.ezdb> <drive> <file_ref_number>\n");
+    printf("  EzdbBench compact <db.ezdb>\n");
     printf("  EzdbBench crud <input.txt> <output.ezdb>\n");
 }
 
@@ -63,6 +65,13 @@ static void print_memory_usage(const char* prefix)
     printf("%s_working_set_mb: %.2f\n", prefix, (double)counters.WorkingSetSize / 1024.0 / 1024.0);
     printf("%s_peak_working_set_mb: %.2f\n", prefix, (double)counters.PeakWorkingSetSize / 1024.0 / 1024.0);
     printf("%s_private_mb: %.2f\n", prefix, (double)counters.PrivateUsage / 1024.0 / 1024.0);
+}
+
+static uint64_t file_size_of_path(const char* path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data)) return 0;
+    return ((uint64_t)data.nFileSizeHigh << 32u) | data.nFileSizeLow;
 }
 
 static void on_result(const EzdbSearchResult* result, void* user_data)
@@ -605,9 +614,12 @@ static int print_db_info(Ezdb* db, const char* memory_prefix)
     }
     printf("records: %u\n", stats.record_count);
     printf("active: %u\n", stats.active_count);
-    printf("entries: %u\n", stats.entry_count);
-    printf("active_entries: %u\n", stats.active_entry_count);
-    printf("file_size: %llu bytes\n", (unsigned long long)stats.file_size);
+        printf("entries: %u\n", stats.entry_count);
+        printf("active_entries: %u\n", stats.active_entry_count);
+        printf("base_entries: %u\n", stats.base_entry_count);
+        printf("delta_entries: %u\n", stats.delta_entry_count);
+        printf("file_size: %llu bytes\n", (unsigned long long)stats.file_size);
+        printf("delta_size: %llu bytes\n", (unsigned long long)stats.delta_size);
     printf("records_size: %llu bytes\n", (unsigned long long)stats.records_size);
     printf("dirs_size: %llu bytes\n", (unsigned long long)stats.dirs_size);
     printf("names_size: %llu bytes\n", (unsigned long long)stats.names_size);
@@ -836,19 +848,60 @@ static int run_delete_once(Ezdb* db, uint32_t id, const char* memory_prefix)
     return 0;
 }
 
-static void free_import_data(EzdbArchiveRecord* archives, uint32_t archive_count, EzdbEntryRecord* entries, uint32_t entry_count)
+static void free_import_data(EzdbArchiveRecord* archives, uint32_t archive_count)
 {
     if (archives) {
         for (uint32_t i = 0; i < archive_count; ++i) free((void*)archives[i].file_path);
     }
-    if (entries) {
-        for (uint32_t i = 0; i < entry_count; ++i) {
-            free((void*)entries[i].entry_path);
-            free((void*)entries[i].entry_raw_path);
-        }
-    }
     free(archives);
-    free(entries);
+}
+
+typedef struct SqliteEntryStream {
+    sqlite3* db;
+    sqlite3_stmt* stmt;
+    uint32_t* id_map;
+    int max_archive_id;
+    const char* sql;
+} SqliteEntryStream;
+
+static int sqlite_entry_stream_reset(void* user_data)
+{
+    SqliteEntryStream* stream = (SqliteEntryStream*)user_data;
+    if (!stream || !stream->db || !stream->sql) return -1;
+    if (stream->stmt) {
+        sqlite3_finalize(stream->stmt);
+        stream->stmt = NULL;
+    }
+    return sqlite3_prepare_v2(stream->db, stream->sql, -1, &stream->stmt, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+static int sqlite_entry_stream_next(void* user_data, EzdbEntryRecord* out_record)
+{
+    SqliteEntryStream* stream = (SqliteEntryStream*)user_data;
+    if (!stream || !stream->stmt || !out_record) return -1;
+    int rc = sqlite3_step(stream->stmt);
+    if (rc != SQLITE_ROW) return -1;
+
+    int sqlite_archive_id = sqlite3_column_int(stream->stmt, 0);
+    const unsigned char* entry_path = sqlite3_column_text(stream->stmt, 1);
+    if (sqlite_archive_id < 0 || sqlite_archive_id > stream->max_archive_id ||
+        stream->id_map[sqlite_archive_id] == UINT32_MAX || !entry_path) {
+        return -1;
+    }
+
+    memset(out_record, 0, sizeof(*out_record));
+    out_record->archive_id = stream->id_map[sqlite_archive_id];
+    out_record->entry_path = (const char*)entry_path;
+    const void* raw = sqlite3_column_blob(stream->stmt, 2);
+    int raw_len = sqlite3_column_bytes(stream->stmt, 2);
+    if (raw && raw_len > 0) {
+        out_record->entry_raw_path = raw;
+        out_record->entry_raw_path_len = (uint32_t)raw_len;
+    }
+    out_record->compressed_size = (int64_t)sqlite3_column_int64(stream->stmt, 3);
+    out_record->original_size = (uint64_t)sqlite3_column_int64(stream->stmt, 4);
+    out_record->modified_time = (uint64_t)sqlite3_column_int64(stream->stmt, 5);
+    return 0;
 }
 
 static int run_import_sqlite(const char* sqlite_path, const char* output_ezdb)
@@ -856,7 +909,6 @@ static int run_import_sqlite(const char* sqlite_path, const char* output_ezdb)
     sqlite3* sdb = NULL;
     sqlite3_stmt* stmt = NULL;
     EzdbArchiveRecord* archives = NULL;
-    EzdbEntryRecord* entries = NULL;
     uint32_t archive_count = 0, entry_count = 0;
     uint32_t* id_map = NULL;
     int max_archive_id = 0;
@@ -882,13 +934,12 @@ static int run_import_sqlite(const char* sqlite_path, const char* output_ezdb)
     stmt = NULL;
 
     archives = (EzdbArchiveRecord*)calloc(archive_count ? archive_count : 1u, sizeof(EzdbArchiveRecord));
-    entries = (EzdbEntryRecord*)calloc(entry_count ? entry_count : 1u, sizeof(EzdbEntryRecord));
     id_map = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)(max_archive_id + 1));
-    if (!archives || !entries || !id_map) {
+    if (!archives || !id_map) {
         fprintf(stderr, "out of memory\n");
         sqlite3_close(sdb);
         free(id_map);
-        free_import_data(archives, archive_count, entries, entry_count);
+        free_import_data(archives, archive_count);
         return 2;
     }
     for (int i = 0; i <= max_archive_id; ++i) id_map[i] = UINT32_MAX;
@@ -917,58 +968,46 @@ static int run_import_sqlite(const char* sqlite_path, const char* output_ezdb)
     sqlite3_finalize(stmt);
     stmt = NULL;
 
-    rc = sqlite3_prepare_v2(sdb,
-                            "SELECT archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time FROM entries ORDER BY id",
-                            -1, &stmt, NULL);
-    if (rc != SQLITE_OK) goto sqlite_fail;
-    uint32_t ei = 0;
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        int sqlite_archive_id = sqlite3_column_int(stmt, 0);
-        const unsigned char* entry_path = sqlite3_column_text(stmt, 1);
-        if (ei >= entry_count || sqlite_archive_id < 0 || sqlite_archive_id > max_archive_id ||
-            id_map[sqlite_archive_id] == UINT32_MAX || !entry_path) goto sqlite_fail;
-        entries[ei].archive_id = id_map[sqlite_archive_id];
-        entries[ei].entry_path = _strdup((const char*)entry_path);
-        const void* raw = sqlite3_column_blob(stmt, 2);
-        int raw_len = sqlite3_column_bytes(stmt, 2);
-        if (raw && raw_len > 0) {
-            void* copy = malloc((size_t)raw_len);
-            if (!copy) goto sqlite_fail;
-            memcpy(copy, raw, (size_t)raw_len);
-            entries[ei].entry_raw_path = copy;
-            entries[ei].entry_raw_path_len = (uint32_t)raw_len;
-        }
-        entries[ei].compressed_size = (int64_t)sqlite3_column_int64(stmt, 3);
-        entries[ei].original_size = (uint64_t)sqlite3_column_int64(stmt, 4);
-        entries[ei].modified_time = (uint64_t)sqlite3_column_int64(stmt, 5);
-        if (!entries[ei].entry_path) goto sqlite_fail;
-        ++ei;
-    }
-    if (rc != SQLITE_DONE || ei != entry_count) goto sqlite_fail;
-    sqlite3_finalize(stmt);
-    stmt = NULL;
-    sqlite3_close(sdb);
-    sdb = NULL;
-
     double load_elapsed = now_ms() - start;
     printf("import_sqlite_load_ms: %.2f\n", load_elapsed);
     printf("import_sqlite_archives: %u\n", archive_count);
     printf("import_sqlite_entries: %u\n", entry_count);
-    print_memory_usage("import_sqlite_loaded");
+    print_memory_usage("import_sqlite_archives_loaded");
 
     start = now_ms();
-    int ezrc = ezdb_build_snapshot(archives, archive_count, entries, entry_count, output_ezdb);
+    const char* entry_sql =
+        "SELECT archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time "
+        "FROM entries ORDER BY id";
+    SqliteEntryStream stream;
+    memset(&stream, 0, sizeof(stream));
+    stream.db = sdb;
+    stream.id_map = id_map;
+    stream.max_archive_id = max_archive_id;
+    stream.sql = entry_sql;
+    EzdbEntryStream ez_stream;
+    memset(&ez_stream, 0, sizeof(ez_stream));
+    ez_stream.user_data = &stream;
+    ez_stream.reset = sqlite_entry_stream_reset;
+    ez_stream.next = sqlite_entry_stream_next;
+    int ezrc = ezdb_build_snapshot_stream_entries(archives, archive_count, &ez_stream, entry_count, output_ezdb);
+    if (stream.stmt) {
+        sqlite3_finalize(stream.stmt);
+        stream.stmt = NULL;
+    }
     double build_elapsed = now_ms() - start;
     if (ezrc != 0) {
         fprintf(stderr, "ezdb_build_snapshot failed: %s (%d)\n", ezdb_error_message(ezrc), ezrc);
+        sqlite3_close(sdb);
         free(id_map);
-        free_import_data(archives, archive_count, entries, entry_count);
+        free_import_data(archives, archive_count);
         return 2;
     }
+    sqlite3_close(sdb);
+    sdb = NULL;
     printf("import_sqlite_build_ms: %.2f\n", build_elapsed);
     print_memory_usage("import_sqlite_after_build");
     free(id_map);
-    free_import_data(archives, archive_count, entries, entry_count);
+    free_import_data(archives, archive_count);
     return 0;
 
 sqlite_fail:
@@ -976,7 +1015,7 @@ sqlite_fail:
     if (stmt) sqlite3_finalize(stmt);
     if (sdb) sqlite3_close(sdb);
     free(id_map);
-    free_import_data(archives, archive_count, entries, entry_count);
+    free_import_data(archives, archive_count);
     return 2;
 }
 
@@ -1043,6 +1082,89 @@ static int run_main(int argc, char** argv)
         return run_import_sqlite(argv[2], argv[3]);
     }
 
+    if (strcmp(argv[1], "live-entry-append") == 0) {
+        if (argc < 4 || argc > 5) {
+            print_usage();
+            return 1;
+        }
+        const char* path = argv[2];
+        uint32_t entry_count = (uint32_t)strtoul(argv[3], NULL, 10);
+        uint32_t batch_size = argc >= 5 ? (uint32_t)strtoul(argv[4], NULL, 10) : 4096u;
+        if (!batch_size) batch_size = 4096u;
+        remove(path);
+
+        EzdbArchiveRecord archive;
+        memset(&archive, 0, sizeof(archive));
+        archive.drive_letter = 'T';
+        archive.file_ref_number = 12345;
+        archive.usn = 67890;
+        archive.file_path = "T:\\EveryZipBench\\live.zip";
+        archive.file_size = 100;
+        archive.modified_time = 200;
+        int rc = ezdb_build_snapshot(&archive, 1, NULL, 0, path);
+        if (rc != 0) {
+            fprintf(stderr, "live-entry-append build failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        Ezdb* db = NULL;
+        rc = ezdb_open(path, &db);
+        if (rc != 0) {
+            fprintf(stderr, "live-entry-append open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        uint64_t start_size = ezdb_file_size(db);
+        rc = ezdb_begin_replace_archive_entries(db, 0);
+        if (rc != 0) {
+            fprintf(stderr, "live-entry-append begin failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            ezdb_close(db);
+            return 2;
+        }
+        EzdbEntryRecord* batch = (EzdbEntryRecord*)calloc(batch_size, sizeof(EzdbEntryRecord));
+        char** paths = (char**)calloc(batch_size, sizeof(char*));
+        if (!batch || !paths) {
+            free(batch);
+            free(paths);
+            ezdb_close(db);
+            return 2;
+        }
+        double start = now_ms();
+        uint32_t written = 0;
+        while (written < entry_count) {
+            uint32_t n = entry_count - written;
+            if (n > batch_size) n = batch_size;
+            for (uint32_t i = 0; i < n; ++i) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "folder/live_file_%08u.txt", written + i);
+                paths[i] = _strdup(buf);
+                batch[i].archive_id = 0;
+                batch[i].entry_path = paths[i];
+                batch[i].compressed_size = (int64_t)(written + i);
+                batch[i].original_size = (uint64_t)(written + i) * 2u;
+                batch[i].modified_time = 300 + written + i;
+            }
+            rc = ezdb_append_archive_entries(db, 0, batch, n);
+            for (uint32_t i = 0; i < n; ++i) {
+                free(paths[i]);
+                paths[i] = NULL;
+                memset(&batch[i], 0, sizeof(batch[i]));
+            }
+            if (rc != 0) break;
+            written += n;
+            printf("batch_written: %u file_size: %llu\n", written, (unsigned long long)ezdb_file_size(db));
+        }
+        if (rc == 0) rc = ezdb_finish_replace_archive_entries(db, 0);
+        double elapsed = now_ms() - start;
+        uint64_t end_size = ezdb_file_size(db);
+        free(batch);
+        free(paths);
+        ezdb_close(db);
+        printf("live_append_ms: %.2f\n", elapsed);
+        printf("start_size: %llu\n", (unsigned long long)start_size);
+        printf("end_size: %llu\n", (unsigned long long)end_size);
+        print_memory_usage("live_append");
+        return rc == 0 ? 0 : 2;
+    }
+
     if (strcmp(argv[1], "info") == 0) {
         if (argc != 3) {
             print_usage();
@@ -1065,7 +1187,10 @@ static int run_main(int argc, char** argv)
         printf("active: %u\n", stats.active_count);
         printf("entries: %u\n", stats.entry_count);
         printf("active_entries: %u\n", stats.active_entry_count);
+        printf("base_entries: %u\n", stats.base_entry_count);
+        printf("delta_entries: %u\n", stats.delta_entry_count);
         printf("file_size: %llu bytes\n", (unsigned long long)stats.file_size);
+        printf("delta_size: %llu bytes\n", (unsigned long long)stats.delta_size);
         printf("records_size: %llu bytes\n", (unsigned long long)stats.records_size);
         printf("dirs_size: %llu bytes\n", (unsigned long long)stats.dirs_size);
         printf("names_size: %llu bytes\n", (unsigned long long)stats.names_size);
@@ -1445,6 +1570,34 @@ static int run_main(int argc, char** argv)
         }
         printf("delete_archive_ref_ms: %.2f\n", elapsed);
         print_memory_usage("delete_archive_ref");
+        ezdb_close(db);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "compact") == 0) {
+        if (argc != 3) {
+            print_usage();
+            return 1;
+        }
+        Ezdb* db = NULL;
+        int rc = ezdb_open(argv[2], &db);
+        if (rc != 0) {
+            fprintf(stderr, "open failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            return 2;
+        }
+        uint64_t before = ezdb_file_size(db);
+        double start = now_ms();
+        rc = ezdb_compact(db);
+        double elapsed = now_ms() - start;
+        if (rc != 0) {
+            fprintf(stderr, "compact failed: %s (%d)\n", ezdb_error_message(rc), rc);
+            ezdb_close(db);
+            return 2;
+        }
+        printf("compact_ms: %.2f\n", elapsed);
+        printf("before_size: %llu\n", (unsigned long long)before);
+        printf("after_size: %llu\n", (unsigned long long)file_size_of_path(argv[2]));
+        print_memory_usage("compact");
         ezdb_close(db);
         return 0;
     }

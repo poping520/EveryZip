@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <functional>
 #include <vector>
 
 #include "../types.h"
@@ -42,6 +43,13 @@ public:
      * @return 枚举成功返回 true，否则返回 false。
      */
     virtual bool ListEntries(std::vector<ArchiveEntry_t>* out_entries, std::string* error) = 0;
+
+    /**
+     * 流式枚举当前归档中的条目元数据。实现应在发现条目后立即调用 visitor，
+     * 避免调用方必须一次性持有整个归档的 entries 列表。
+     */
+    virtual bool ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                              std::string* error) = 0;
 
     /**
      * 将归档内指定条目解压到目标目录。

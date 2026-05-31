@@ -137,7 +137,18 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         return false;
     }
     out_entries->clear();
+    return ForEachEntry([&](const ArchiveEntry_t& entry) {
+        out_entries->push_back(entry);
+        return true;
+    }, error);
+}
 
+bool ZipArchiveParser::ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                                    std::string* error) {
+    if (!visitor) {
+        if (error) *error = "visitor is null";
+        return false;
+    }
     if (!handle_) {
         if (error) *error = "archive is not open";
         return false;
@@ -178,7 +189,10 @@ bool ZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         t.tm_year = info.tmu_date.tm_year - 1900;
         e.modifiedTime = LocalTmToFileTimeValue(t);
 
-        out_entries->push_back(std::move(e));
+        if (!visitor(e)) {
+            if (error) *error = "entry visitor stopped";
+            return false;
+        }
 
         rc = unzGoToNextFile((unzFile)handle_);
         if (rc == UNZ_END_OF_LIST_OF_FILE) break;

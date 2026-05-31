@@ -206,14 +206,24 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries
         return false;
     }
     out_entries->clear();
+    return ForEachEntry([&](const ArchiveEntry_t& entry) {
+        out_entries->push_back(entry);
+        return true;
+    }, error);
+}
 
+bool SevenZipArchiveParser::ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                                         std::string* error) {
+    if (!visitor) {
+        if (error) *error = "visitor is null";
+        return false;
+    }
     if (!IsOpen()) {
         if (error) *error = "archive is not open";
         return false;
     }
 
     const std::vector<UInt32> filesPerFolder = CountFilesPerFolder(state_->db);
-    out_entries->reserve(state_->db.NumFiles);
     for (UInt32 i = 0; i < state_->db.NumFiles; ++i) {
         std::wstring nameW;
         if (!GetItemName(state_->db, i, &nameW, error)) {
@@ -255,7 +265,10 @@ bool SevenZipArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries
             }
         }
 
-        out_entries->push_back(std::move(e));
+        if (!visitor(e)) {
+            if (error) *error = "entry visitor stopped";
+            return false;
+        }
     }
 
     return true;

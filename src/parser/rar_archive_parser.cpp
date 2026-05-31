@@ -169,7 +169,18 @@ bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         return false;
     }
     out_entries->clear();
+    return ForEachEntry([&](const ArchiveEntry_t& entry) {
+        out_entries->push_back(entry);
+        return true;
+    }, error);
+}
 
+bool RarArchiveParser::ForEachEntry(const std::function<bool(const ArchiveEntry_t&)>& visitor,
+                                    std::string* error) {
+    if (!visitor) {
+        if (error) *error = "visitor is null";
+        return false;
+    }
     if (!IsOpen()) {
         if (error) *error = "archive is not open";
         return false;
@@ -213,7 +224,10 @@ bool RarArchiveParser::ListEntries(std::vector<ArchiveEntry_t>* out_entries, std
         FillModifiedTime(header.FileTime, &modifiedTime);
         entry.modifiedTime = LocalTmToFileTimeValue(modifiedTime);
 
-        out_entries->push_back(std::move(entry));
+        if (!visitor(entry)) {
+            if (error) *error = "entry visitor stopped";
+            return false;
+        }
 
         const int skipCode = RARProcessFileW(state_->handle, RAR_SKIP, nullptr, nullptr);
         if (skipCode != ERAR_SUCCESS) {

@@ -73,6 +73,16 @@ std::string SqliteText(sqlite3_stmt* stmt, int col)
     return text ? reinterpret_cast<const char*>(text) : "";
 }
 
+struct SqliteEntryStreamContext {
+    sqlite3* db = nullptr;
+    sqlite3_stmt* stmt = nullptr;
+    const std::vector<uint32_t>* idMap = nullptr;
+    int maxArchiveId = 0;
+};
+
+int SqliteEntryStreamReset(void* userData);
+int SqliteEntryStreamNext(void* userData, EzdbEntryRecord* outRecord);
+
 bool ImportSQLiteToEzdb(const std::wstring& sqlitePath, const std::wstring& ezdbPath, std::wstring* err)
 {
     sqlite3* sdb = nullptr;
@@ -132,45 +142,7 @@ bool ImportSQLiteToEzdb(const std::wstring& sqlitePath, const std::wstring& ezdb
         sqlite3_finalize(stmt);
         stmt = nullptr;
 
-        std::vector<std::string> entryPaths;
-        std::vector<std::string> entryRawPaths;
-        std::vector<EzdbEntryRecord> entries;
         std::vector<std::pair<std::string, std::string>> meta;
-        entryPaths.reserve(entryCount);
-        entryRawPaths.reserve(entryCount);
-        entries.reserve(entryCount);
-
-        rc = sqlite3_prepare_v2(sdb,
-                                "SELECT archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time "
-                                "FROM entries ORDER BY id",
-                                -1, &stmt, nullptr);
-        if (rc != SQLITE_OK) goto sqlite_fail;
-        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-            int sqliteArchiveId = sqlite3_column_int(stmt, 0);
-            if (sqliteArchiveId < 0 || sqliteArchiveId > maxArchiveId ||
-                idMap[sqliteArchiveId] == UINT32_MAX) {
-                goto sqlite_fail;
-            }
-            entryPaths.push_back(SqliteText(stmt, 1));
-            const void* raw = sqlite3_column_blob(stmt, 2);
-            int rawLen = sqlite3_column_bytes(stmt, 2);
-            entryRawPaths.emplace_back(raw && rawLen > 0 ? std::string(static_cast<const char*>(raw), rawLen) : std::string());
-
-            EzdbEntryRecord record{};
-            record.archive_id = idMap[sqliteArchiveId];
-            record.entry_path = entryPaths.back().c_str();
-            if (!entryRawPaths.back().empty()) {
-                record.entry_raw_path = entryRawPaths.back().data();
-                record.entry_raw_path_len = static_cast<uint32_t>(entryRawPaths.back().size());
-            }
-            record.compressed_size = static_cast<int64_t>(sqlite3_column_int64(stmt, 3));
-            record.original_size = static_cast<uint64_t>(sqlite3_column_int64(stmt, 4));
-            record.modified_time = static_cast<uint64_t>(sqlite3_column_int64(stmt, 5));
-            entries.push_back(record);
-        }
-        if (rc != SQLITE_DONE) goto sqlite_fail;
-        sqlite3_finalize(stmt);
-        stmt = nullptr;
 
         rc = sqlite3_prepare_v2(sdb, "SELECT key, value FROM configs ORDER BY key", -1, &stmt, nullptr);
         if (rc == SQLITE_OK) {
@@ -189,21 +161,33 @@ bool ImportSQLiteToEzdb(const std::wstring& sqlitePath, const std::wstring& ezdb
             stmt = nullptr;
         }
 
-        sqlite3_close(sdb);
-        sdb = nullptr;
-
         const std::wstring tmp = ezdbPath + L".tmp";
         const std::wstring metaTmp = ezdbPath + L".tmp.meta";
         DeleteFileW(tmp.c_str());
         DeleteFileW(metaTmp.c_str());
-        int ezrc = ezdb_build_snapshot(archives.data(), static_cast<uint32_t>(archives.size()),
-                                       entries.data(), static_cast<uint32_t>(entries.size()),
-                                       WideToUtf8(tmp).c_str());
+        SqliteEntryStreamContext streamCtx;
+        streamCtx.db = sdb;
+        streamCtx.idMap = &idMap;
+        streamCtx.maxArchiveId = maxArchiveId;
+        EzdbEntryStream stream{};
+        stream.user_data = &streamCtx;
+        stream.reset = SqliteEntryStreamReset;
+        stream.next = SqliteEntryStreamNext;
+        int ezrc = ezdb_build_snapshot_stream_entries(archives.data(), static_cast<uint32_t>(archives.size()),
+                                                      &stream, entryCount, WideToUtf8(tmp).c_str());
+        if (streamCtx.stmt) {
+            sqlite3_finalize(streamCtx.stmt);
+            streamCtx.stmt = nullptr;
+        }
         if (ezrc != 0) {
             SetErr(err, Utf8ToWString(ezdb_error_message(ezrc)));
             DeleteFileW(tmp.c_str());
+            sqlite3_close(sdb);
+            sdb = nullptr;
             return false;
         }
+        sqlite3_close(sdb);
+        sdb = nullptr;
         Ezdb* validate = nullptr;
         ezrc = ezdb_open(WideToUtf8(tmp).c_str(), &validate);
         if (ezrc != 0) {
@@ -212,7 +196,7 @@ bool ImportSQLiteToEzdb(const std::wstring& sqlitePath, const std::wstring& ezdb
             return false;
         }
         const bool countOk = ezdb_archive_count(validate) == archives.size() &&
-                             ezdb_entry_count(validate) == entries.size();
+                             ezdb_entry_count(validate) == entryCount;
         ezdb_close(validate);
         if (!countOk) {
             SetErr(err, L"sqlite import validation count mismatch");
@@ -249,6 +233,50 @@ sqlite_fail:
     if (stmt) sqlite3_finalize(stmt);
     if (sdb) sqlite3_close(sdb);
     return false;
+}
+
+int SqliteEntryStreamReset(void* userData)
+{
+    auto* ctx = static_cast<SqliteEntryStreamContext*>(userData);
+    if (!ctx || !ctx->db) return -1;
+    if (ctx->stmt) {
+        sqlite3_finalize(ctx->stmt);
+        ctx->stmt = nullptr;
+    }
+    static const char kSql[] =
+        "SELECT archive_id, entry_path, entry_raw_path, compressed_size, original_size, modified_time "
+        "FROM entries ORDER BY id";
+    return sqlite3_prepare_v2(ctx->db, kSql, -1, &ctx->stmt, nullptr) == SQLITE_OK ? 0 : -1;
+}
+
+int SqliteEntryStreamNext(void* userData, EzdbEntryRecord* outRecord)
+{
+    auto* ctx = static_cast<SqliteEntryStreamContext*>(userData);
+    if (!ctx || !ctx->stmt || !ctx->idMap || !outRecord) return -1;
+    const int rc = sqlite3_step(ctx->stmt);
+    if (rc != SQLITE_ROW) return -1;
+
+    const int sqliteArchiveId = sqlite3_column_int(ctx->stmt, 0);
+    const unsigned char* entryPath = sqlite3_column_text(ctx->stmt, 1);
+    if (sqliteArchiveId < 0 || sqliteArchiveId > ctx->maxArchiveId ||
+        static_cast<size_t>(sqliteArchiveId) >= ctx->idMap->size() ||
+        (*ctx->idMap)[sqliteArchiveId] == UINT32_MAX || !entryPath) {
+        return -1;
+    }
+
+    *outRecord = {};
+    outRecord->archive_id = (*ctx->idMap)[sqliteArchiveId];
+    outRecord->entry_path = reinterpret_cast<const char*>(entryPath);
+    const void* raw = sqlite3_column_blob(ctx->stmt, 2);
+    const int rawLen = sqlite3_column_bytes(ctx->stmt, 2);
+    if (raw && rawLen > 0) {
+        outRecord->entry_raw_path = raw;
+        outRecord->entry_raw_path_len = static_cast<uint32_t>(rawLen);
+    }
+    outRecord->compressed_size = static_cast<int64_t>(sqlite3_column_int64(ctx->stmt, 3));
+    outRecord->original_size = static_cast<uint64_t>(sqlite3_column_int64(ctx->stmt, 4));
+    outRecord->modified_time = static_cast<uint64_t>(sqlite3_column_int64(ctx->stmt, 5));
+    return 0;
 }
 
 ArchiveFile_t ArchiveFromEzdb(const EzdbArchiveResult& result)
@@ -414,6 +442,30 @@ public:
     bool DeleteEntriesByArchivePath(const std::wstring& archivePath, std::wstring* err) override { return db_.DeleteEntriesByArchivePath(archivePath, err); }
     bool DeleteEntriesByArchiveId(int64_t archiveId, std::wstring* err) override { return db_.DeleteEntriesByArchiveId(archiveId, err); }
     bool InsertEntries(const std::vector<ArchiveEntry_t>& entries, std::wstring* err) override { return db_.InsertEntriesBatch(entries, err); }
+    bool BeginReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) override
+    {
+        return DeleteEntriesByArchiveId(archiveId, err);
+    }
+    bool AppendArchiveEntriesByArchiveId(int64_t archiveId, const std::vector<ArchiveEntry_t>& entries, std::wstring* err) override
+    {
+        std::vector<ArchiveEntry_t> normalized;
+        normalized.reserve(entries.size());
+        for (auto entry : entries) {
+            entry.archiveId = archiveId;
+            normalized.push_back(std::move(entry));
+        }
+        return InsertEntries(normalized, err);
+    }
+    bool FinishReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) override
+    {
+        (void)archiveId;
+        (void)err;
+        return true;
+    }
+    bool AbortReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) override
+    {
+        return DeleteEntriesByArchiveId(archiveId, err);
+    }
     bool ReplaceArchiveEntriesByArchiveId(int64_t archiveId, const std::vector<ArchiveEntry_t>& entries, std::wstring* err) override
     {
         if (!db_.DeleteEntriesByArchiveId(archiveId, err)) return false;
@@ -642,10 +694,14 @@ public:
 
     int64_t GetArchiveIdByPath(const std::wstring& filePath) override
     {
-        std::wstring err;
-        if (!LoadMutable(&err)) return -1;
-        for (size_t i = 0; i < archives_.size(); ++i) {
-            if (archives_[i].filePath == filePath) return static_cast<int64_t>(i);
+        if (!db_) return -1;
+        const uint32_t count = ezdb_archive_count(db_);
+        for (uint32_t i = 0; i < count; ++i) {
+            EzdbArchiveResult result{};
+            if (ezdb_get_archive(db_, i, &result) != 0) continue;
+            ArchiveFile_t archive = ArchiveFromEzdb(result);
+            ezdb_free_archive_result(&result);
+            if (archive.filePath == filePath) return static_cast<int64_t>(i);
         }
         return -1;
     }
@@ -679,18 +735,60 @@ public:
         return txnActive_ || RebuildAndUnload(err);
     }
 
+    bool BeginReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) override
+    {
+        if (!db_ || archiveId < 0 || archiveId > UINT32_MAX) { SetErr(err, L"store not open or invalid archive id"); return false; }
+        int rc = ezdb_begin_replace_archive_entries(db_, static_cast<uint32_t>(archiveId));
+        if (rc != 0) SetErr(err, Utf8ToWString(ezdb_error_message(rc)));
+        return rc == 0;
+    }
+
+    bool AppendArchiveEntriesByArchiveId(int64_t archiveId,
+                                         const std::vector<ArchiveEntry_t>& entries,
+                                         std::wstring* err) override
+    {
+        if (!db_ || archiveId < 0 || archiveId > UINT32_MAX) { SetErr(err, L"store not open or invalid archive id"); return false; }
+        std::vector<EzdbEntryRecord> records;
+        records.reserve(entries.size());
+        for (const auto& entry : entries) {
+            EzdbEntryRecord record{};
+            record.archive_id = static_cast<uint32_t>(archiveId);
+            record.entry_path = entry.entryPathUtf8.c_str();
+            if (!entry.entryRawPath.empty()) {
+                record.entry_raw_path = entry.entryRawPath.data();
+                record.entry_raw_path_len = static_cast<uint32_t>(entry.entryRawPath.size());
+            }
+            record.compressed_size = entry.compressedSize;
+            record.original_size = entry.originalSize;
+            record.modified_time = entry.modifiedTime;
+            records.push_back(record);
+        }
+        int rc = ezdb_append_archive_entries(db_, static_cast<uint32_t>(archiveId), records.data(), static_cast<uint32_t>(records.size()));
+        if (rc != 0) SetErr(err, Utf8ToWString(ezdb_error_message(rc)));
+        return rc == 0;
+    }
+
+    bool FinishReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) override
+    {
+        if (!db_ || archiveId < 0 || archiveId > UINT32_MAX) { SetErr(err, L"store not open or invalid archive id"); return false; }
+        int rc = ezdb_finish_replace_archive_entries(db_, static_cast<uint32_t>(archiveId));
+        if (rc != 0) SetErr(err, Utf8ToWString(ezdb_error_message(rc)));
+        return rc == 0;
+    }
+
+    bool AbortReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) override
+    {
+        if (!db_ || archiveId < 0 || archiveId > UINT32_MAX) { SetErr(err, L"store not open or invalid archive id"); return false; }
+        int rc = ezdb_abort_replace_archive_entries(db_, static_cast<uint32_t>(archiveId));
+        if (rc != 0) SetErr(err, Utf8ToWString(ezdb_error_message(rc)));
+        return rc == 0;
+    }
+
     bool ReplaceArchiveEntriesByArchiveId(int64_t archiveId, const std::vector<ArchiveEntry_t>& entries, std::wstring* err) override
     {
-        if (!LoadMutable(err)) return false;
-        entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [&](const ArchiveEntry_t& e) {
-            return e.archiveId == archiveId;
-        }), entries_.end());
-        for (auto entry : entries) {
-            entry.archiveId = archiveId;
-            entries_.push_back(std::move(entry));
-        }
-        dirty_ = true;
-        return txnActive_ || RebuildAndUnload(err);
+        return BeginReplaceArchiveEntriesByArchiveId(archiveId, err) &&
+               AppendArchiveEntriesByArchiveId(archiveId, entries, err) &&
+               FinishReplaceArchiveEntriesByArchiveId(archiveId, err);
     }
 
     bool ReplaceArchiveEntriesByRef(wchar_t driveLetter, uint64_t fileRefNumber, const std::vector<ArchiveEntry_t>& entries, std::wstring* err) override
@@ -790,8 +888,9 @@ public:
 
     bool Compact() override
     {
-        std::wstring err;
-        return LoadMutable(&err) && RebuildAndUnload(&err);
+        if (!db_) return false;
+        int rc = ezdb_compact(db_);
+        return rc == 0;
     }
 
 private:

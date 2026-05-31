@@ -70,6 +70,12 @@ public:
     virtual bool DeleteEntriesByArchivePath(const std::wstring& archivePath, std::wstring* err) = 0;
     virtual bool DeleteEntriesByArchiveId(int64_t archiveId, std::wstring* err) = 0;
     virtual bool InsertEntries(const std::vector<ArchiveEntry_t>& entries, std::wstring* err) = 0;
+    virtual bool BeginReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) = 0;
+    virtual bool AppendArchiveEntriesByArchiveId(int64_t archiveId,
+                                                 const std::vector<ArchiveEntry_t>& entries,
+                                                 std::wstring* err) = 0;
+    virtual bool FinishReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) = 0;
+    virtual bool AbortReplaceArchiveEntriesByArchiveId(int64_t archiveId, std::wstring* err) = 0;
     virtual bool ReplaceArchiveEntriesByArchiveId(int64_t archiveId,
                                                   const std::vector<ArchiveEntry_t>& entries,
                                                   std::wstring* err) = 0;

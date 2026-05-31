@@ -145,6 +145,16 @@ struct ParsedArchiveResult {
     std::vector<ArchiveEntry_t> entries;
 };
 
+struct ParsedEntryBatch {
+    ArchiveFile_t archive;
+    int64_t archiveId = -1;
+    bool ok = false;
+    bool done = false;
+    std::vector<ArchiveEntry_t> entries;
+};
+
+static constexpr size_t kParsedEntryBatchSize = 4096;
+
 static ParsedArchiveResult ParseArchiveEntriesOnly(const ArchiveFile_t& a,
                                                    int64_t archiveId,
                                                    const std::wstring& parserType) {
@@ -203,12 +213,66 @@ static ParsedArchiveResult ParseArchiveEntriesOnly(const ArchiveFile_t& a,
 
 void Indexer::ParseAndStoreArchive(IndexStore& store, const ArchiveFile_t& a, const std::wstring& parserType) {
     int64_t archiveId = store.GetArchiveIdByPath(a.filePath);
-    ParsedArchiveResult parsed = ParseArchiveEntriesOnly(a, archiveId, parserType);
-    if (!parsed.ok) return;
-
     std::wstring entryErr;
-    if (!store.ReplaceArchiveEntriesByArchiveId(archiveId, parsed.entries, &entryErr)) {
-        LOG_WARN(L"ReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+    if (!store.BeginReplaceArchiveEntriesByArchiveId(archiveId, &entryErr)) {
+        LOG_WARN(L"BeginReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+        return;
+    }
+
+    std::unique_ptr<EveryZip::IArchiveParser> parserPtr =
+        EveryZip::CreateArchiveParserByType(parserType);
+    if (!parserPtr) {
+        LOG_WARN(L"No archive parser for: %s (parser=%s)", a.filePath.c_str(), parserType.c_str());
+        store.AbortReplaceArchiveEntriesByArchiveId(archiveId, &entryErr);
+        return;
+    }
+    std::string perr;
+    if (!parserPtr->Open(a.filePath, &perr)) {
+        LOG_WARN(L"ArchiveParser::Open failed (%s): %s",
+                 a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
+        store.AbortReplaceArchiveEntriesByArchiveId(archiveId, &entryErr);
+        return;
+    }
+
+    std::vector<ArchiveEntry_t> batch;
+    batch.reserve(kParsedEntryBatchSize);
+    auto flush = [&]() -> bool {
+        if (batch.empty()) return true;
+        if (!store.AppendArchiveEntriesByArchiveId(archiveId, batch, &entryErr)) {
+            LOG_WARN(L"AppendArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+            return false;
+        }
+        batch.clear();
+        return true;
+    };
+
+    bool ok = parserPtr->ForEachEntry([&](const ArchiveEntry_t& e) {
+        if (e.isDirectory) return true;
+        if (e.entryPathUtf8.empty()) {
+            LOG_WARN(L"Skip archive entry with empty UTF-8 path: %s", a.filePath.c_str());
+            return true;
+        }
+        ArchiveEntry_t out;
+        out.archiveId = archiveId;
+        out.entryPathUtf8 = e.entryPathUtf8;
+        out.entryRawPath = e.entryRawPath;
+        out.compressedSize = e.compressedSize;
+        out.originalSize = e.originalSize;
+        out.modifiedTime = e.modifiedTime;
+        batch.push_back(std::move(out));
+        return batch.size() < kParsedEntryBatchSize || flush();
+    }, &perr);
+    parserPtr->Close();
+
+    if (!ok) {
+        LOG_WARN(L"ArchiveParser::ForEachEntry failed (%s): %s",
+                 a.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
+        store.AbortReplaceArchiveEntriesByArchiveId(archiveId, &entryErr);
+        return;
+    }
+    if (!flush()) return;
+    if (!store.FinishReplaceArchiveEntriesByArchiveId(archiveId, &entryErr)) {
+        LOG_WARN(L"FinishReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
     }
 }
 
@@ -304,7 +368,6 @@ void Indexer::Start(HWND hWnd) {
             } else if (!store->EnsureSchema(&err, true)) {
                 LOG_WARN(L"IndexStore::EnsureSchema failed: %s", err.c_str());
             } else {
-                bool writeTxn = false;
                 std::vector<ArchiveFile_t> old;
                 if (!store->QueryArchives(L"", &old, &err)) {
                     LOG_WARN(L"QueryArchives failed: %s", err.c_str());
@@ -329,12 +392,6 @@ void Indexer::Start(HWND hWnd) {
 
                     for (const auto& o : old) {
                         oldMap.emplace(makeKey(o), OldInfo{ o, false });
-                    }
-
-                    if (store->BeginWrite(&err)) {
-                        writeTxn = true;
-                    } else {
-                        LOG_WARN(L"IndexStore::BeginWrite failed: %s", err.c_str());
                     }
 
                     std::vector<ArchiveFile_t> upserts;
@@ -417,7 +474,7 @@ void Indexer::Start(HWND hWnd) {
                             std::condition_variable cv;
                             size_t nextIndex = 0;
                             size_t activeWorkers = 0;
-                            std::queue<ParsedArchiveResult> ready;
+                            std::queue<ParsedEntryBatch> ready;
                         } work;
                         work.activeWorkers = workerCount;
 
@@ -436,15 +493,103 @@ void Indexer::Start(HWND hWnd) {
                                         taskIndex = work.nextIndex++;
                                     }
 
-                                    ParsedArchiveResult result =
-                                        ParseArchiveEntriesOnly(toParse[taskIndex],
-                                                                archiveIds[taskIndex],
-                                                                GetParserTypeForPath(toParse[taskIndex].filePath, rules));
-                                    {
+                                    const ArchiveFile_t archive = toParse[taskIndex];
+                                    const int64_t archiveId = archiveIds[taskIndex];
+                                    const std::wstring parserType = GetParserTypeForPath(archive.filePath, rules);
+
+                                    auto pushBatch = [&](ParsedEntryBatch batch) {
                                         std::lock_guard<std::mutex> lock(work.mutex);
-                                        work.ready.push(std::move(result));
+                                        work.ready.push(std::move(batch));
+                                        work.cv.notify_one();
+                                    };
+
+                                    ParsedEntryBatch begin;
+                                    begin.archive = archive;
+                                    begin.archiveId = archiveId;
+                                    begin.ok = archiveId >= 0;
+                                    begin.done = false;
+                                    if (!begin.ok) {
+                                        LOG_WARN(L"GetArchiveIdByPath failed for: %s", archive.filePath.c_str());
+                                        begin.done = true;
+                                        pushBatch(std::move(begin));
+                                        continue;
                                     }
-                                    work.cv.notify_one();
+                                    pushBatch(std::move(begin));
+
+                                    std::unique_ptr<EveryZip::IArchiveParser> parserPtr =
+                                        EveryZip::CreateArchiveParserByType(parserType);
+                                    if (!parserPtr) {
+                                        LOG_WARN(L"No archive parser for: %s (parser=%s)", archive.filePath.c_str(), parserType.c_str());
+                                        ParsedEntryBatch done;
+                                        done.archive = archive;
+                                        done.archiveId = archiveId;
+                                        done.ok = false;
+                                        done.done = true;
+                                        pushBatch(std::move(done));
+                                        continue;
+                                    }
+
+                                    std::string perr;
+                                    if (!parserPtr->Open(archive.filePath, &perr)) {
+                                        LOG_WARN(L"ArchiveParser::Open failed (%s): %s",
+                                                 archive.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
+                                        ParsedEntryBatch done;
+                                        done.archive = archive;
+                                        done.archiveId = archiveId;
+                                        done.ok = false;
+                                        done.done = true;
+                                        pushBatch(std::move(done));
+                                        continue;
+                                    }
+
+                                    ParsedEntryBatch current;
+                                    current.archive = archive;
+                                    current.archiveId = archiveId;
+                                    current.ok = true;
+                                    current.entries.reserve(kParsedEntryBatchSize);
+                                    auto flushBatch = [&]() -> bool {
+                                        if (current.entries.empty()) return true;
+                                        ParsedEntryBatch out = std::move(current);
+                                        pushBatch(std::move(out));
+                                        current = ParsedEntryBatch{};
+                                        current.archive = archive;
+                                        current.archiveId = archiveId;
+                                        current.ok = true;
+                                        current.entries.reserve(kParsedEntryBatchSize);
+                                        return true;
+                                    };
+
+                                    bool parseOk = parserPtr->ForEachEntry([&](const ArchiveEntry_t& e) {
+                                        if (cancel_.load()) return false;
+                                        if (e.isDirectory) return true;
+                                        if (e.entryPathUtf8.empty()) {
+                                            LOG_WARN(L"Skip archive entry with empty UTF-8 path: %s", archive.filePath.c_str());
+                                            return true;
+                                        }
+                                        ArchiveEntry_t out;
+                                        out.archiveId = archiveId;
+                                        out.entryPathUtf8 = e.entryPathUtf8;
+                                        out.entryRawPath = e.entryRawPath;
+                                        out.compressedSize = e.compressedSize;
+                                        out.originalSize = e.originalSize;
+                                        out.modifiedTime = e.modifiedTime;
+                                        current.entries.push_back(std::move(out));
+                                        return current.entries.size() < kParsedEntryBatchSize || flushBatch();
+                                    }, &perr);
+                                    parserPtr->Close();
+                                    if (parseOk) {
+                                        flushBatch();
+                                    } else if (!cancel_.load()) {
+                                        LOG_WARN(L"ArchiveParser::ForEachEntry failed (%s): %s",
+                                                 archive.filePath.c_str(), Utf8ToWString(perr.c_str()).c_str());
+                                    }
+
+                                    ParsedEntryBatch done;
+                                    done.archive = archive;
+                                    done.archiveId = archiveId;
+                                    done.ok = parseOk;
+                                    done.done = true;
+                                    pushBatch(std::move(done));
                                 }
 
                                 {
@@ -458,7 +603,7 @@ void Indexer::Start(HWND hWnd) {
                         }
 
                         for (;;) {
-                            ParsedArchiveResult result;
+                            ParsedEntryBatch result;
                             bool hasResult = false;
                             {
                                 std::unique_lock<std::mutex> lock(work.mutex);
@@ -475,15 +620,31 @@ void Indexer::Start(HWND hWnd) {
                             }
 
                             if (!hasResult) continue;
-                            if (!cancel_.load() && result.ok) {
+                            if (!cancel_.load() && result.archiveId >= 0) {
                                 std::wstring entryErr;
-                                parsedEntryCount += result.entries.size();
-                                if (!store->ReplaceArchiveEntriesByArchiveId(result.archiveId, result.entries, &entryErr)) {
-                                    LOG_WARN(L"ReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+                                if (!result.done && result.entries.empty()) {
+                                    if (!store->BeginReplaceArchiveEntriesByArchiveId(result.archiveId, &entryErr)) {
+                                        LOG_WARN(L"BeginReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+                                    }
+                                } else if (!result.entries.empty()) {
+                                    parsedEntryCount += result.entries.size();
+                                    if (!store->AppendArchiveEntriesByArchiveId(result.archiveId, result.entries, &entryErr)) {
+                                        LOG_WARN(L"AppendArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+                                    }
+                                } else if (result.done) {
+                                    if (result.ok) {
+                                        if (!store->FinishReplaceArchiveEntriesByArchiveId(result.archiveId, &entryErr)) {
+                                            LOG_WARN(L"FinishReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+                                        }
+                                    } else if (!store->AbortReplaceArchiveEntriesByArchiveId(result.archiveId, &entryErr)) {
+                                        LOG_WARN(L"AbortReplaceArchiveEntriesByArchiveId failed: %s", entryErr.c_str());
+                                    }
                                 }
                             }
-                            ++parseDone;
-                            PostParseProgress(hWnd, parseDone, parseTotal);
+                            if (result.done) {
+                                ++parseDone;
+                                PostParseProgress(hWnd, parseDone, parseTotal);
+                            }
                         }
 
                         for (auto& worker : workers) {
@@ -513,6 +674,18 @@ void Indexer::Start(HWND hWnd) {
                             LOG_WARN(L"Save sevenzip size policy version failed: %s", cfgErr.c_str());
                         }
                     }
+
+                    if (!cancel_.load() && parsedEntryCount > 0) {
+                        const auto compactStart = std::chrono::steady_clock::now();
+                        LOG_INFO(L"Initial archive parsing compact started: entries=%zu", parsedEntryCount);
+                        if (!store->Compact()) {
+                            LOG_WARN(L"Initial archive parsing compact failed");
+                        } else {
+                            const auto compactElapsed = std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() - compactStart).count();
+                            LOG_INFO(L"Initial archive parsing compact completed: elapsed_sec=%.3f", compactElapsed);
+                        }
+                    }
                 }
 
                 // 初始扫描完成后，记录每个盘符的 Journal NextUsn 作为监控起点
@@ -525,14 +698,6 @@ void Indexer::Start(HWND hWnd) {
                             LOG_INFO(L"Saved Journal USN for drive %c: journalId=%lld, nextUsn=%lld",
                                      dl, (long long)ji.journalId, (long long)ji.nextUsn);
                         }
-                    }
-                }
-
-                if (writeTxn) {
-                    if (cancel_.load()) {
-                        store->RollbackWrite();
-                    } else if (!store->CommitWrite(&err)) {
-                        LOG_WARN(L"IndexStore::CommitWrite failed: %s", err.c_str());
                     }
                 }
 
@@ -701,6 +866,15 @@ void Indexer::Start(HWND hWnd) {
 
             // 如果有变化，通知 UI 刷新
             if (anyChanged && !cancel_.load()) {
+                const auto compactStart = std::chrono::steady_clock::now();
+                LOG_INFO(L"Monitor compact started after changes");
+                if (!monitorStore->Compact()) {
+                    LOG_WARN(L"Monitor compact failed");
+                } else {
+                    const auto compactElapsed = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - compactStart).count();
+                    LOG_INFO(L"Monitor compact completed: elapsed_sec=%.3f", compactElapsed);
+                }
                 PostMessageW(hWnd, WM_APP_DB_REFRESH, 0, 0);
             }
         }
